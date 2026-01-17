@@ -546,7 +546,7 @@ class EnumCodec extends BaseCodec {
   }
 
   zeroValue(): number {
-    return 0;
+    return this.defaultValue;
   }
 
   estimateSize(rows: number): number {

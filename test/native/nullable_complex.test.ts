@@ -164,9 +164,8 @@ describe("Nullable with complex inner types", () => {
 
   describe("Nullable(Enum8)", () => {
     it("handles mix of enum values and nulls", () => {
-      // Note: Enum must include 0 as a valid value for Nullable to work correctly
-      // (EnumCodec.zeroValue returns 0, which NullableCodec uses for null positions)
-      const codec = getCodec("Nullable(Enum8('zero' = 0, 'one' = 1, 'two' = 2))");
+      // Enum without 0 defined - zeroValue() now returns min valid value (1)
+      const codec = getCodec("Nullable(Enum8('one' = 1, 'two' = 2))");
       const values = ["one", null, "two", null];
       const col = codec.fromValues(values);
 
@@ -174,6 +173,16 @@ describe("Nullable with complex inner types", () => {
       assert.strictEqual(col.get(1), null);
       assert.strictEqual(col.get(2), "two");
       assert.strictEqual(col.get(3), null);
+    });
+
+    it("handles negative enum values", () => {
+      const codec = getCodec("Nullable(Enum8('neg' = -5, 'pos' = 5))");
+      const values = ["pos", null, "neg"];
+      const col = codec.fromValues(values);
+
+      assert.strictEqual(col.get(0), "pos");
+      assert.strictEqual(col.get(1), null);
+      assert.strictEqual(col.get(2), "neg");
     });
   });
 
