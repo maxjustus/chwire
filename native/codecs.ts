@@ -1611,7 +1611,13 @@ class LowCardinalityCodec extends BaseCodec {
     const values: unknown[] = new Array(count);
     for (let i = 0; i < count; i++) {
       const idx = Number(indices[i]);
-      values[i] = isNullable && idx === 0 ? null : dict.get(idx);
+      if (isNullable && idx === 0) {
+        values[i] = null;
+      } else if (idx >= dictSize) {
+        throw new Error(`LowCardinality index ${idx} out of bounds (dictionary size: ${dictSize})`);
+      } else {
+        values[i] = dict.get(idx);
+      }
     }
     return new DataColumn(this.type, values);
   }
