@@ -200,9 +200,26 @@ export function toValidIPv4(v: unknown): string {
   return s;
 }
 
+// IPv6 validation: checks structure without full RFC compliance
+// Allows: 2001:db8::1, ::1, ::ffff:192.168.1.1, fe80::1%eth0
+// Zone IDs after % can contain alphanumeric chars
+const IPV6_CHARS = /^[0-9a-fA-F:.]+(%[a-zA-Z0-9]+)?$/;
+
 export function toValidIPv6(v: unknown): string {
   if (v == null) return "::";
-  return String(v);
+  const s = String(v);
+  if (s === "") {
+    throw new TypeError(`Invalid IPv6 address: empty string`);
+  }
+  // Basic character check - only hex, colons, dots (IPv4-mapped), % (zone ID)
+  if (!IPV6_CHARS.test(s)) {
+    throw new TypeError(`Invalid IPv6 address: "${s}"`);
+  }
+  // Must contain at least one colon (IPv6 always has colons)
+  if (!s.includes(":")) {
+    throw new TypeError(`Invalid IPv6 address: "${s}" (no colons)`);
+  }
+  return s;
 }
 
 // --- UUID validation ---
