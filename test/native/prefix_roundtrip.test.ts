@@ -12,42 +12,9 @@
 import assert from "node:assert";
 import { describe, it } from "node:test";
 import { decodeNativeBlock } from "../../native/index.ts";
-import { BufferWriter } from "../../native/io.ts";
 import { getCodec } from "../../native/codecs.ts";
 import { BlockInfoField, LowCardinality as LC, Dynamic, Variant } from "../../native/constants.ts";
-
-/**
- * Build a Native block with given type, prefix, and encoded data.
- */
-function buildBlock(
-  colName: string,
-  colType: string,
-  prefixBuilder: (w: BufferWriter) => void,
-  dataBuilder: (w: BufferWriter) => void,
-  rows: number,
-): Uint8Array {
-  const writer = new BufferWriter(4096);
-
-  // Block info
-  writer.writeVarint(BlockInfoField.End);
-
-  // Header
-  writer.writeVarint(1);
-  writer.writeVarint(rows);
-
-  // Column
-  writer.writeString(colName);
-  writer.writeString(colType);
-  writer.writeU8(0); // no custom serialization
-
-  // Prefix
-  prefixBuilder(writer);
-
-  // Data
-  dataBuilder(writer);
-
-  return writer.finish();
-}
+import { buildTestBlock, BufferWriter } from "../test_utils.ts";
 
 describe("prefix round-trip tests", () => {
   describe("LowCardinality", () => {
@@ -82,11 +49,12 @@ describe("prefix round-trip tests", () => {
 
     it("handles version prefix correctly", () => {
       // LowCardinality prefix is just VERSION (UInt64)
-      const data = buildBlock(
-        "val",
-        "LowCardinality(String)",
-        (w) => w.writeU64LE(LC.VERSION),
-        (w) => {
+      const data = buildTestBlock({
+        colName: "val",
+        colType: "LowCardinality(String)",
+        rows: 3,
+        prefix: (w) => w.writeU64LE(LC.VERSION),
+        data: (w) => {
           // flags: FLAG_ADDITIONAL_KEYS | INDEX_U8
           w.writeU64LE(LC.FLAG_ADDITIONAL_KEYS | LC.INDEX_U8);
           // dict size
@@ -101,8 +69,7 @@ describe("prefix round-trip tests", () => {
           // indices: [0, 1, 0]
           w.write(new Uint8Array([0, 1, 0]));
         },
-        3,
-      );
+      });
 
       const result = decodeNativeBlock(data, 0, { clientVersion: 54454 });
       assert.strictEqual(result.rowCount, 3);
@@ -150,11 +117,12 @@ describe("prefix round-trip tests", () => {
 
     it("handles mode prefix correctly", () => {
       // Variant prefix is MODE_BASIC (UInt64)
-      const data = buildBlock(
-        "val",
-        "Variant(String, UInt64)",
-        (w) => w.writeU64LE(Variant.MODE_BASIC),
-        (w) => {
+      const data = buildTestBlock({
+        colName: "val",
+        colType: "Variant(String, UInt64)",
+        rows: 3,
+        prefix: (w) => w.writeU64LE(Variant.MODE_BASIC),
+        data: (w) => {
           // discriminators: [0, 1, 0]
           w.write(new Uint8Array([0, 1, 0]));
           // String group (2 values: "a", "b")
@@ -165,8 +133,7 @@ describe("prefix round-trip tests", () => {
           // UInt64 group (1 value: 123)
           w.writeU64LE(123n);
         },
-        3,
-      );
+      });
 
       const result = decodeNativeBlock(data, 0, { clientVersion: 54454 });
       assert.strictEqual(result.rowCount, 3);
@@ -179,17 +146,18 @@ describe("prefix round-trip tests", () => {
   describe("Dynamic", () => {
     it("handles version and type list prefix", () => {
       // Dynamic prefix: VERSION_V3 + type count + type names
-      const data = buildBlock(
-        "val",
-        "Dynamic",
-        (w) => {
+      const data = buildTestBlock({
+        colName: "val",
+        colType: "Dynamic",
+        rows: 4,
+        prefix: (w) => {
           w.writeU64LE(Dynamic.VERSION_V3);
           w.writeVarint(2); // 2 types
           w.writeString("String");
           w.writeString("UInt64");
           // No inner codec prefixes for String/UInt64
         },
-        (w) => {
+        data: (w) => {
           // discriminators: [0, 1, 2, 0] (2 = null discriminator for Dynamic with 2 types)
           w.write(new Uint8Array([0, 1, 2, 0]));
           // String group (2 values)
@@ -200,8 +168,7 @@ describe("prefix round-trip tests", () => {
           // UInt64 group (1 value)
           w.writeU64LE(42n);
         },
-        4,
-      );
+      });
 
       const result = decodeNativeBlock(data, 0, { clientVersion: 54454 });
       assert.strictEqual(result.rowCount, 4);
