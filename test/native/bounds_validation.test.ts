@@ -9,49 +9,36 @@
 import assert from "node:assert";
 import { describe, it } from "node:test";
 import { decodeNativeBlock } from "../../native/index.ts";
-import { BufferWriter } from "../../native/io.ts";
 import { toValidIPv4, toValidIPv6 } from "../../native/coercion.ts";
-import { BlockInfoField, LowCardinality as LC } from "../../native/constants.ts";
+import { LowCardinality as LC } from "../../native/constants.ts";
+import { buildTestBlock } from "../test_utils.ts";
 
 describe("bounds validation", () => {
   describe("LowCardinality index bounds", () => {
-    /**
-     * Build LowCardinality block with specific dictionary and indices.
-     */
+    /** Build LowCardinality block with specific dictionary and indices. */
     function buildLowCardBlock(dictValues: string[], indices: number[]): Uint8Array {
-      const writer = new BufferWriter(512);
+      return buildTestBlock({
+        colName: "val",
+        colType: "LowCardinality(String)",
+        rows: indices.length,
+        prefix: (w) => w.writeU64LE(LC.VERSION),
+        data: (w) => {
+          // Flags: additional keys + index type U8
+          w.writeU64LE(LC.FLAG_ADDITIONAL_KEYS | LC.INDEX_U8);
 
-      // Block info
-      writer.writeVarint(BlockInfoField.End);
+          // Dictionary size and values
+          w.writeU64LE(BigInt(dictValues.length));
+          for (const s of dictValues) {
+            const bytes = new TextEncoder().encode(s);
+            w.writeVarint(bytes.length);
+            w.write(bytes);
+          }
 
-      // Header
-      writer.writeVarint(1);
-      writer.writeVarint(indices.length);
-
-      // Column
-      writer.writeString("val");
-      writer.writeString("LowCardinality(String)");
-      writer.writeU8(0); // no custom serialization
-
-      // LowCardinality prefix: version
-      writer.writeU64LE(LC.VERSION);
-
-      // Flags: additional keys + index type U8
-      writer.writeU64LE(LC.FLAG_ADDITIONAL_KEYS | LC.INDEX_U8);
-
-      // Dictionary size and values
-      writer.writeU64LE(BigInt(dictValues.length));
-      for (const s of dictValues) {
-        const bytes = new TextEncoder().encode(s);
-        writer.writeVarint(bytes.length);
-        writer.write(bytes);
-      }
-
-      // Row count and indices
-      writer.writeU64LE(BigInt(indices.length));
-      writer.write(new Uint8Array(indices));
-
-      return writer.finish();
+          // Row count and indices
+          w.writeU64LE(BigInt(indices.length));
+          w.write(new Uint8Array(indices));
+        },
+      });
     }
 
     it("handles valid dictionary indices", () => {

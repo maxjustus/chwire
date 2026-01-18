@@ -8,65 +8,41 @@
 import assert from "node:assert";
 import { describe, it } from "node:test";
 import { decodeNativeBlock } from "../../native/index.ts";
-import { BufferWriter } from "../../native/io.ts";
-import { BlockInfoField, Dynamic, JSONFormat } from "../../native/constants.ts";
+import { Dynamic, JSONFormat } from "../../native/constants.ts";
+import { buildTestBlock } from "../test_utils.ts";
 
-/**
- * Build a Native block with Dynamic type and specified version.
- */
+/** Build a Native block with Dynamic type and specified version. */
 function buildDynamicBlock(version: bigint, rows: number): Uint8Array {
-  const writer = new BufferWriter(256);
-
-  // Block info
-  writer.writeVarint(BlockInfoField.End);
-
-  // Header: 1 column, N rows
-  writer.writeVarint(1);
-  writer.writeVarint(rows);
-
-  // Column
-  writer.writeString("d");
-  writer.writeString("Dynamic");
-  writer.writeU8(0); // no custom serialization
-
-  // Dynamic prefix: version, type count
-  writer.writeU64LE(version);
-  writer.writeVarint(0); // no types
-
-  // Data: all NULLs (discriminator = type count = 0)
-  for (let i = 0; i < rows; i++) {
-    writer.writeU8(0);
-  }
-
-  return writer.finish();
+  return buildTestBlock({
+    colName: "d",
+    colType: "Dynamic",
+    rows,
+    prefix: (w) => {
+      w.writeU64LE(version);
+      w.writeVarint(0); // no types
+    },
+    data: (w) => {
+      // All NULLs (discriminator = type count = 0)
+      for (let i = 0; i < rows; i++) {
+        w.writeU8(0);
+      }
+    },
+  });
 }
 
-/**
- * Build a Native block with JSON type and specified version.
- */
+/** Build a Native block with JSON type and specified version. */
 function buildJSONBlock(version: bigint, rows: number): Uint8Array {
-  const writer = new BufferWriter(256);
-
-  // Block info
-  writer.writeVarint(BlockInfoField.End);
-
-  // Header: 1 column, N rows
-  writer.writeVarint(1);
-  writer.writeVarint(rows);
-
-  // Column
-  writer.writeString("j");
-  writer.writeString("JSON");
-  writer.writeU8(0); // no custom serialization
-
-  // JSON prefix: version, path count
-  writer.writeU64LE(version);
-  writer.writeVarint(0); // no paths
-
-  // Data: empty JSON objects (no typed paths, no dynamic paths to read)
-  // JSON with no paths = just prefix, no data bytes per row
-
-  return writer.finish();
+  return buildTestBlock({
+    colName: "j",
+    colType: "JSON",
+    rows,
+    prefix: (w) => {
+      w.writeU64LE(version);
+      w.writeVarint(0); // no paths
+    },
+    // JSON with no paths = just prefix, no data bytes per row
+    data: () => {},
+  });
 }
 
 describe("version validation tests", () => {

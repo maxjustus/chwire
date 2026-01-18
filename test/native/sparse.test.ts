@@ -11,8 +11,8 @@
 import assert from "node:assert";
 import { describe, it } from "node:test";
 import { decodeNativeBlock } from "../../native/index.ts";
-import { BufferWriter } from "../../native/io.ts";
-import { Sparse, SerializationKind, BlockInfoField } from "../../native/constants.ts";
+import { Sparse, SerializationKind } from "../../native/constants.ts";
+import { buildTestBlock } from "../test_utils.ts";
 
 /**
  * Build a sparse-encoded Native block with UInt64 data.
@@ -28,42 +28,33 @@ function buildSparseUInt64Block(
   nonDefaults: Array<{ index: number; value: bigint }>,
   totalRows: number,
 ): Uint8Array {
-  const writer = new BufferWriter(4096);
+  return buildTestBlock({
+    colName: "val",
+    colType: "UInt64",
+    rows: totalRows,
+    customSerialization: (w) => w.writeU8(SerializationKind.Sparse),
+    data: (w) => {
+      // Sparse offset stream
+      let lastIndex = -1;
+      for (const { index } of nonDefaults) {
+        const gap = index - lastIndex - 1;
+        w.writeVarint(gap);
+        lastIndex = index;
+      }
 
-  // Block info (required when clientVersion > 0): just end marker
-  writer.writeVarint(BlockInfoField.End);
+      // Trailing defaults with END flag
+      const trailingDefaults =
+        nonDefaults.length > 0
+          ? totalRows - nonDefaults[nonDefaults.length - 1].index - 1
+          : totalRows;
+      w.writeVarint(BigInt(trailingDefaults) | Sparse.END_OF_GRANULE_FLAG);
 
-  // Block header: 1 column, N rows
-  writer.writeVarint(1);
-  writer.writeVarint(totalRows);
-
-  // Column: name, type
-  writer.writeString("val");
-  writer.writeString("UInt64");
-
-  // Custom serialization: has_custom=1, kind=Sparse
-  writer.writeU8(1); // hasCustomSerialization
-  writer.writeU8(SerializationKind.Sparse); // kind
-
-  // Sparse offset stream
-  let lastIndex = -1;
-  for (const { index } of nonDefaults) {
-    const gap = index - lastIndex - 1;
-    writer.writeVarint(gap);
-    lastIndex = index;
-  }
-
-  // Trailing defaults with END flag
-  const trailingDefaults =
-    nonDefaults.length > 0 ? totalRows - nonDefaults[nonDefaults.length - 1].index - 1 : totalRows;
-  writer.writeVarint(BigInt(trailingDefaults) | Sparse.END_OF_GRANULE_FLAG);
-
-  // Dense-encoded values (UInt64 little-endian)
-  for (const { value } of nonDefaults) {
-    writer.writeU64LE(value);
-  }
-
-  return writer.finish();
+      // Dense-encoded values (UInt64 little-endian)
+      for (const { value } of nonDefaults) {
+        w.writeU64LE(value);
+      }
+    },
+  });
 }
 
 describe("sparse serialization unit tests", () => {

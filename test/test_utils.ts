@@ -9,6 +9,8 @@ import {
   streamDecodeNative,
 } from "../native/index.ts";
 import { TcpClient } from "../tcp_client/client.ts";
+import { BufferWriter } from "../native/io.ts";
+import { BlockInfoField } from "../native/constants.ts";
 
 // Async iterable helpers
 export async function consume(input: AsyncIterable<QueryPacket>): Promise<void> {
@@ -125,4 +127,53 @@ export async function collectQueryResults(
     }
   }
   return allRows;
+}
+
+// Native block building helpers
+
+export { BufferWriter } from "../native/io.ts";
+
+/**
+ * Build a Native format block for testing.
+ * Consolidates common boilerplate: block info, header, column metadata.
+ */
+export function buildTestBlock(opts: {
+  colName: string;
+  colType: string;
+  rows: number;
+  /** Optional custom serialization (writes hasCustom=1 + callback) */
+  customSerialization?: (w: BufferWriter) => void;
+  /** Optional prefix before data (e.g., LowCardinality version) */
+  prefix?: (w: BufferWriter) => void;
+  /** Required: writes the column data */
+  data: (w: BufferWriter) => void;
+}): Uint8Array {
+  const writer = new BufferWriter(4096);
+
+  // Block info (required when clientVersion > 0)
+  writer.writeVarint(BlockInfoField.End);
+
+  // Header: 1 column, N rows
+  writer.writeVarint(1);
+  writer.writeVarint(opts.rows);
+
+  // Column metadata
+  writer.writeString(opts.colName);
+  writer.writeString(opts.colType);
+
+  // Custom serialization flag
+  if (opts.customSerialization) {
+    writer.writeU8(1);
+    opts.customSerialization(writer);
+  } else {
+    writer.writeU8(0);
+  }
+
+  // Prefix (codec-specific)
+  opts.prefix?.(writer);
+
+  // Data
+  opts.data(writer);
+
+  return writer.finish();
 }
