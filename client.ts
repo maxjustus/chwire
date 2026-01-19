@@ -2,6 +2,7 @@ import {
   decodeBlock,
   decodeBlocks,
   encodeBlock,
+  readUInt32LE,
   init,
   lz4CompressFrame,
   Method,
@@ -54,15 +55,6 @@ function compressionToMethod(compression: Compression): MethodCode {
       return Method.ZSTD;
     case false:
       return Method.None;
-  }
-}
-
-function* chunkUint8Array(data: Uint8Array, chunkSize: number): Generator<Uint8Array> {
-  let offset = 0;
-  while (offset < data.length) {
-    const end = Math.min(offset + chunkSize, data.length);
-    yield data.subarray(offset, end);
-    offset = end;
   }
 }
 
@@ -164,12 +156,6 @@ async function normalizeExternalTables(
     ),
   );
   return Object.fromEntries(entries);
-}
-
-function readUInt32LE(arr: Uint8Array, offset: number): number {
-  return (
-    arr[offset] | (arr[offset + 1] << 8) | (arr[offset + 2] << 16) | ((arr[offset + 3] << 24) >>> 0)
-  );
 }
 
 function mergeParams(target: Record<string, string>, source?: Record<string, unknown>): void {
@@ -347,25 +333,8 @@ async function insert(
   mergeParams(params, options.settings);
   mergeQueryParams(params, query, options.params);
 
-  // Normalize all input types to Iterable<Uint8Array>
-  // This ensures consistent chunking behavior (1MB threshold) for all inputs
-  let inputData: Iterable<Uint8Array> | AsyncIterable<Uint8Array>;
-
-  if (data instanceof Uint8Array) {
-    // Single Uint8Array - chunk at threshold for consistent progress reporting
-    inputData = chunkUint8Array(data, threshold);
-  } else if (Array.isArray(data)) {
-    // Array of Uint8Arrays - yield chunks from each
-    const chunks = data as Uint8Array[];
-    inputData = (function* () {
-      for (const chunk of chunks) {
-        yield* chunkUint8Array(chunk, threshold);
-      }
-    })();
-  } else {
-    // Already an Iterable or AsyncIterable
-    inputData = data;
-  }
+  const inputData: Iterable<Uint8Array> | AsyncIterable<Uint8Array> =
+    data instanceof Uint8Array ? [data] : data;
 
   // Streaming path: buffer, compress at threshold, report progress
   const url = buildReqUrl(baseUrl, params, options.auth);
