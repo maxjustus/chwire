@@ -40,25 +40,6 @@ export const ServerPacketId = {
   TimezoneUpdate: 17,
 } as const;
 
-export const QueryProcessingStage = {
-  FetchColumns: 0,
-  WithMergeableState: 1,
-  Complete: 2,
-  WithMergableStateAfterAggregation: 3,
-} as const;
-
-export const QueryKind = {
-  None: 0,
-  InitialQuery: 1,
-  SecondaryQuery: 2,
-} as const;
-
-export const Interface = {
-  TCP: 1,
-  HTTP: 2,
-  GRPC: 3,
-} as const;
-
 export interface ServerHello {
   serverName: string;
   major: bigint;

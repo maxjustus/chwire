@@ -205,24 +205,13 @@ function zstdDecompress(compressed: Uint8Array): Uint8Array {
   return zstdDecompressFn(compressed);
 }
 
-// LZ4 worst-case: input + (input / 255) + 16
-// We add some margin for safety
-function lz4MaxCompressedSize(inputSize: number): number {
-  return inputSize + Math.ceil(inputSize / 255) + 16;
-}
-
 /**
  * Encode a block with ClickHouse native compression format.
  * @param raw - Uncompressed data
  * @param mode - Compression method
- * @param outputBuffer - Optional pre-allocated buffer to write into (must be large enough)
- * @returns Compressed block (subarray of outputBuffer if provided, otherwise new array)
+ * @returns Compressed block with checksum header
  */
-export function encodeBlock(
-  raw: Uint8Array,
-  mode: MethodCode = Method.LZ4,
-  outputBuffer?: Uint8Array,
-): Uint8Array {
+export function encodeBlock(raw: Uint8Array, mode: MethodCode = Method.LZ4): Uint8Array {
   let compressed: Uint8Array;
 
   switch (mode) {
@@ -242,10 +231,7 @@ export function encodeBlock(
   }
 
   const totalSize = CHECKSUM_SIZE + HEADER_SIZE + compressed.length;
-
-  // Use provided buffer or allocate new one
-  const output =
-    outputBuffer && outputBuffer.length >= totalSize ? outputBuffer : new Uint8Array(totalSize);
+  const output = new Uint8Array(totalSize);
 
   // Write header at offset 16 (after checksum)
   const headerOffset = CHECKSUM_SIZE;
@@ -265,11 +251,6 @@ export function encodeBlock(
 }
 
 /** Calculate required buffer size for encodeBlock output */
-export function encodeBlockBufferSize(inputSize: number, mode: MethodCode = Method.LZ4): number {
-  const maxCompressed = mode === Method.LZ4 ? lz4MaxCompressedSize(inputSize) : inputSize + 1024; // ZSTD can expand slightly on incompressible data
-  return CHECKSUM_SIZE + HEADER_SIZE + maxCompressed;
-}
-
 export function decodeBlock(block: Uint8Array): Uint8Array {
   if (block.length < CHECKSUM_SIZE + HEADER_SIZE) {
     throw new Error("block too small");

@@ -6,9 +6,6 @@ import {
   ClientPacketId,
   DBMS_PARALLEL_REPLICAS_PROTOCOL_VERSION,
   DBMS_TCP_PROTOCOL_VERSION,
-  Interface,
-  QueryKind,
-  QueryProcessingStage,
   REVISIONS,
 } from "./types.ts";
 
@@ -98,7 +95,7 @@ export class StreamingWriter {
     this.writeString(qid);
 
     // --- ClientInfo ---
-    this.writeU8(QueryKind.InitialQuery);
+    this.writeU8(1); // QueryKind::InitialQuery
     this.writeString(""); // initial_user
     this.writeString(""); // initial_query_id
     this.writeString("0.0.0.0:0"); // initial_address
@@ -107,7 +104,7 @@ export class StreamingWriter {
       this.writeU64LE(BigInt(Date.now()) * 1000n);
     }
 
-    this.writeU8(Interface.TCP);
+    this.writeU8(1); // Interface::TCP
     this.writeString("chttp-client"); // os_user
     this.writeString("localhost"); // client_hostname
     this.writeString("ClickHouse"); // client_name
@@ -158,7 +155,7 @@ export class StreamingWriter {
       this.writeString(""); // interserver_secret
     }
 
-    this.writeVarInt(QueryProcessingStage.Complete);
+    this.writeVarInt(2); // QueryProcessingStage::Complete
 
     // Compression: 0 = disabled, 1 = enabled
     this.writeVarInt(compression ? 1 : 0);

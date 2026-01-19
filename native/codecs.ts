@@ -217,7 +217,7 @@ function escapeControlChars(s: string): string {
  * Escape a string for use in ClickHouse literal syntax.
  * Escapes: backslash, single quote, tab, newline, carriage return
  */
-export function escapeStringLiteral(s: string): string {
+function escapeStringLiteral(s: string): string {
   let result = "";
   for (let i = 0; i < s.length; i++) {
     const c = s.charCodeAt(i);

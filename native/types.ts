@@ -220,8 +220,8 @@ export const INT128_MAX = (1n << 127n) - 1n;
 export const INT128_MIN = -(1n << 127n);
 
 // Hex lookup tables for UUID encode/decode (~11x/~60x speedup vs parseInt/toString)
-export const HEX_LUT = new Uint8Array(256); // char code -> nibble value (255 = invalid)
-export const BYTE_TO_HEX: string[] = []; // byte -> "00"-"ff"
+const HEX_LUT = new Uint8Array(256); // char code -> nibble value (255 = invalid)
+const BYTE_TO_HEX: string[] = []; // byte -> "00"-"ff"
 for (let i = 0; i < 256; i++) {
   HEX_LUT[i] = 255;
   BYTE_TO_HEX[i] = i.toString(16).padStart(2, "0");
@@ -662,25 +662,4 @@ export function bytesToIpv6(bytes: Uint8Array): string {
     parts.push(val.toString(16));
   }
   return parts.join(":");
-}
-
-export function inferType(value: unknown): string {
-  if (value === null) return "Nothing";
-  if (typeof value === "boolean") return "Bool";
-  if (typeof value === "string") return "String";
-  if (typeof value === "bigint") {
-    if (value >= INT128_MIN && value <= INT128_MAX) return "Int128";
-    return "Int256";
-  }
-  if (typeof value === "number") {
-    if (Number.isInteger(value)) return "Int64";
-    return "Float64";
-  }
-  if (value instanceof Date) return "DateTime64(3)";
-  if (value instanceof ClickHouseDateTime64) return `DateTime64(${value.precision})`;
-  if (Array.isArray(value)) {
-    if (value.length === 0) return "Array(Nothing)";
-    return `Array(${inferType(value[0])})`;
-  }
-  throw new Error(`Cannot infer type for: ${typeof value}`);
 }
