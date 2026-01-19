@@ -34,6 +34,5 @@ export {
   decodeBlocks,
   encodeBlock,
   Method,
-  usingNativeZstd,
 } from "./compression.ts";
 export type { ClickHouseSettings } from "./settings.ts";

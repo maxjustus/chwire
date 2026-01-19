@@ -1,4 +1,5 @@
 import {
+  concat,
   decodeBlock,
   decodeBlocks,
   encodeBlock,
@@ -58,19 +59,7 @@ function compressionToMethod(compression: Compression): MethodCode {
   }
 }
 
-// Uint8Array helpers
 const encoder = new TextEncoder();
-
-function concatBytes(arrays: Uint8Array[]): Uint8Array {
-  const totalLength = arrays.reduce((sum, arr) => sum + arr.length, 0);
-  const result = new Uint8Array(totalLength);
-  let offset = 0;
-  for (const arr of arrays) {
-    result.set(arr, offset);
-    offset += arr.length;
-  }
-  return result;
-}
 
 /** Convert RecordBatch schema to ClickHouse structure string. */
 function schemaToStructure(batch: RecordBatch): string {
@@ -143,7 +132,7 @@ async function normalizeExternalTable(input: HttpExternalTableInput): Promise<Ht
   }
   const structure = schemaToStructure(batches[0]);
   const encoded = batches.map((b) => encodeNative(b));
-  return { structure, format: "Native", data: concatBytes(encoded) };
+  return { structure, format: "Native", data: concat(encoded) };
 }
 
 /** Normalize all external tables in a record. */
@@ -535,7 +524,7 @@ function buildMultipartBody(tables: Record<string, HttpExternalTable>): {
       parts.push(encoder.encode("\r\n"));
     }
     parts.push(encoder.encode(`--${boundary}--\r\n`));
-    return { body: concatBytes(parts), boundary };
+    return { body: concat(parts), boundary };
   }
 
   // Return streaming ReadableStream for async data
