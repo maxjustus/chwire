@@ -186,10 +186,11 @@ export interface Codec {
 }
 
 /**
- * Escape control characters for HTTP param values.
- * Escapes: backslash, tab, newline, carriage return (NOT single quotes)
+ * Escape control characters in a string for ClickHouse.
+ * Always escapes: backslash, tab, newline, carriage return
+ * Optionally escapes: single quote (for string literals)
  */
-function escapeControlChars(s: string): string {
+function escapeString(s: string, escapeSingleQuote = false): string {
   let result = "";
   for (let i = 0; i < s.length; i++) {
     const c = s.charCodeAt(i);
@@ -205,37 +206,9 @@ function escapeControlChars(s: string): string {
         break;
       case 92:
         result += "\\\\";
-        break;
-      default:
-        result += s[i];
-    }
-  }
-  return result;
-}
-
-/**
- * Escape a string for use in ClickHouse literal syntax.
- * Escapes: backslash, single quote, tab, newline, carriage return
- */
-function escapeStringLiteral(s: string): string {
-  let result = "";
-  for (let i = 0; i < s.length; i++) {
-    const c = s.charCodeAt(i);
-    switch (c) {
-      case 9:
-        result += "\\t";
-        break;
-      case 10:
-        result += "\\n";
-        break;
-      case 13:
-        result += "\\r";
         break;
       case 39:
-        result += "\\'";
-        break;
-      case 92:
-        result += "\\\\";
+        result += escapeSingleQuote ? "\\'" : "'";
         break;
       default:
         result += s[i];
@@ -563,8 +536,8 @@ class EnumCodec extends BaseCodec {
     } else {
       name = this.mapping.valueToName.get(this.toEnumValue(value))!;
     }
-    if (quoted) return `'${escapeStringLiteral(name)}'`;
-    return escapeControlChars(name);
+    if (quoted) return `'${escapeString(name, true)}'`;
+    return escapeString(name);
   }
 }
 
@@ -599,8 +572,8 @@ class StringCodec extends BaseCodec {
   toLiteral(value: unknown, quoted?: boolean): string {
     if (value == null) return "NULL";
     const str = coerceToString(value);
-    if (quoted) return `'${escapeStringLiteral(str)}'`;
-    return escapeControlChars(str);
+    if (quoted) return `'${escapeString(str, true)}'`;
+    return escapeString(str);
   }
 }
 
@@ -753,8 +726,8 @@ class FixedStringCodec extends BaseCodec {
     } else {
       str = coerceToString(value);
     }
-    if (quoted) return `'${escapeStringLiteral(str)}'`;
-    return escapeControlChars(str);
+    if (quoted) return `'${escapeString(str, true)}'`;
+    return escapeString(str);
   }
 }
 
@@ -2369,7 +2342,7 @@ export class JsonCodec implements Codec {
   }
   toLiteral(value: unknown): string {
     if (value == null) return "NULL";
-    return `'${escapeStringLiteral(JSON.stringify(value))}'`;
+    return `'${escapeString(JSON.stringify(value), true)}'`;
   }
 }
 
