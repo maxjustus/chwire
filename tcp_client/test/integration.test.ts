@@ -1,7 +1,8 @@
 import assert from "node:assert";
-import { describe, test } from "node:test";
+import { after, before, describe, test } from "node:test";
 import { batchFromRows, type ColumnDef } from "@maxjustus/chttp/native";
 import { TcpClient } from "@maxjustus/chttp/tcp";
+import { startClickHouse, stopClickHouse } from "../../test/setup.ts";
 import {
   collectRows,
   type TcpConfig,
@@ -9,12 +10,21 @@ import {
 } from "../../test/test_utils.ts";
 
 describe("TCP Client Integration", () => {
-  const options: TcpConfig = {
-    host: "localhost",
-    tcpPort: 9000,
-    username: "default",
-    password: "",
-  };
+  let options: TcpConfig;
+
+  before(async () => {
+    const ch = await startClickHouse();
+    options = {
+      host: ch.host,
+      tcpPort: ch.tcpPort,
+      username: ch.username,
+      password: ch.password,
+    };
+  });
+
+  after(async () => {
+    await stopClickHouse();
+  });
 
   const withClient = <T>(fn: (client: TcpClient) => Promise<T>) => withClientBase(options, fn);
 
