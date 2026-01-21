@@ -102,6 +102,21 @@ export type TcpConfig = {
   password: string;
 };
 
+/** Convert TcpConfig to TcpClient options format */
+export function toClientOptions(config: TcpConfig): {
+  host: string;
+  port: number;
+  user: string;
+  password: string;
+} {
+  return {
+    host: config.host,
+    port: config.tcpPort,
+    user: config.username,
+    password: config.password,
+  };
+}
+
 export function connectTcpClient(
   config: TcpConfig,
   opts?: Omit<Parameters<typeof TcpClient.connect>[0], "host" | "port" | "user" | "password">,
@@ -127,6 +142,34 @@ export async function collectQueryResults(
     }
   }
   return allRows;
+}
+
+export async function collectRows(
+  client: TcpClient,
+  sql: string,
+  options?: Parameters<TcpClient["query"]>[1],
+): Promise<Record<string, unknown>[]> {
+  const allRows: Record<string, unknown>[] = [];
+  for await (const packet of client.query(sql, options)) {
+    if (packet.type === "Data") {
+      for (const row of packet.batch) {
+        allRows.push(row.toObject());
+      }
+    }
+  }
+  return allRows;
+}
+
+export async function withClient<T>(
+  config: TcpConfig,
+  fn: (client: TcpClient) => Promise<T>,
+): Promise<T> {
+  const client = await connectTcpClient(config);
+  try {
+    return await fn(client);
+  } finally {
+    client.close();
+  }
 }
 
 // Native block building helpers

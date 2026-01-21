@@ -2,17 +2,18 @@ import assert from "node:assert";
 import { after, before, describe, test } from "node:test";
 import { batchFromCols, getCodec } from "@maxjustus/chttp/native";
 import { startClickHouse, stopClickHouse } from "../../test/setup.ts";
+import { toClientOptions, type TcpConfig } from "../../test/test_utils.ts";
 import { ClickHouseException, TcpClient } from "@maxjustus/chttp/tcp";
 
 describe("TCP Client Reliability", () => {
-  let options: { host: string; port: number; user: string; password: string };
+  let options: TcpConfig;
 
   before(async () => {
     const ch = await startClickHouse();
     options = {
       host: ch.host,
-      port: ch.tcpPort,
-      user: ch.username,
+      tcpPort: ch.tcpPort,
+      username: ch.username,
       password: ch.password,
     };
   });
@@ -21,8 +22,9 @@ describe("TCP Client Reliability", () => {
     await stopClickHouse();
   });
 
+  // Local wrapper - keeps original TcpClient instantiation pattern
   async function withClient<T>(fn: (client: TcpClient) => Promise<T>): Promise<T> {
-    const client = new TcpClient(options);
+    const client = new TcpClient(toClientOptions(options));
     await client.connect();
     try {
       return await fn(client);
@@ -103,7 +105,7 @@ describe("TCP Client Reliability", () => {
 
   test("should timeout query that takes too long", async () => {
     const client = new TcpClient({
-      ...options,
+      ...toClientOptions(options),
       queryTimeout: 50, // 50ms timeout
     });
     await client.connect();
@@ -169,7 +171,7 @@ describe("TCP Client Reliability", () => {
   });
 
   test("should cancel insert via AbortSignal", async () => {
-    const client = new TcpClient(options);
+    const client = new TcpClient(toClientOptions(options));
     await client.connect();
 
     const controller = new AbortController();
@@ -205,7 +207,7 @@ describe("TCP Client Reliability", () => {
       );
     } finally {
       // Clean up - use a fresh client since connection may be in bad state
-      const cleanupClient = new TcpClient(options);
+      const cleanupClient = new TcpClient(toClientOptions(options));
       await cleanupClient.connect();
       await cleanupClient.query("DROP TABLE IF EXISTS test_abort_insert");
       cleanupClient.close();
@@ -260,7 +262,7 @@ describe("TCP Client Reliability", () => {
     const controller = new AbortController();
     controller.abort(); // Abort before connect starts
 
-    const client = new TcpClient(options);
+    const client = new TcpClient(toClientOptions(options));
 
     try {
       await client.connect({ signal: controller.signal });
