@@ -636,4 +636,39 @@ describe("TCP Client Integration", () => {
       client.close();
     }
   });
+
+  test("should send query_id to server and appear in system.query_log", async () => {
+    const client = new TcpClient(options);
+    await client.connect();
+    try {
+      const testQueryId = `test-query-id-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+
+      // Run a query with custom queryId
+      const stream = client.query("SELECT 1", { queryId: testQueryId });
+      for await (const _ of stream) {
+      }
+
+      // Flush logs to ensure query_log is written
+      await client.query("SYSTEM FLUSH LOGS");
+
+      // Verify in system.query_log
+      const logStream = client.query(
+        `SELECT query_id FROM system.query_log WHERE query_id = '${testQueryId}' LIMIT 1`,
+      );
+      let found = false;
+      for await (const packet of logStream) {
+        if (packet.type === "Data" && packet.batch.rowCount > 0) {
+          found = true;
+        }
+      }
+
+      assert.strictEqual(
+        found,
+        true,
+        `query_id '${testQueryId}' should appear in system.query_log`,
+      );
+    } finally {
+      client.close();
+    }
+  });
 });
