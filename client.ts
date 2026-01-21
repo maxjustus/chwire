@@ -6,8 +6,8 @@ import {
   readUInt32LE,
   init,
   lz4CompressFrame,
-  Method,
-  type MethodCode,
+  toMethodCode,
+  type Compression,
   zstdCompressRaw,
 } from "./compression.ts";
 import type { ClickHouseSettings } from "./settings.ts";
@@ -34,7 +34,7 @@ export type { QueryParamValue, QueryParams } from "./types.ts";
 
 import type { QueryParams } from "./types.ts";
 
-export type Compression = "lz4" | "zstd" | false;
+export type { Compression };
 
 // AbortSignal.any() added in Node 20+, ES2024
 const AbortSignalAny = AbortSignal as typeof AbortSignal & {
@@ -46,17 +46,6 @@ function createSignal(signal?: AbortSignal, timeout?: number): AbortSignal | und
   if (signal && !timeout) return signal;
   if (!signal && timeout) return AbortSignal.timeout(timeout);
   return AbortSignalAny.any([signal!, AbortSignal.timeout(timeout!)]);
-}
-
-function compressionToMethod(compression: Compression): MethodCode {
-  switch (compression) {
-    case "lz4":
-      return Method.LZ4;
-    case "zstd":
-      return Method.ZSTD;
-    case false:
-      return Method.None;
-  }
 }
 
 const encoder = new TextEncoder();
@@ -309,7 +298,7 @@ async function insert(
     threshold = bufferSize - 2048,
     onProgress = null,
   } = options;
-  const method = compressionToMethod(compression);
+  const method = toMethodCode(compression);
 
   const params: Record<string, string> = {
     session_id: sessionId,
