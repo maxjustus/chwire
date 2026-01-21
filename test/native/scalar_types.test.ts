@@ -95,34 +95,23 @@ describe("encodeNative", () => {
   });
 
   it("throws on integer overflow and non-integer values", () => {
-    assert.throws(
-      () => encodeNativeRows([{ name: "i8", type: "Int8" }], [[128]]),
-      /Int8 out of range/,
-    );
-    assert.throws(
-      () => encodeNativeRows([{ name: "u8", type: "UInt8" }], [[-1]]),
-      /UInt8 out of range/,
-    );
-    assert.throws(
-      () => encodeNativeRows([{ name: "i32", type: "Int32" }], [[1.5]]),
-      /expected integer/,
-    );
-    assert.throws(
-      () => encodeNativeRows([{ name: "u32", type: "UInt32" }], [[4294967296]]),
-      /UInt32 out of range/,
-    );
-    assert.throws(
-      () => encodeNativeRows([{ name: "i64", type: "Int64" }], [[9223372036854775808n]]),
-      /Int64 out of range/,
-    );
-    assert.throws(
-      () => encodeNativeRows([{ name: "u64", type: "UInt64" }], [[-1n]]),
-      /UInt64 out of range/,
-    );
-    assert.throws(
-      () => encodeNativeRows([{ name: "i64", type: "Int64" }], [[9007199254740992]]),
-      /cannot safely represent number/,
-    );
+    const overflowCases: Array<{ type: string; value: unknown; error: RegExp }> = [
+      { type: "Int8", value: 128, error: /Int8 out of range/ },
+      { type: "UInt8", value: -1, error: /UInt8 out of range/ },
+      { type: "Int32", value: 1.5, error: /expected integer/ },
+      { type: "UInt32", value: 4294967296, error: /UInt32 out of range/ },
+      { type: "Int64", value: 9223372036854775808n, error: /Int64 out of range/ },
+      { type: "UInt64", value: -1n, error: /UInt64 out of range/ },
+      { type: "Int64", value: 9007199254740992, error: /cannot safely represent number/ },
+    ];
+
+    for (const { type, value, error } of overflowCases) {
+      assert.throws(
+        () => encodeNativeRows([{ name: "v", type }], [[value]]),
+        error,
+        `${type} should reject ${value}`,
+      );
+    }
   });
 
   it("encodes Float32 and Float64", async () => {
@@ -723,30 +712,22 @@ describe("additional scalar types", () => {
   });
 
   it("throws on out-of-range Int128/UInt128/Int256/UInt256", () => {
-    assert.throws(
-      () => encodeNativeRows([{ name: "i", type: "Int128" }], [[1n << 127n]]),
-      /Int128 out of range/,
-    );
-    assert.throws(
-      () => encodeNativeRows([{ name: "u", type: "UInt128" }], [[-1n]]),
-      /UInt128 out of range/,
-    );
-    assert.throws(
-      () => encodeNativeRows([{ name: "u", type: "UInt128" }], [[1n << 128n]]),
-      /UInt128 out of range/,
-    );
-    assert.throws(
-      () => encodeNativeRows([{ name: "i", type: "Int256" }], [[1n << 255n]]),
-      /Int256 out of range/,
-    );
-    assert.throws(
-      () => encodeNativeRows([{ name: "u", type: "UInt256" }], [[-1n]]),
-      /UInt256 out of range/,
-    );
-    assert.throws(
-      () => encodeNativeRows([{ name: "u", type: "UInt256" }], [[1n << 256n]]),
-      /UInt256 out of range/,
-    );
+    const bigintOverflowCases: Array<{ type: string; value: bigint; error: RegExp }> = [
+      { type: "Int128", value: 1n << 127n, error: /Int128 out of range/ },
+      { type: "UInt128", value: -1n, error: /UInt128 out of range/ },
+      { type: "UInt128", value: 1n << 128n, error: /UInt128 out of range/ },
+      { type: "Int256", value: 1n << 255n, error: /Int256 out of range/ },
+      { type: "UInt256", value: -1n, error: /UInt256 out of range/ },
+      { type: "UInt256", value: 1n << 256n, error: /UInt256 out of range/ },
+    ];
+
+    for (const { type, value, error } of bigintOverflowCases) {
+      assert.throws(
+        () => encodeNativeRows([{ name: "v", type }], [[value]]),
+        error,
+        `${type} should reject ${value}`,
+      );
+    }
   });
 
   it("throws on invalid FixedString input type", () => {
