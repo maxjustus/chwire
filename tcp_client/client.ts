@@ -615,7 +615,7 @@ export class TcpClient {
       if (!reachedEndOfStream && !receivedException && this.socket && this.reader) {
         if (sentDataDelimiter) {
           try {
-            await this.drainInsertResponses(useCompression);
+            await this.drainPackets(useCompression);
           } catch (err) {
             this.log(
               `[insert] drain failed, closing connection: ${err instanceof Error ? err.message : err}`,
@@ -689,35 +689,6 @@ export class TcpClient {
           throw await this.reader!.readException();
         default:
           throw new Error(`Unexpected packet while waiting for insert header: ${packetId}`);
-      }
-    }
-  }
-
-  /**
-   * Drain response packets after insert data has been sent.
-   * Waits until EndOfStream, handling intermediate packets.
-   */
-  private async drainInsertResponses(useCompression: boolean): Promise<void> {
-    while (true) {
-      const packetId = Number(await this.reader!.readVarInt());
-      if (packetId === ServerPacketId.EndOfStream) break;
-
-      switch (packetId) {
-        case ServerPacketId.Progress:
-          await this.readProgress();
-          break;
-        case ServerPacketId.ProfileInfo:
-          await this.readProfileInfo();
-          break;
-        case ServerPacketId.Data:
-          await this.readBlock(useCompression);
-          break;
-        case ServerPacketId.Log:
-        case ServerPacketId.ProfileEvents:
-          await this.readBlock(false);
-          break;
-        case ServerPacketId.Exception:
-          throw await this.reader!.readException();
       }
     }
   }
@@ -1254,10 +1225,11 @@ export class TcpClient {
           break;
         case ServerPacketId.EndOfStream:
           return;
-        case ServerPacketId.Exception:
-          // Read and discard the exception
-          await this.reader.readException();
+        case ServerPacketId.Exception: {
+          const ex = await this.reader.readException();
+          this.log(`Exception during drain: ${ex.message}`);
           return;
+        }
         default:
           // Unknown packet - can't continue safely
           return;
