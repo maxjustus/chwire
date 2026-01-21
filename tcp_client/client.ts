@@ -14,7 +14,7 @@ import {
   type PartialBlockState,
   RecordBatch,
 } from "@maxjustus/chttp/native";
-import { init as initCompression, Method, type MethodCode } from "../compression.ts";
+import { init as initCompression, type MethodCode, toMethodCode } from "../compression.ts";
 import type { ClickHouseSettings } from "../settings.ts";
 import { type CollectableAsyncGenerator, collectable } from "../util.ts";
 import { StreamingReader } from "./reader.ts";
@@ -424,7 +424,7 @@ export class TcpClient {
     signal?.addEventListener("abort", abortHandler);
 
     const useCompression = !!this.options.compression;
-    const compressionMethod = this.options.compression === "zstd" ? Method.ZSTD : Method.LZ4;
+    const compressionMethod = toMethodCode(this.options.compression || "lz4");
 
     try {
       // Merge settings: client defaults < per-insert overrides
@@ -972,7 +972,7 @@ export class TcpClient {
     if (signal?.aborted) throw new Error("Query aborted before start");
 
     const useCompression = !!this.options.compression;
-    const compressionMethod = this.options.compression === "zstd" ? Method.ZSTD : Method.LZ4;
+    const compressionMethod = toMethodCode(this.options.compression || "lz4");
     const queryTimeout = this.options.queryTimeout ?? 30000;
     const cancelGracePeriod = this.options.cancelGracePeriodMs ?? 2000;
     let timeoutId: ReturnType<typeof setTimeout> | null = null;

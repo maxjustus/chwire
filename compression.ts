@@ -149,6 +149,19 @@ export const Method = {
 
 export type MethodCode = (typeof Method)[keyof typeof Method];
 
+export type Compression = "lz4" | "zstd" | false;
+
+export function toMethodCode(compression: Compression): MethodCode {
+  switch (compression) {
+    case "lz4":
+      return Method.LZ4;
+    case "zstd":
+      return Method.ZSTD;
+    case false:
+      return Method.None;
+  }
+}
+
 export function cityHash128LE(bytes: Uint8Array): Uint8Array {
   const hash = cityhash_102_128(bytes);
   // Swap hi/lo 8-byte halves to match ClickHouse's expected byte order
