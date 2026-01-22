@@ -1,6 +1,8 @@
 import assert from "node:assert";
-import { describe, test } from "node:test";
+import { after, before, describe, test } from "node:test";
 import type { ClickHouseSettings } from "../../settings.ts";
+import { startClickHouse, stopClickHouse } from "../../test/setup.ts";
+import { toClientOptions, type TcpConfig } from "../../test/test_utils.ts";
 import { TcpClient } from "@maxjustus/chttp/tcp";
 
 // Settings for complex/experimental types
@@ -13,15 +15,30 @@ const QUERY_SETTINGS = {
 };
 
 describe("TCP Client Fuzz Tests", { timeout: 600000, concurrency: 1 }, () => {
+  let config: TcpConfig;
   const queryTimeout = parseInt(process.env.QUERY_TIMEOUT ?? "120000", 10);
-  const options = {
-    host: "localhost",
-    port: 9000,
-    user: "default",
-    password: "",
-    debug: !!process.env.DEBUG,
-    queryTimeout,
-  };
+
+  before(async () => {
+    const ch = await startClickHouse();
+    config = {
+      host: ch.host,
+      tcpPort: ch.tcpPort,
+      username: ch.username,
+      password: ch.password,
+    };
+  });
+
+  after(async () => {
+    await stopClickHouse();
+  });
+
+  function clientOptions() {
+    return {
+      ...toClientOptions(config),
+      debug: !!process.env.DEBUG,
+      queryTimeout,
+    };
+  }
 
   // ============================================================================
   // Test Helpers
@@ -36,7 +53,7 @@ describe("TCP Client Fuzz Tests", { timeout: 600000, concurrency: 1 }, () => {
   }
 
   async function withClient<T>(fn: (client: TcpClient) => Promise<T>): Promise<T> {
-    const client = new TcpClient(options);
+    const client = new TcpClient(clientOptions());
     await client.connect();
     try {
       return await fn(client);
@@ -48,8 +65,8 @@ describe("TCP Client Fuzz Tests", { timeout: 600000, concurrency: 1 }, () => {
   async function withDualClients<T>(
     fn: (read: TcpClient, write: TcpClient) => Promise<T>,
   ): Promise<T> {
-    const read = new TcpClient(options);
-    const write = new TcpClient(options);
+    const read = new TcpClient(clientOptions());
+    const write = new TcpClient(clientOptions());
     await Promise.all([read.connect(), write.connect()]);
     try {
       return await fn(read, write);
@@ -167,7 +184,7 @@ describe("TCP Client Fuzz Tests", { timeout: 600000, concurrency: 1 }, () => {
   // Usage: FUZZ_ITERATIONS=50 FUZZ_ROWS=100000 make fuzz-tcp
   test("decode random structures", async () => {
     const { iterations, rowCount } = fuzzConfig({ iterations: 10, rows: 20000 });
-    let client = new TcpClient(options);
+    let client = new TcpClient(clientOptions());
     await client.connect();
     let failures = 0;
     const maxFailures = 3;
@@ -200,7 +217,7 @@ describe("TCP Client Fuzz Tests", { timeout: 600000, concurrency: 1 }, () => {
         }
         console.error(`  Reconnecting... (failure ${failures}/${maxFailures})`);
         client.close();
-        client = new TcpClient(options);
+        client = new TcpClient(clientOptions());
         await client.connect();
       }
     }
@@ -211,8 +228,8 @@ describe("TCP Client Fuzz Tests", { timeout: 600000, concurrency: 1 }, () => {
   // Skip with: SKIP_ROUNDTRIP=1 make fuzz-tcp
   test("round-trip random structures", { skip: !!process.env.SKIP_ROUNDTRIP }, async () => {
     const { iterations, rowCount } = fuzzConfig({ iterations: 5, rows: 80000 });
-    let readClient = new TcpClient(options);
-    let writeClient = new TcpClient(options);
+    let readClient = new TcpClient(clientOptions());
+    let writeClient = new TcpClient(clientOptions());
     await Promise.all([readClient.connect(), writeClient.connect()]);
     let failures = 0;
     const maxFailures = 3;
@@ -272,8 +289,8 @@ describe("TCP Client Fuzz Tests", { timeout: 600000, concurrency: 1 }, () => {
         console.error(`  Reconnecting... (failure ${failures}/${maxFailures})`);
         readClient.close();
         writeClient.close();
-        readClient = new TcpClient(options);
-        writeClient = new TcpClient(options);
+        readClient = new TcpClient(clientOptions());
+        writeClient = new TcpClient(clientOptions());
         await Promise.all([readClient.connect(), writeClient.connect()]);
       }
     }

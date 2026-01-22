@@ -1,23 +1,32 @@
 import assert from "node:assert";
-import { describe, test } from "node:test";
+import { after, before, describe, test } from "node:test";
 import { batchFromRows } from "@maxjustus/chttp/native";
+import { startClickHouse, stopClickHouse } from "../../test/setup.ts";
+import { type TcpConfig, withClient as withClientBase } from "../../test/test_utils.ts";
 import { TcpClient } from "@maxjustus/chttp/tcp";
 
 describe("TCP Client Multi-block Integration", () => {
-  const options = {
-    host: "localhost",
-    port: 9000,
-    user: "default",
-    password: "",
-    debug: true,
-  };
+  let options: TcpConfig;
 
-  test("should handle multi-block SELECT queries", async () => {
-    const client = new TcpClient(options);
-    await client.connect();
-    try {
+  before(async () => {
+    const ch = await startClickHouse();
+    options = {
+      host: ch.host,
+      tcpPort: ch.tcpPort,
+      username: ch.username,
+      password: ch.password,
+    };
+  });
+
+  after(async () => {
+    await stopClickHouse();
+  });
+
+  const withClient = <T>(fn: (client: TcpClient) => Promise<T>) => withClientBase(options, fn);
+
+  test("should handle multi-block SELECT queries", () =>
+    withClient(async (client) => {
       const tableName = `test_tcp_multi_${Date.now()}`;
-      // Use 100k rows to ensure multiple blocks (default block size is 65536)
       const rowCount = 100000;
 
       await client.query(`CREATE TABLE ${tableName} (id UInt64, name String) ENGINE = Memory`);
@@ -25,7 +34,6 @@ describe("TCP Client Multi-block Integration", () => {
         `INSERT INTO ${tableName} SELECT number, 'row_' || toString(number) FROM numbers(${rowCount})`,
       );
 
-      console.log(`Querying ${rowCount} rows...`);
       const stream = client.query(`SELECT * FROM ${tableName}`);
 
       let totalRows = 0;
@@ -37,20 +45,14 @@ describe("TCP Client Multi-block Integration", () => {
         }
       }
 
-      console.log(`Received ${totalRows} rows in ${blockCount} blocks.`);
       assert.strictEqual(totalRows, rowCount, "Total row count mismatch");
       assert.ok(blockCount > 1, "Should have received multiple blocks");
 
       await client.query(`DROP TABLE ${tableName}`);
-    } finally {
-      client.close();
-    }
-  });
+    }));
 
-  test("should handle multi-block INSERT queries", async () => {
-    const client = new TcpClient(options);
-    await client.connect();
-    try {
+  test("should handle multi-block INSERT queries", () =>
+    withClient(async (client) => {
       const tableName = `test_tcp_multi_ins_${Date.now()}`;
       await client.query(`CREATE TABLE ${tableName} (id UInt64, name String) ENGINE = Memory`);
 
@@ -74,11 +76,9 @@ describe("TCP Client Multi-block Integration", () => {
         }
       }
 
-      console.log(`Inserting ${blockCount * rowsPerBlock} rows in ${blockCount} blocks...`);
       for await (const _ of client.insert(`INSERT INTO ${tableName} VALUES`, generateBlocks())) {
       }
 
-      // Verify
       const stream = client.query(`SELECT count() FROM ${tableName}`);
       let totalCount = 0n;
       for await (const packet of stream) {
@@ -89,12 +89,8 @@ describe("TCP Client Multi-block Integration", () => {
         }
       }
 
-      console.log(`Verified ${totalCount} rows in table.`);
       assert.strictEqual(Number(totalCount), blockCount * rowsPerBlock);
 
       await client.query(`DROP TABLE ${tableName}`);
-    } finally {
-      client.close();
-    }
-  });
+    }));
 });

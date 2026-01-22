@@ -1,20 +1,35 @@
 import assert from "node:assert";
-import { describe, test } from "node:test";
+import { after, before, describe, test } from "node:test";
 import { batchFromCols, getCodec } from "@maxjustus/chttp/native";
+import { startClickHouse, stopClickHouse } from "../../test/setup.ts";
+import {
+  toClientOptions,
+  type TcpConfig,
+  withClient as withClientBase,
+} from "../../test/test_utils.ts";
 import { TcpClient } from "@maxjustus/chttp/tcp";
 
 describe("TCP Client Protocol Features", () => {
-  const options = {
-    host: "localhost",
-    port: 9000,
-    user: "default",
-    password: "",
-  };
+  let options: TcpConfig;
 
-  test("should handle WITH TOTALS", async () => {
-    const client = new TcpClient(options);
-    await client.connect();
-    try {
+  before(async () => {
+    const ch = await startClickHouse();
+    options = {
+      host: ch.host,
+      tcpPort: ch.tcpPort,
+      username: ch.username,
+      password: ch.password,
+    };
+  });
+
+  after(async () => {
+    await stopClickHouse();
+  });
+
+  const withClient = <T>(fn: (client: TcpClient) => Promise<T>) => withClientBase(options, fn);
+
+  test("should handle WITH TOTALS", () =>
+    withClient(async (client) => {
       let gotTotals = false;
       let dataRows = 0;
       for await (const packet of client.query(
@@ -25,15 +40,10 @@ describe("TCP Client Protocol Features", () => {
       }
       assert.ok(gotTotals, "Should receive Totals packet");
       assert.strictEqual(dataRows, 10, "Should have 10 data rows");
-    } finally {
-      client.close();
-    }
-  });
+    }));
 
-  test("should handle extremes setting", async () => {
-    const client = new TcpClient(options);
-    await client.connect();
-    try {
+  test("should handle extremes setting", () =>
+    withClient(async (client) => {
       let gotExtremes = false;
       for await (const packet of client.query("SELECT number FROM numbers(100)", {
         settings: { extremes: true },
@@ -41,13 +51,10 @@ describe("TCP Client Protocol Features", () => {
         if (packet.type === "Extremes") gotExtremes = true;
       }
       assert.ok(gotExtremes, "Should receive Extremes packet");
-    } finally {
-      client.close();
-    }
-  });
+    }));
 
   test("should use ZSTD compression", async () => {
-    const client = new TcpClient({ ...options, compression: "zstd" });
+    const client = new TcpClient({ ...toClientOptions(options), compression: "zstd" });
     await client.connect();
     try {
       let rows = 0;
@@ -61,7 +68,7 @@ describe("TCP Client Protocol Features", () => {
   });
 
   test("should use LZ4 compression by default when enabled", async () => {
-    const client = new TcpClient({ ...options, compression: "lz4" });
+    const client = new TcpClient({ ...toClientOptions(options), compression: "lz4" });
     await client.connect();
     try {
       let rows = 0;
@@ -75,7 +82,7 @@ describe("TCP Client Protocol Features", () => {
   });
 
   test("should insert with LZ4 compression", async () => {
-    const client = new TcpClient({ ...options, compression: "lz4" });
+    const client = new TcpClient({ ...toClientOptions(options), compression: "lz4" });
     await client.connect();
     try {
       const tableName = `test_insert_lz4_${Date.now()}`;
@@ -101,7 +108,7 @@ describe("TCP Client Protocol Features", () => {
   });
 
   test("should insert with ZSTD compression", async () => {
-    const client = new TcpClient({ ...options, compression: "zstd" });
+    const client = new TcpClient({ ...toClientOptions(options), compression: "zstd" });
     await client.connect();
     try {
       const tableName = `test_insert_zstd_${Date.now()}`;
@@ -126,28 +133,19 @@ describe("TCP Client Protocol Features", () => {
     }
   });
 
-  test("should handle typed settings (number/boolean)", async () => {
-    const client = new TcpClient(options);
-    await client.connect();
-    try {
+  test("should handle typed settings (number/boolean)", () =>
+    withClient(async (client) => {
       let rows = 0;
-      // Using typed settings values
       for await (const packet of client.query("SELECT * FROM numbers(10)", {
         settings: { max_threads: 2, log_queries: false },
       })) {
         if (packet.type === "Data") rows += packet.batch.rowCount;
       }
       assert.strictEqual(rows, 10, "Should work with typed settings");
-    } finally {
-      client.close();
-    }
-  });
+    }));
 
-  test("should handle bigint settings", async () => {
-    const client = new TcpClient(options);
-    await client.connect();
-    try {
-      // Use a bigint value larger than Number.MAX_SAFE_INTEGER
+  test("should handle bigint settings", () =>
+    withClient(async (client) => {
       const largeValue = 9007199254740993n; // 2^53 + 1
       let rows = 0;
       for await (const packet of client.query("SELECT * FROM numbers(5)", {
@@ -156,15 +154,10 @@ describe("TCP Client Protocol Features", () => {
         if (packet.type === "Data") rows += packet.batch.rowCount;
       }
       assert.strictEqual(rows, 5, "Should work with bigint settings");
-    } finally {
-      client.close();
-    }
-  });
+    }));
 
-  test("should handle Log packets when send_logs_level is set", async () => {
-    const client = new TcpClient(options);
-    await client.connect();
-    try {
+  test("should handle Log packets when send_logs_level is set", () =>
+    withClient(async (client) => {
       let gotLog = false;
       for await (const packet of client.query("SELECT 1", {
         settings: { send_logs_level: "trace" },
@@ -176,64 +169,44 @@ describe("TCP Client Protocol Features", () => {
         }
       }
       // Log packets are optional - server may or may not send them
-      // Just verify we can handle them without error
       console.log(`  (Log packets received: ${gotLog})`);
-    } finally {
-      client.close();
-    }
-  });
+    }));
 
-  test("should accumulate ProfileEvents across packets", async () => {
-    const client = new TcpClient(options);
-    await client.connect();
-    try {
+  test("should accumulate ProfileEvents across packets", () =>
+    withClient(async (client) => {
       let packetCount = 0;
       let lastAccumulated: Map<string, bigint> | null = null;
 
-      // Use frequent profile events to get multiple packets
       for await (const packet of client.query("SELECT sleep(0.05), number FROM numbers(10)", {
         settings: { send_profile_events: true, profile_events_delay_ms: 25 },
       })) {
         if (packet.type === "ProfileEvents") {
           packetCount++;
           lastAccumulated = packet.accumulated;
-          // Verify accumulated is a Map with entries
           assert.ok(packet.accumulated instanceof Map, "accumulated should be a Map");
         }
       }
 
       assert.ok(packetCount > 0, "Should receive at least one ProfileEvents packet");
       assert.ok(lastAccumulated!.size > 0, "Should have accumulated events");
-      // SelectedRows should be present and match our query
       assert.strictEqual(lastAccumulated!.get("SelectedRows"), 10n, "SelectedRows should match");
       console.log(
         `  (ProfileEvents packets: ${packetCount}, accumulated entries: ${lastAccumulated!.size})`,
       );
-    } finally {
-      client.close();
-    }
-  });
+    }));
 
-  test("should expose timezone getter", async () => {
-    const client = new TcpClient(options);
-    await client.connect();
-    try {
-      // Run a query - timezone may or may not be sent depending on server
+  test("should expose timezone getter", () =>
+    withClient(async (client) => {
       for await (const _ of client.query("SELECT now()")) {
       }
-      // Just verify the getter works without error
       const tz = client.timezone;
       console.log(`  (Session timezone: ${tz ?? "not set"})`);
-    } finally {
-      client.close();
-    }
-  });
+    }));
 
   test("should enable TCP keep-alive when configured", async () => {
-    const client = new TcpClient({ ...options, keepAliveIntervalMs: 5000 });
+    const client = new TcpClient({ ...toClientOptions(options), keepAliveIntervalMs: 5000 });
     await client.connect();
     try {
-      // Connection should work with TCP keep-alive enabled
       let rows = 0;
       for await (const packet of client.query("SELECT 1")) {
         if (packet.type === "Data") rows += packet.batch.rowCount;
@@ -244,9 +217,10 @@ describe("TCP Client Protocol Features", () => {
     }
   });
 
-  test("should connect with TLS when configured", async () => {
+  // TLS test skipped - requires container with TLS configured
+  test.skip("should connect with TLS when configured", async () => {
     const client = new TcpClient({
-      host: "localhost",
+      ...toClientOptions(options),
       port: 9440,
       tls: { rejectUnauthorized: false },
     });
@@ -257,22 +231,13 @@ describe("TCP Client Protocol Features", () => {
         if (packet.type === "Data") rows += packet.batch.rowCount;
       }
       assert.strictEqual(rows, 1);
-    } catch (err: any) {
-      // TLS port may not be configured - skip gracefully
-      if (err.code === "ECONNREFUSED") {
-        console.log("  (TLS port 9440 not available, skipping)");
-        return;
-      }
-      throw err;
     } finally {
       client.close();
     }
   });
 
-  test("should use query parameters (UInt64)", async () => {
-    const client = new TcpClient(options);
-    await client.connect();
-    try {
+  test("should use query parameters (UInt64)", () =>
+    withClient(async (client) => {
       let result: bigint | null = null;
       for await (const packet of client.query("SELECT {value:UInt64} as v", {
         params: { value: 42 },
@@ -282,15 +247,10 @@ describe("TCP Client Protocol Features", () => {
         }
       }
       assert.strictEqual(result, 42n);
-    } finally {
-      client.close();
-    }
-  });
+    }));
 
-  test("should use query parameters (String)", async () => {
-    const client = new TcpClient(options);
-    await client.connect();
-    try {
+  test("should use query parameters (String)", () =>
+    withClient(async (client) => {
       let result: string | null = null;
       for await (const packet of client.query("SELECT {name:String} as s", {
         params: { name: "hello world" },
@@ -300,24 +260,19 @@ describe("TCP Client Protocol Features", () => {
         }
       }
       assert.strictEqual(result, "hello world");
-    } finally {
-      client.close();
-    }
-  });
+    }));
 
   test("should auto-close with await using (AsyncDisposable)", async () => {
     let clientRef: TcpClient | null = null;
     {
-      await using client = await TcpClient.connect(options);
+      await using client = await TcpClient.connect(toClientOptions(options));
       clientRef = client;
-      // Verify connection works
       let rows = 0;
       for await (const packet of client.query("SELECT 1")) {
         if (packet.type === "Data") rows += packet.batch.rowCount;
       }
       assert.strictEqual(rows, 1);
     }
-    // After scope exits, socket should be null (closed)
     assert.strictEqual((clientRef as any).socket, null, "Socket should be closed after scope exit");
   });
 });

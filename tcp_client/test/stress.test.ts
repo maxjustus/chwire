@@ -1,25 +1,32 @@
 import assert from "node:assert";
-import { describe, test } from "node:test";
+import { after, before, describe, test } from "node:test";
 import { batchFromCols, batchFromRows, getCodec } from "@maxjustus/chttp/native";
+import { startClickHouse, stopClickHouse } from "../../test/setup.ts";
+import {
+  toClientOptions,
+  type TcpConfig,
+  withClient as withClientBase,
+} from "../../test/test_utils.ts";
 import { ClickHouseException, TcpClient } from "@maxjustus/chttp/tcp";
 
 describe("TCP Client Stress Tests", () => {
-  const options = {
-    host: "localhost",
-    port: 9000,
-    user: "default",
-    password: "",
-  };
+  let options: TcpConfig;
 
-  async function withClient<T>(fn: (client: TcpClient) => Promise<T>): Promise<T> {
-    const client = new TcpClient(options);
-    await client.connect();
-    try {
-      return await fn(client);
-    } finally {
-      client.close();
-    }
-  }
+  before(async () => {
+    const ch = await startClickHouse();
+    options = {
+      host: ch.host,
+      tcpPort: ch.tcpPort,
+      username: ch.username,
+      password: ch.password,
+    };
+  });
+
+  after(async () => {
+    await stopClickHouse();
+  });
+
+  const withClient = <T>(fn: (client: TcpClient) => Promise<T>) => withClientBase(options, fn);
 
   describe("Multi-turn Operation Sequences", () => {
     test("query → cancel → insert → query sequence", () =>
@@ -151,7 +158,7 @@ describe("TCP Client Stress Tests", () => {
       }));
 
     test("cancel INSERT after sending some blocks", async () => {
-      const client = new TcpClient(options);
+      const client = new TcpClient(toClientOptions(options));
       await client.connect();
       const tableName = `test_cancel_insert_${Date.now()}`;
 
@@ -188,7 +195,7 @@ describe("TCP Client Stress Tests", () => {
         assert.ok(blocksYielded >= 5, "Should have yielded at least 5 blocks before cancel");
       } finally {
         // Use fresh client for cleanup since connection may be in bad state
-        const cleanupClient = new TcpClient(options);
+        const cleanupClient = new TcpClient(toClientOptions(options));
         await cleanupClient.connect();
         await cleanupClient.query(`DROP TABLE IF EXISTS ${tableName}`);
         cleanupClient.close();
