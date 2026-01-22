@@ -60,7 +60,6 @@
     "test:integration": "NODE_OPTIONS=--conditions=development tsx --test test/integration.test.ts",
     "test:native": "NODE_OPTIONS=--conditions=development tsx --test test/native/*.test.ts",
     "test:dist": "npm run build && node test/test-dist.mjs",
-    "test:types": "npm run build && tsc -p test/tsconfig.types.json",
     "test:fuzz": "node --experimental-strip-types fuzz/parallel.ts --all",
     "test:fuzz:quick": "node --experimental-strip-types fuzz/parallel.ts --all --level=quick",
     "test:fuzz:verbose": "node --experimental-strip-types fuzz/parallel.ts --all --verbose",
