@@ -1,0 +1,12 @@
+{
+  "compilerOptions": {
+    "strict": true,
+    "target": "ES2022",
+    "module": "nodenext",
+    "moduleResolution": "nodenext",
+    "noEmit": true,
+    "skipLibCheck": true,
+    "esModuleInterop": true
+  },
+  "include": ["test-types.ts"]
+}
