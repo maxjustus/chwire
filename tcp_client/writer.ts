@@ -169,11 +169,12 @@ export class StreamingWriter {
         this.writeString(key);
         this.writeVarInt(SETTING_FLAG_CUSTOM);
         if (val === SQL_NULL) {
-          // Send \N escape sequence for SQL NULL (ClickHouse escaped format)
-          this.writeString("'\\N'");
+          // Send \N as quoted string - after unquoting it becomes \N which
+          // deserializeTextEscaped interprets as NULL. This is a workaround
+          // because Field dump format's NULL doesn't survive toNameToNameMap().
+          this.writeString("'\\\\N'");
         } else {
-          // TCP protocol requires Field dump format - strings are single-quoted
-          // ClickHouse parses the quoted string based on the declared param type
+          // Field dump format: strings are single-quoted
           const escaped = val.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
           this.writeString(`'${escaped}'`);
         }

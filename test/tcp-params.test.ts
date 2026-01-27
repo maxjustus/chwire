@@ -157,23 +157,16 @@ describe("TCP Query Parameters", { timeout: 60000 }, () => {
     assert.strictEqual(result, "not_null");
   });
 
-  // NOTE: TCP protocol param format doesn't support NULL via \N escape sequence.
-  // The \N is interpreted as empty string for String types, and fails for numeric types.
-  // This is a ClickHouse protocol limitation. For proper NULL handling, use INSERT.
-  it("handles Nullable(String) param with null as empty string", async () => {
-    // TCP params: \N escape becomes empty string, not NULL
+  it("handles Nullable(String) param with null", async () => {
     const result = await queryScalar("SELECT {s: Nullable(String)}", { s: null });
-    // Currently returns empty string due to protocol limitation
-    assert.strictEqual(result, "");
+    assert.strictEqual(result, null);
   });
 
   it("verifies NULL via isNull for Nullable(String)", async () => {
-    // Workaround: Check nullability with ifNull
     const result = await queryScalar("SELECT ifNull({s: Nullable(String)}, 'was_null')", {
       s: null,
     });
-    // Empty string is not null, so ifNull doesn't trigger
-    assert.strictEqual(result, "");
+    assert.strictEqual(result, "was_null");
   });
 
   it("preserves string 'NULL' distinct from SQL NULL", async () => {
