@@ -27,7 +27,7 @@ export {
 import { encodeNative, type ExternalTableData, RecordBatch } from "@maxjustus/chttp/native";
 import { StreamBuffer } from "./native/io.ts";
 import { type CollectableAsyncGenerator, collectable } from "./util.ts";
-import { serializeParams, extractParamTypes } from "./params.ts";
+import { serializeParams, extractParamTypes, SQL_NULL } from "./params.ts";
 
 export type { CollectableAsyncGenerator } from "./util.ts";
 export type { QueryParamValue, QueryParams } from "./types.ts";
@@ -156,7 +156,8 @@ function mergeQueryParams(
   if (!source) return;
   const serialized = serializeParams(query, source);
   for (const [key, value] of Object.entries(serialized)) {
-    target[`param_${key}`] = value;
+    // For HTTP params, SQL_NULL symbol becomes \N escape sequence
+    target[`param_${key}`] = value === SQL_NULL ? "\\N" : value;
   }
 }
 

@@ -1,6 +1,6 @@
 import { BlockInfoField, BufferWriter } from "@maxjustus/chttp/native";
 import { encodeBlock, Method, type MethodCode } from "../compression.ts";
-import { serializeParams } from "../params.ts";
+import { serializeParams, SQL_NULL } from "../params.ts";
 import {
   CLIENT_VERSION,
   ClientPacketId,
@@ -168,10 +168,15 @@ export class StreamingWriter {
       for (const [key, val] of Object.entries(serialized)) {
         this.writeString(key);
         this.writeVarInt(SETTING_FLAG_CUSTOM);
-        // TCP protocol requires Field dump format - strings are single-quoted
-        // ClickHouse parses the quoted string based on the declared param type
-        const escaped = val.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
-        this.writeString(`'${escaped}'`);
+        if (val === SQL_NULL) {
+          // Send \N escape sequence for SQL NULL (ClickHouse escaped format)
+          this.writeString("'\\N'");
+        } else {
+          // TCP protocol requires Field dump format - strings are single-quoted
+          // ClickHouse parses the quoted string based on the declared param type
+          const escaped = val.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
+          this.writeString(`'${escaped}'`);
+        }
       }
       this.writeString(""); // end of params
     }

@@ -772,5 +772,31 @@ describe("ClickHouse Integration Tests", { timeout: 60000 }, () => {
       const parsed = JSON.parse(result);
       assert.strictEqual(Number(parsed.data[0].d), 123.45);
     });
+
+    it("should use query parameters with Nullable(String) null value", async () => {
+      const result = await collectText(
+        query("SELECT {s: Nullable(String)} as s FORMAT JSON", sessionId, {
+          baseUrl,
+          auth,
+          params: { s: null },
+        }),
+      );
+
+      const parsed = JSON.parse(result);
+      assert.strictEqual(parsed.data[0].s, null);
+    });
+
+    it("should preserve string 'NULL' distinct from SQL NULL", async () => {
+      const result = await collectText(
+        query("SELECT {s: String} as s FORMAT JSON", sessionId, {
+          baseUrl,
+          auth,
+          params: { s: "NULL" },
+        }),
+      );
+
+      const parsed = JSON.parse(result);
+      assert.strictEqual(parsed.data[0].s, "NULL");
+    });
   });
 });

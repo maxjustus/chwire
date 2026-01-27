@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert";
-import { extractParamTypes, serializeParams } from "../params.ts";
+import { extractParamTypes, serializeParams, SQL_NULL } from "../params.ts";
 
 describe("extractParamTypes", () => {
   it("extracts simple types", () => {
@@ -190,11 +190,12 @@ describe("serializeParams", () => {
     assert.strictEqual(result.points, "[(0, 0), (1, 1)]");
   });
 
-  it("serializes null values", () => {
+  it("serializes null values as SQL_NULL symbol", () => {
     const result = serializeParams("SELECT {val: Nullable(Int32)}", {
       val: null,
     });
-    assert.strictEqual(result.val, "NULL");
+    // Nullable types serialize null as SQL_NULL symbol for proper protocol handling
+    assert.strictEqual(result.val, SQL_NULL);
   });
 
   it("ignores extra params not in query", () => {
@@ -220,7 +221,7 @@ describe("serializeParams", () => {
       },
     );
     // Should produce: [('key1', {'a': [1, 2], 'b': [3, 4]}), ('key2', {'c': [5, 6]})]
-    assert.ok(result.data.startsWith("[('key1'"));
+    assert.ok(typeof result.data === "string" && result.data.startsWith("[('key1'"));
   });
 
   it("handles string with special characters (top-level unquoted)", () => {

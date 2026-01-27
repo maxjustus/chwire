@@ -5,7 +5,9 @@
  * Native format codecs to serialize values to ClickHouse literals.
  */
 
-import { getCodec } from "./native/codecs.ts";
+import { getCodec, SQL_NULL } from "./native/codecs.ts";
+
+export { SQL_NULL };
 
 function skipQuotedString(query: string, i: number, quote: string): number {
   while (i < query.length) {
@@ -181,9 +183,9 @@ export function extractParamTypes(query: string): Map<string, string> {
 export function serializeParams(
   query: string,
   params: Record<string, unknown>,
-): Record<string, string> {
+): Record<string, string | typeof SQL_NULL> {
   const types = extractParamTypes(query);
-  const result: Record<string, string> = {};
+  const result: Record<string, string | typeof SQL_NULL> = {};
 
   for (const [name, value] of Object.entries(params)) {
     const type = types.get(name);
