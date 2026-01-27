@@ -2443,6 +2443,9 @@ function createCodec(type: string): Codec {
     return new DateTime64Codec(type, precision);
   }
 
+  // DateTime('timezone') - timezone is metadata, codec is same as DateTime
+  if (type.startsWith("DateTime(")) return new EpochCodec(type, Uint32Array, MS_PER_SECOND);
+
   // Geo Types
   if (type === "Point")
     return new TupleCodec(
