@@ -266,6 +266,40 @@ describe("TCP Query Parameters", { timeout: 60000 }, () => {
     throw new Error("No data returned");
   });
 
+  it("handles DateTime('UTC') param", async () => {
+    const testDate = new Date("2024-06-15T10:30:45Z");
+    const result = await queryScalar("SELECT toUnixTimestamp({ts: DateTime('UTC')})", {
+      ts: testDate,
+    });
+    assert.strictEqual(Number(result), Math.floor(testDate.getTime() / 1000));
+  });
+
+  it("handles Array(Nullable(String)) with null elements", async () => {
+    const arr = ["foo", null, "bar"];
+    const result = await queryScalar("SELECT {arr: Array(Nullable(String))}", { arr });
+    assert.deepStrictEqual(result, arr);
+  });
+
+  it("handles Map with Nullable values containing null", async () => {
+    const result = await queryScalar("SELECT {m: Map(String, Nullable(Int32))}['b']", {
+      m: { a: 1, b: null, c: 3 },
+    });
+    assert.strictEqual(result, null);
+  });
+
+  it("handles Tuple with Nullable element containing null", async () => {
+    const result = await queryScalar(
+      "SELECT tupleElement({t: Tuple(Nullable(String), Int32)}, 1)",
+      { t: [null, 42] },
+    );
+    assert.strictEqual(result, null);
+  });
+
+  it("handles LowCardinality(Nullable(String)) param with null", async () => {
+    const result = await queryScalar("SELECT {s: LowCardinality(Nullable(String))}", { s: null });
+    assert.strictEqual(result, null);
+  });
+
   // Verifies that IPv4 encoding/decoding via native format works correctly.
   // This test was added after fixing an endianness bug where IPv4 addresses
   // were decoded with reversed octets (192.168.1.1 became 1.1.168.192).

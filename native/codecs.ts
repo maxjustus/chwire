@@ -2040,8 +2040,8 @@ class VariantCodec implements Codec {
   readKinds(reader: BufferReader): SerializationNode {
     return readKindsMany(reader, this.codecs);
   }
-  toLiteral(value: unknown): string {
-    if (value == null) return "NULL";
+  toLiteral(value: unknown): string | typeof SQL_NULL {
+    if (value == null) return SQL_NULL;
     const idx = this.findVariantIndex(value, this.typeStrings);
     // Note: Type cast syntax (::Type) doesn't work in param values.
     // ClickHouse infers the type from the Variant definition.
@@ -2195,8 +2195,8 @@ class DynamicCodec implements Codec {
   readKinds(reader: BufferReader): SerializationNode {
     return readKindsMany(reader, this.codecs);
   }
-  toLiteral(value: unknown): string {
-    if (value == null) return "NULL";
+  toLiteral(value: unknown): string | typeof SQL_NULL {
+    if (value == null) return SQL_NULL;
     const vType = this.guessType(value);
     const codec = getCodec(vType);
     return nullToLiteral(codec.toLiteral(value));
