@@ -93,6 +93,11 @@ import {
  */
 export const SQL_NULL = Symbol.for("chttp.SQL_NULL");
 
+/** Convert SQL_NULL symbol to "NULL" string for nested literals */
+function nullToLiteral(lit: string | typeof SQL_NULL): string {
+  return lit === SQL_NULL ? "NULL" : lit;
+}
+
 // Re-export for public API
 export {
   toBigInt,
@@ -1403,9 +1408,7 @@ class ArrayCodec extends BaseCodec {
     const arr = value as ArrayLike<unknown> & Iterable<unknown>;
     const elements: string[] = [];
     for (const item of arr) {
-      const lit = this.inner.toLiteral(item, true);
-      // Convert SQL_NULL symbol to unquoted "NULL" within array literal
-      elements.push(lit === SQL_NULL ? "NULL" : lit);
+      elements.push(nullToLiteral(this.inner.toLiteral(item, true)));
     }
     return `[${elements.join(", ")}]`;
   }
@@ -1773,12 +1776,9 @@ class MapCodec extends BaseCodec {
     }
     const parts: string[] = [];
     for (const [k, v] of entries) {
-      const kLit = this.keyCodec.toLiteral(k, true);
-      const vLit = this.valCodec.toLiteral(v, true);
-      // Convert SQL_NULL symbol to unquoted "NULL" within map literal
-      const kStr = kLit === SQL_NULL ? "NULL" : kLit;
-      const vStr = vLit === SQL_NULL ? "NULL" : vLit;
-      parts.push(`${kStr}: ${vStr}`);
+      const kLit = nullToLiteral(this.keyCodec.toLiteral(k, true));
+      const vLit = nullToLiteral(this.valCodec.toLiteral(v, true));
+      parts.push(`${kLit}: ${vLit}`);
     }
     return `{${parts.join(", ")}}`;
   }
@@ -1883,15 +1883,12 @@ class TupleCodec extends BaseCodec {
     const parts: string[] = [];
     if (Array.isArray(value)) {
       for (let i = 0; i < this.elements.length; i++) {
-        const lit = this.elements[i].codec.toLiteral(value[i], true);
-        // Convert SQL_NULL symbol to unquoted "NULL" within tuple literal
-        parts.push(lit === SQL_NULL ? "NULL" : lit);
+        parts.push(nullToLiteral(this.elements[i].codec.toLiteral(value[i], true)));
       }
     } else if (typeof value === "object") {
       for (const elem of this.elements) {
         const v = (value as Record<string, unknown>)[elem.name!];
-        const lit = elem.codec.toLiteral(v, true);
-        parts.push(lit === SQL_NULL ? "NULL" : lit);
+        parts.push(nullToLiteral(elem.codec.toLiteral(v, true)));
       }
     } else {
       throw new TypeError(`Expected array or object for ${this.type}, got ${typeof value}`);
@@ -2046,11 +2043,9 @@ class VariantCodec implements Codec {
   toLiteral(value: unknown): string {
     if (value == null) return "NULL";
     const idx = this.findVariantIndex(value, this.typeStrings);
-    const literal = this.codecs[idx].toLiteral(value);
     // Note: Type cast syntax (::Type) doesn't work in param values.
     // ClickHouse infers the type from the Variant definition.
-    // We rely on findVariantIndex to match the correct type.
-    return literal === SQL_NULL ? "NULL" : literal;
+    return nullToLiteral(this.codecs[idx].toLiteral(value));
   }
 }
 
@@ -2204,8 +2199,7 @@ class DynamicCodec implements Codec {
     if (value == null) return "NULL";
     const vType = this.guessType(value);
     const codec = getCodec(vType);
-    const lit = codec.toLiteral(value);
-    return lit === SQL_NULL ? "NULL" : lit;
+    return nullToLiteral(codec.toLiteral(value));
   }
 }
 
