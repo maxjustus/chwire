@@ -2354,8 +2354,8 @@ export class JsonCodec implements Codec {
     const allCodecs = [...this.typedPaths.map((tp) => tp.codec), ...this.dynamicCodecs.values()];
     return readKindsMany(reader, allCodecs);
   }
-  toLiteral(value: unknown): string {
-    if (value == null) return "NULL";
+  toLiteral(value: unknown): string | typeof SQL_NULL {
+    if (value == null) return SQL_NULL;
     return `'${escapeString(JSON.stringify(value), true)}'`;
   }
 }

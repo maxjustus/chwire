@@ -798,5 +798,59 @@ describe("ClickHouse Integration Tests", { timeout: 60000 }, () => {
       const parsed = JSON.parse(result);
       assert.strictEqual(parsed.data[0].s, "NULL");
     });
+
+    it("should handle Array(Nullable(String)) with null elements", async () => {
+      const arr = ["foo", null, "bar"];
+      const result = await collectText(
+        query("SELECT {arr: Array(Nullable(String))} as arr FORMAT JSON", sessionId, {
+          baseUrl,
+          auth,
+          params: { arr },
+        }),
+      );
+      const parsed = JSON.parse(result);
+      assert.deepStrictEqual(parsed.data[0].arr, arr);
+    });
+
+    it("should handle Map with Nullable values containing null", async () => {
+      const result = await collectText(
+        query("SELECT {m: Map(String, Nullable(Int32))}['b'] as v FORMAT JSON", sessionId, {
+          baseUrl,
+          auth,
+          params: { m: { a: 1, b: null, c: 3 } },
+        }),
+      );
+      const parsed = JSON.parse(result);
+      assert.strictEqual(parsed.data[0].v, null);
+    });
+
+    it("should handle Tuple with Nullable element containing null", async () => {
+      const result = await collectText(
+        query(
+          "SELECT tupleElement({t: Tuple(Nullable(String), Int32)}, 1) as v FORMAT JSON",
+          sessionId,
+          {
+            baseUrl,
+            auth,
+            params: { t: [null, 42] },
+          },
+        ),
+      );
+      const parsed = JSON.parse(result);
+      assert.strictEqual(parsed.data[0].v, null);
+    });
+
+    it("should handle DateTime with timezone param", async () => {
+      const testDate = new Date("2024-06-15T10:30:45Z");
+      const result = await collectText(
+        query("SELECT toUnixTimestamp({ts: DateTime('UTC')}) as ts FORMAT JSON", sessionId, {
+          baseUrl,
+          auth,
+          params: { ts: testDate },
+        }),
+      );
+      const parsed = JSON.parse(result);
+      assert.strictEqual(Number(parsed.data[0].ts), Math.floor(testDate.getTime() / 1000));
+    });
   });
 });
