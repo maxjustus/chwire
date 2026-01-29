@@ -2043,8 +2043,6 @@ class VariantCodec implements Codec {
   toLiteral(value: unknown): string | typeof SQL_NULL {
     if (value == null) return SQL_NULL;
     const idx = this.findVariantIndex(value, this.typeStrings);
-    // Note: Type cast syntax (::Type) doesn't work in param values.
-    // ClickHouse infers the type from the Variant definition.
     return nullToLiteral(this.codecs[idx].toLiteral(value));
   }
 }

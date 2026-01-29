@@ -202,9 +202,6 @@ describe("TCP Query Parameters", { timeout: 60000 }, () => {
     assert.strictEqual((result as unknown[])[1], "hello");
   });
 
-  // NOTE: Variant numeric matching depends on type order. ClickHouse infers the smallest
-  // fitting type for integer literals (42 -> Int8). Put numeric types first in the Variant
-  // type list to match them before String. Type cast syntax (::Int64) doesn't work in params.
   it("handles Variant param with small integer as Int8", async () => {
     const result = await queryScalar("SELECT {v: Variant(Int8, String)}", { v: 42 });
     assert.ok(Array.isArray(result));
@@ -293,6 +290,14 @@ describe("TCP Query Parameters", { timeout: 60000 }, () => {
       { t: [null, 42] },
     );
     assert.strictEqual(result, null);
+  });
+
+  it("handles Tuple with Nullable element containing value", async () => {
+    const result = await queryScalar(
+      "SELECT tupleElement({t: Tuple(Nullable(String), Int32)}, 2)",
+      { t: [null, 42] },
+    );
+    assert.strictEqual(result, 42);
   });
 
   it("handles LowCardinality(Nullable(String)) param with null", async () => {
