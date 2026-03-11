@@ -36,42 +36,12 @@ describe("TCP Query Parameters", { timeout: 60000 }, () => {
     await stopClickHouse();
   });
 
-  it("handles UInt64 param", async () => {
-    const result = await queryScalar("SELECT {val: UInt64}", { val: 42 });
-    assert.strictEqual(Number(result), 42);
-  });
-
-  it("handles String param", async () => {
-    const result = await queryScalar("SELECT {s: String}", { s: "hello world" });
-    assert.strictEqual(result, "hello world");
-  });
+  // --- TCP wrapping layer: escaping edge cases ---
 
   it("handles String param with special chars", async () => {
     const testString = "it's 5 o'clock\nnewline\ttab\\backslash";
     const result = await queryScalar("SELECT {s: String}", { s: testString });
     assert.strictEqual(result, testString);
-  });
-
-  it("handles Array(UInt64) param", async () => {
-    const result = await queryScalar("SELECT arraySum({ids: Array(UInt64)})", {
-      ids: [1, 2, 3, 4, 5],
-    });
-    assert.strictEqual(Number(result), 15);
-  });
-
-  it("handles Tuple(Int32, Int32) param", async () => {
-    const result = await queryScalar(
-      "SELECT tupleElement({point: Tuple(Int32, Int32)}, 1) + tupleElement({point: Tuple(Int32, Int32)}, 2)",
-      { point: [10, 20] },
-    );
-    assert.strictEqual(Number(result), 30);
-  });
-
-  it("handles Map(String, UInt32) param", async () => {
-    const result = await queryScalar("SELECT {m: Map(String, UInt32)}['a']", {
-      m: { a: 42, b: 99 },
-    });
-    assert.strictEqual(Number(result), 42);
   });
 
   it("handles nested Array(Tuple(Int32, Int32)) param", async () => {
@@ -88,80 +58,6 @@ describe("TCP Query Parameters", { timeout: 60000 }, () => {
     assert.strictEqual(Number(result), 21); // (1+2) + (3+4) + (5+6)
   });
 
-  it("handles DateTime64(3) param", async () => {
-    const testDate = new Date("2024-06-15T10:30:45.123Z");
-    const result = await queryScalar("SELECT toUnixTimestamp64Milli({ts: DateTime64(3)})", {
-      ts: testDate,
-    });
-    assert.strictEqual(Number(result), testDate.getTime());
-  });
-
-  it("handles same param multiple times", async () => {
-    const result = await queryScalar("SELECT {id: UInt64} + {id: UInt64}", { id: 21 });
-    assert.strictEqual(Number(result), 42);
-  });
-
-  it("handles Enum param", async () => {
-    const result = await queryScalar("SELECT {status: Enum8('active' = 1, 'inactive' = 2)}", {
-      status: "active",
-    });
-    assert.strictEqual(result, "active");
-  });
-
-  it("handles UUID param", async () => {
-    const testUUID = "550e8400-e29b-41d4-a716-446655440000";
-    const result = await queryScalar("SELECT {id: UUID}", { id: testUUID });
-    assert.strictEqual(result, testUUID);
-  });
-
-  it("handles IPv4 param", async () => {
-    const result = await queryScalar("SELECT {ip: IPv4}", { ip: "192.168.1.1" });
-    assert.strictEqual(result, "192.168.1.1");
-  });
-
-  it("handles IPv6 param", async () => {
-    const result = await queryScalar("SELECT {ip: IPv6}", { ip: "2001:db8::1" });
-    assert.ok(String(result).includes("2001:db8"));
-  });
-
-  it("handles Date param", async () => {
-    const result = await queryScalar("SELECT {d: Date}", { d: new Date("2024-06-15") });
-    assert.ok(result instanceof Date);
-    assert.strictEqual((result as Date).toISOString().slice(0, 10), "2024-06-15");
-  });
-
-  it("handles Decimal param", async () => {
-    const result = await queryScalar("SELECT {d: Decimal(10, 2)}", { d: "123.45" });
-    assert.strictEqual(Number(result), 123.45);
-  });
-
-  it("handles LowCardinality(String) param", async () => {
-    const result = await queryScalar("SELECT {s: LowCardinality(String)}", {
-      s: "low_card_value",
-    });
-    assert.strictEqual(result, "low_card_value");
-  });
-
-  it("handles LowCardinality(String) param with special chars", async () => {
-    const testString = "it's\na\ttest\\value";
-    const result = await queryScalar("SELECT {s: LowCardinality(String)}", {
-      s: testString,
-    });
-    assert.strictEqual(result, testString);
-  });
-
-  it("handles LowCardinality(Nullable(String)) param with value", async () => {
-    const result = await queryScalar("SELECT {s: LowCardinality(Nullable(String))}", {
-      s: "not_null",
-    });
-    assert.strictEqual(result, "not_null");
-  });
-
-  it("handles Nullable(String) param with null", async () => {
-    const result = await queryScalar("SELECT {s: Nullable(String)}", { s: null });
-    assert.strictEqual(result, null);
-  });
-
   it("verifies NULL via isNull for Nullable(String)", async () => {
     const result = await queryScalar("SELECT ifNull({s: Nullable(String)}, 'was_null')", {
       s: null,
@@ -169,10 +65,38 @@ describe("TCP Query Parameters", { timeout: 60000 }, () => {
     assert.strictEqual(result, "was_null");
   });
 
-  it("preserves string 'NULL' distinct from SQL NULL", async () => {
-    const result = await queryScalar("SELECT {s: String}", { s: "NULL" });
-    assert.strictEqual(result, "NULL");
+  it("handles Array(String) param with quoted strings", async () => {
+    // This tests the quoted=true path for nested string literals
+    const result = await queryScalar("SELECT arrayStringConcat({arr: Array(String)}, ',')", {
+      arr: ["hello", "world", "test"],
+    });
+    assert.strictEqual(result, "hello,world,test");
   });
+
+  it("handles Array(String) param with special chars (quoted=true path)", async () => {
+    // Nested strings must be properly escaped and quoted
+    const strings = ["it's", "line\nbreak", "tab\there", "back\\slash"];
+    const result = await queryScalar("SELECT {arr: Array(String)}", { arr: strings });
+    assert.deepStrictEqual(result, strings);
+  });
+
+  it("handles Map(String, String) param with special chars in keys and values", async () => {
+    // Use simpler key without quote to avoid SQL escaping complexity
+    const result = await queryScalar("SELECT {m: Map(String, String)}['tab_key']", {
+      m: { tab_key: "value\twith\ttabs" },
+    });
+    assert.strictEqual(result, "value\twith\ttabs");
+  });
+
+  it("handles DateTime('UTC') param", async () => {
+    const testDate = new Date("2024-06-15T10:30:45Z");
+    const result = await queryScalar("SELECT toUnixTimestamp({ts: DateTime('UTC')})", {
+      ts: testDate,
+    });
+    assert.strictEqual(Number(result), Math.floor(testDate.getTime() / 1000));
+  });
+
+  // --- TCP-only types ---
 
   it("handles FixedString param", async () => {
     const result = await queryScalar("SELECT {s: FixedString(10)}", { s: "hello" });
@@ -211,29 +135,6 @@ describe("TCP Query Parameters", { timeout: 60000 }, () => {
     assert.strictEqual(Number(arr[1]), 42);
   });
 
-  it("handles Array(String) param with quoted strings", async () => {
-    // This tests the quoted=true path for nested string literals
-    const result = await queryScalar("SELECT arrayStringConcat({arr: Array(String)}, ',')", {
-      arr: ["hello", "world", "test"],
-    });
-    assert.strictEqual(result, "hello,world,test");
-  });
-
-  it("handles Array(String) param with special chars (quoted=true path)", async () => {
-    // Nested strings must be properly escaped and quoted
-    const strings = ["it's", "line\nbreak", "tab\there", "back\\slash"];
-    const result = await queryScalar("SELECT {arr: Array(String)}", { arr: strings });
-    assert.deepStrictEqual(result, strings);
-  });
-
-  it("handles Map(String, String) param with special chars in keys and values", async () => {
-    // Use simpler key without quote to avoid SQL escaping complexity
-    const result = await queryScalar("SELECT {m: Map(String, String)}['tab_key']", {
-      m: { tab_key: "value\twith\ttabs" },
-    });
-    assert.strictEqual(result, "value\twith\ttabs");
-  });
-
   // Dynamic type requires V3 serialization format - enabled via setting
   it("handles Dynamic param with string", async () => {
     const stream = client.query("SELECT {d: Dynamic}", {
@@ -263,47 +164,34 @@ describe("TCP Query Parameters", { timeout: 60000 }, () => {
     throw new Error("No data returned");
   });
 
-  it("handles DateTime('UTC') param", async () => {
-    const testDate = new Date("2024-06-15T10:30:45Z");
-    const result = await queryScalar("SELECT toUnixTimestamp({ts: DateTime('UTC')})", {
-      ts: testDate,
+  it("handles LowCardinality(String) param", async () => {
+    const result = await queryScalar("SELECT {s: LowCardinality(String)}", {
+      s: "low_card_value",
     });
-    assert.strictEqual(Number(result), Math.floor(testDate.getTime() / 1000));
+    assert.strictEqual(result, "low_card_value");
   });
 
-  it("handles Array(Nullable(String)) with null elements", async () => {
-    const arr = ["foo", null, "bar"];
-    const result = await queryScalar("SELECT {arr: Array(Nullable(String))}", { arr });
-    assert.deepStrictEqual(result, arr);
-  });
-
-  it("handles Map with Nullable values containing null", async () => {
-    const result = await queryScalar("SELECT {m: Map(String, Nullable(Int32))}['b']", {
-      m: { a: 1, b: null, c: 3 },
+  it("handles LowCardinality(String) param with special chars", async () => {
+    const testString = "it's\na\ttest\\value";
+    const result = await queryScalar("SELECT {s: LowCardinality(String)}", {
+      s: testString,
     });
-    assert.strictEqual(result, null);
+    assert.strictEqual(result, testString);
   });
 
-  it("handles Tuple with Nullable element containing null", async () => {
-    const result = await queryScalar(
-      "SELECT tupleElement({t: Tuple(Nullable(String), Int32)}, 1)",
-      { t: [null, 42] },
-    );
-    assert.strictEqual(result, null);
-  });
-
-  it("handles Tuple with Nullable element containing value", async () => {
-    const result = await queryScalar(
-      "SELECT tupleElement({t: Tuple(Nullable(String), Int32)}, 2)",
-      { t: [null, 42] },
-    );
-    assert.strictEqual(result, 42);
+  it("handles LowCardinality(Nullable(String)) param with value", async () => {
+    const result = await queryScalar("SELECT {s: LowCardinality(Nullable(String))}", {
+      s: "not_null",
+    });
+    assert.strictEqual(result, "not_null");
   });
 
   it("handles LowCardinality(Nullable(String)) param with null", async () => {
     const result = await queryScalar("SELECT {s: LowCardinality(Nullable(String))}", { s: null });
     assert.strictEqual(result, null);
   });
+
+  // --- TCP insert/select roundtrip ---
 
   // Verifies that IPv4 encoding/decoding via native format works correctly.
   // This test was added after fixing an endianness bug where IPv4 addresses
