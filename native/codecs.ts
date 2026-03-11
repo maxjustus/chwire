@@ -361,7 +361,12 @@ export abstract class BaseCodec implements Codec {
   abstract zeroValue(): unknown;
   abstract estimateSize(rows: number): number;
   abstract decodeDense(reader: BufferReader, rows: number, state: DeserializerState): Column;
-  abstract toLiteral(value: unknown, quoted?: boolean): string | typeof SQL_NULL;
+  abstract serializeLiteral(value: unknown, quoted?: boolean): string;
+
+  toLiteral(value: unknown, quoted?: boolean): string | typeof SQL_NULL {
+    if (value == null) value = this.zeroValue();
+    return this.serializeLiteral(value, quoted);
+  }
 
   decode(reader: BufferReader, rows: number, state: DeserializerState): Column {
     if (state.serNode.kind === SerializationKind.Sparse) {
@@ -436,8 +441,7 @@ class NumericCodec<T extends TypedArray> extends BaseCodec {
   estimateSize(rows: number) {
     return rows * this.Ctor.BYTES_PER_ELEMENT;
   }
-  toLiteral(value: unknown): string {
-    if (value == null) return this.toLiteral(this.zeroValue());
+  serializeLiteral(value: unknown): string {
     if (this.type === "Bool") return toBool(value) ? "true" : "false";
     const v = this.converter ? this.converter(value) : value;
     return String(v);
@@ -537,8 +541,7 @@ class EnumCodec extends BaseCodec {
   estimateSize(rows: number): number {
     return rows * this.Ctor.BYTES_PER_ELEMENT;
   }
-  toLiteral(value: unknown, quoted?: boolean): string {
-    if (value == null) return this.toLiteral(this.zeroValue());
+  serializeLiteral(value: unknown, quoted?: boolean): string {
     let name: string;
     if (typeof value === "string") {
       if (!this.mapping.nameToValue.has(value)) {
@@ -581,8 +584,7 @@ class StringCodec extends BaseCodec {
   estimateSize(rows: number) {
     return rows * 33;
   }
-  toLiteral(value: unknown, quoted?: boolean): string {
-    if (value == null) return this.toLiteral(this.zeroValue());
+  serializeLiteral(value: unknown, quoted?: boolean): string {
     const str = coerceToString(value);
     if (quoted) return `'${escapeString(str, true)}'`;
     return escapeString(str);
@@ -642,8 +644,7 @@ class UUIDCodec extends BaseCodec {
   estimateSize(rows: number) {
     return rows * UUIDConst.BYTE_SIZE;
   }
-  toLiteral(value: unknown, quoted?: boolean): string {
-    if (value == null) return this.toLiteral(this.zeroValue());
+  serializeLiteral(value: unknown, quoted?: boolean): string {
     const s = toValidUUID(value);
     return quoted ? `'${s}'` : s;
   }
@@ -728,8 +729,7 @@ class FixedStringCodec extends BaseCodec {
   estimateSize(rows: number) {
     return rows * this.len;
   }
-  toLiteral(value: unknown, quoted?: boolean): string {
-    if (value == null) return this.toLiteral(this.zeroValue());
+  serializeLiteral(value: unknown, quoted?: boolean): string {
     let str: string;
     if (value instanceof Uint8Array) {
       let end = value.length;
@@ -803,8 +803,7 @@ class BigIntCodec extends BaseCodec {
   estimateSize(rows: number) {
     return rows * this.byteSize;
   }
-  toLiteral(value: unknown): string {
-    if (value == null) return this.toLiteral(this.zeroValue());
+  serializeLiteral(value: unknown): string {
     return String(this.coerce(value));
   }
 }
@@ -904,8 +903,7 @@ class DecimalCodec extends BaseCodec {
   estimateSize(rows: number) {
     return rows * this.byteSize;
   }
-  toLiteral(value: unknown): string {
-    if (value == null) return this.toLiteral(this.zeroValue());
+  serializeLiteral(value: unknown): string {
     if (typeof value === "bigint") return formatScaledBigInt(value, this.scale);
     return toValidDecimal(value);
   }
@@ -1042,8 +1040,7 @@ class DateTime64Codec extends BaseCodec {
   estimateSize(rows: number) {
     return rows * 8;
   }
-  toLiteral(value: unknown): string {
-    if (value == null) return this.toLiteral(this.zeroValue());
+  serializeLiteral(value: unknown): string {
     if (value instanceof ClickHouseDateTime64) {
       const scale = 10n ** BigInt(this.precision);
       const seconds = value.ticks / scale;
@@ -1155,8 +1152,7 @@ class EpochCodec<T extends Uint16Array | Int32Array | Uint32Array> extends BaseC
   estimateSize(rows: number) {
     return rows * this.Ctor.BYTES_PER_ELEMENT;
   }
-  toLiteral(value: unknown): string {
-    if (value == null) return this.toLiteral(this.zeroValue());
+  serializeLiteral(value: unknown): string {
     let d: Date;
     if (value instanceof Date) {
       d = value;
@@ -1221,8 +1217,7 @@ class IPv4Codec extends BaseCodec {
   estimateSize(rows: number) {
     return rows * 4;
   }
-  toLiteral(value: unknown, quoted?: boolean): string {
-    if (value == null) return this.toLiteral(this.zeroValue());
+  serializeLiteral(value: unknown, quoted?: boolean): string {
     const s = toValidIPv4(value);
     return quoted ? `'${s}'` : s;
   }
@@ -1261,8 +1256,7 @@ class IPv6Codec extends BaseCodec {
   estimateSize(rows: number) {
     return rows * IPv6Const.BYTE_SIZE;
   }
-  toLiteral(value: unknown, quoted?: boolean): string {
-    if (value == null) return this.toLiteral(this.zeroValue());
+  serializeLiteral(value: unknown, quoted?: boolean): string {
     const s = toValidIPv6(value);
     return quoted ? `'${s}'` : s;
   }
@@ -1400,8 +1394,7 @@ class ArrayCodec extends BaseCodec {
   readKinds(reader: BufferReader): SerializationNode {
     return readKinds1(reader, this.inner);
   }
-  toLiteral(value: unknown): string {
-    if (value == null) return this.toLiteral(this.zeroValue());
+  serializeLiteral(value: unknown): string {
     if (!isArrayLike(value)) {
       throw new TypeError(`Expected array for ${this.type}, got ${typeof value}`);
     }
@@ -1484,6 +1477,9 @@ class NullableCodec extends BaseCodec {
   toLiteral(value: unknown, quoted?: boolean): string | typeof SQL_NULL {
     if (value == null) return SQL_NULL;
     return this.inner.toLiteral(value, quoted);
+  }
+  serializeLiteral(value: unknown, quoted?: boolean): string {
+    return this.inner.toLiteral(value, quoted) as string;
   }
 }
 
@@ -1650,6 +1646,9 @@ class LowCardinalityCodec extends BaseCodec {
     // LowCardinality is transparent - delegate to inner codec
     return this.inner.toLiteral(value, quoted);
   }
+  serializeLiteral(value: unknown, quoted?: boolean): string {
+    return this.inner.toLiteral(value, quoted) as string;
+  }
 }
 
 // Map is serialized as Array(Tuple(K, V))
@@ -1764,8 +1763,7 @@ class MapCodec extends BaseCodec {
   readKinds(reader: BufferReader): SerializationNode {
     return readKinds2(reader, this.keyCodec, this.valCodec);
   }
-  toLiteral(value: unknown): string {
-    if (value == null) return this.toLiteral(this.zeroValue());
+  serializeLiteral(value: unknown): string {
     let entries: [unknown, unknown][];
     if (value instanceof Map) {
       entries = Array.from(value.entries());
@@ -1875,8 +1873,7 @@ class TupleCodec extends BaseCodec {
       this.elements.map((e) => e.codec),
     );
   }
-  toLiteral(value: unknown): string {
-    if (value == null) return this.toLiteral(this.zeroValue());
+  serializeLiteral(value: unknown): string {
     if (!this.isNamed && !Array.isArray(value)) {
       throw new TypeError(`Expected array for tuple ${this.type}, got ${typeof value}`);
     }
