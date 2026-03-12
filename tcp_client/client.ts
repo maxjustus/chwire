@@ -147,6 +147,15 @@ export class TcpClient {
     return this._serverHello;
   }
 
+  private ensureConnected(): {
+    socket: net.Socket;
+    reader: StreamingReader;
+    serverHello: ServerHello;
+  } {
+    if (!this.socket || !this.reader || !this._serverHello) throw new Error("Not connected");
+    return { socket: this.socket, reader: this.reader, serverHello: this._serverHello };
+  }
+
   /** Session timezone, updated by server TimezoneUpdate packets */
   get timezone(): string | null {
     return this.sessionTimezone;
@@ -401,7 +410,7 @@ export class TcpClient {
       | AsyncIterable<RecordBatch | Record<string, unknown>>,
     options: InsertOptions = {},
   ): AsyncGenerator<Packet> {
-    if (!this.socket || !this.reader || !this.serverHello) throw new Error("Not connected");
+    this.ensureConnected();
     if (this.busy)
       throw new Error("Connection busy - cannot run concurrent operations on the same TcpClient");
     this.busy = true;
@@ -448,29 +457,9 @@ export class TcpClient {
 
       const sendBatch = async (batch: RecordBatch) => {
         if (cancelled) throw new Error("Insert cancelled");
-        const encodedColumns = [];
-        for (let i = 0; i < batch.columns.length; i++) {
-          const colDef = batch.columns[i];
-          const colData = batch.columnData[i];
-          const codec = getCodec(colDef.type);
-
-          const writer = new BufferWriter();
-          codec.writePrefix?.(writer, colData);
-          const encoded = codec.encode(colData);
-          writer.write(encoded);
-
-          encodedColumns.push({
-            name: colDef.name,
-            type: colDef.type,
-            data: writer.finish(),
-          });
-        }
-
-        const dataPacket = this.writer.encodeData(
+        const dataPacket = this.encodeBatchAsDataPacket(
           "",
-          batch.rowCount,
-          encodedColumns,
-          this.serverHello!.revision,
+          batch,
           useCompression,
           compressionMethod,
         );
@@ -559,7 +548,7 @@ export class TcpClient {
         "",
         0,
         [],
-        this.serverHello.revision,
+        this.serverHello!.revision,
         useCompression,
         compressionMethod,
       );
@@ -934,7 +923,7 @@ export class TcpClient {
   }
 
   private async *queryImpl(sql: string, options: QueryOptions = {}): AsyncGenerator<Packet> {
-    if (!this.socket || !this.reader || !this.serverHello) throw new Error("Not connected");
+    this.ensureConnected();
     if (this.busy)
       throw new Error("Connection busy - cannot run concurrent operations on the same TcpClient");
     this.busy = true;
@@ -1008,7 +997,7 @@ export class TcpClient {
         const queryPacket = this.writer.encodeQuery(
           options.queryId ?? randomUUID(),
           sql,
-          this.serverHello.revision,
+          this.serverHello!.revision,
           baseSettings,
           useCompression,
           options.params ?? {},
@@ -1028,7 +1017,7 @@ export class TcpClient {
           "",
           0,
           [],
-          this.serverHello.revision,
+          this.serverHello!.revision,
           useCompression,
           compressionMethod,
         );
@@ -1045,7 +1034,7 @@ export class TcpClient {
 
         while (true) {
           this.log(`[query] reading packet id...`);
-          const packetId = Number(await this.reader.readVarInt());
+          const packetId = Number(await this.reader!.readVarInt());
           if (timedOut) throw new Error(`Query timeout after ${queryTimeout}ms`);
           this.log(`[query] packetId=${packetId}, useCompression=${useCompression}`);
 
@@ -1100,7 +1089,7 @@ export class TcpClient {
               break;
             }
             case ServerPacketId.TimezoneUpdate:
-              this.sessionTimezone = await this.reader.readString();
+              this.sessionTimezone = await this.reader!.readString();
               this.log(`[query] timezone updated to: ${this.sessionTimezone}`);
               break;
             case ServerPacketId.EndOfStream:
@@ -1109,7 +1098,7 @@ export class TcpClient {
               return;
             case ServerPacketId.Exception:
               receivedException = true;
-              throw await this.reader.readException();
+              throw await this.reader!.readException();
             default:
               throw new Error(`Unknown packet ID: ${packetId}. Cannot proceed.`);
           }

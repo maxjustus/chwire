@@ -98,6 +98,10 @@ function nullToLiteral(lit: string | typeof SQL_NULL): string {
   return lit === SQL_NULL ? "NULL" : lit;
 }
 
+function wrapQuoted(s: string, quoted?: boolean): string {
+  return quoted ? `'${s}'` : s;
+}
+
 // Re-export for public API
 export {
   toBigInt,
@@ -645,8 +649,7 @@ class UUIDCodec extends BaseCodec {
     return rows * UUIDConst.BYTE_SIZE;
   }
   serializeLiteral(value: unknown, quoted?: boolean): string {
-    const s = toValidUUID(value);
-    return quoted ? `'${s}'` : s;
+    return wrapQuoted(toValidUUID(value), quoted);
   }
 }
 
@@ -918,53 +921,58 @@ class DateTime64Codec extends BaseCodec {
     this.precision = precision;
   }
 
+  private coerceToTicks(v: unknown): bigint {
+    const precision = this.precision;
+    const scale = 10n ** BigInt(Math.abs(precision - 3));
+    if (v instanceof ClickHouseDateTime64) {
+      if (v.precision !== precision) {
+        throw new TypeError(
+          `${this.type} precision mismatch: expected ${precision}, got ${v.precision}`,
+        );
+      }
+      return toBigIntInRange(v.ticks, this.type, INT64_MIN, INT64_MAX);
+    }
+    if (typeof v === "bigint") {
+      return toBigIntInRange(v, this.type, INT64_MIN, INT64_MAX);
+    }
+    if (v instanceof Date) {
+      const msNum = v.getTime();
+      if (!Number.isFinite(msNum)) {
+        throw new TypeError(`Cannot coerce "${v}" to ${this.type}`);
+      }
+      const ms = BigInt(msNum);
+      const ticks = precision >= 3 ? ms * scale : ms / scale;
+      return toBigIntInRange(ticks, this.type, INT64_MIN, INT64_MAX);
+    }
+    if (typeof v === "number") {
+      if (!Number.isFinite(v)) {
+        throw new TypeError(`Cannot coerce number "${v}" to ${this.type}`);
+      }
+      const msNum = Math.trunc(v);
+      if (!Number.isSafeInteger(msNum)) {
+        throw new RangeError(
+          `${this.type} cannot safely represent number "${v}". Use bigint, Date, or string.`,
+        );
+      }
+      const ms = BigInt(msNum);
+      const ticks = precision >= 3 ? ms * scale : ms / scale;
+      return toBigIntInRange(ticks, this.type, INT64_MIN, INT64_MAX);
+    }
+    if (typeof v === "string") {
+      const d = toValidDate(v, this.type);
+      const ms = BigInt(d.getTime());
+      const ticks = precision >= 3 ? ms * scale : ms / scale;
+      return toBigIntInRange(ticks, this.type, INT64_MIN, INT64_MAX);
+    }
+    if (v == null) return 0n;
+    throw new TypeError(`Cannot coerce ${typeof v} to ${this.type}`);
+  }
+
   encode(col: Column): Uint8Array {
     const len = col.length;
     const arr = new BigInt64Array(len);
-    const precision = this.precision;
-    const scale = 10n ** BigInt(Math.abs(precision - 3));
     for (let i = 0; i < len; i++) {
-      const v = col.get(i);
-      if (v instanceof ClickHouseDateTime64) {
-        if (v.precision !== precision) {
-          throw new TypeError(
-            `${this.type} precision mismatch: expected ${precision}, got ${v.precision}`,
-          );
-        }
-        arr[i] = toBigIntInRange(v.ticks, this.type, INT64_MIN, INT64_MAX);
-      } else if (typeof v === "bigint") {
-        arr[i] = toBigIntInRange(v, this.type, INT64_MIN, INT64_MAX);
-      } else if (v instanceof Date) {
-        const msNum = v.getTime();
-        if (!Number.isFinite(msNum)) {
-          throw new TypeError(`Cannot coerce "${v}" to ${this.type}`);
-        }
-        const ms = BigInt(msNum);
-        const ticks = precision >= 3 ? ms * scale : ms / scale;
-        arr[i] = toBigIntInRange(ticks, this.type, INT64_MIN, INT64_MAX);
-      } else if (typeof v === "number") {
-        if (!Number.isFinite(v)) {
-          throw new TypeError(`Cannot coerce number "${v}" to ${this.type}`);
-        }
-        const msNum = Math.trunc(v);
-        if (!Number.isSafeInteger(msNum)) {
-          throw new RangeError(
-            `${this.type} cannot safely represent number "${v}". Use bigint, Date, or string.`,
-          );
-        }
-        const ms = BigInt(msNum);
-        const ticks = precision >= 3 ? ms * scale : ms / scale;
-        arr[i] = toBigIntInRange(ticks, this.type, INT64_MIN, INT64_MAX);
-      } else if (typeof v === "string") {
-        const d = toValidDate(v, this.type);
-        const ms = BigInt(d.getTime());
-        const ticks = precision >= 3 ? ms * scale : ms / scale;
-        arr[i] = toBigIntInRange(ticks, this.type, INT64_MIN, INT64_MAX);
-      } else if (v == null) {
-        arr[i] = 0n;
-      } else {
-        throw new TypeError(`Cannot coerce ${typeof v} to ${this.type}`);
-      }
+      arr[i] = this.coerceToTicks(col.get(i));
     }
     return new Uint8Array(arr.buffer, arr.byteOffset, arr.byteLength);
   }
@@ -979,59 +987,18 @@ class DateTime64Codec extends BaseCodec {
   }
 
   fromValues(values: unknown[]): Column {
-    const type = this.type;
     const precision = this.precision;
-    const scale = 10n ** BigInt(Math.abs(precision - 3));
     const result: ClickHouseDateTime64[] = new Array(values.length);
     for (let i = 0; i < values.length; i++) {
       const v = values[i];
-      if (v instanceof ClickHouseDateTime64) {
-        if (v.precision !== precision) {
-          throw new TypeError(
-            `${type} precision mismatch: expected ${precision}, got ${v.precision}`,
-          );
-        }
-        toBigIntInRange(v.ticks, type, INT64_MIN, INT64_MAX);
+      if (v instanceof ClickHouseDateTime64 && v.precision === precision) {
+        toBigIntInRange(v.ticks, this.type, INT64_MIN, INT64_MAX);
         result[i] = v;
-      } else if (v instanceof Date) {
-        const msNum = v.getTime();
-        if (!Number.isFinite(msNum)) {
-          throw new TypeError(`Cannot coerce "${v}" to ${type}`);
-        }
-        const ms = BigInt(msNum);
-        const ticks = precision >= 3 ? ms * scale : ms / scale;
-        toBigIntInRange(ticks, type, INT64_MIN, INT64_MAX);
-        result[i] = new ClickHouseDateTime64(ticks, precision);
-      } else if (typeof v === "bigint") {
-        toBigIntInRange(v, type, INT64_MIN, INT64_MAX);
-        result[i] = new ClickHouseDateTime64(v, precision);
-      } else if (typeof v === "number") {
-        if (!Number.isFinite(v)) {
-          throw new TypeError(`Cannot coerce number "${v}" to ${type}`);
-        }
-        const msNum = Math.trunc(v);
-        if (!Number.isSafeInteger(msNum)) {
-          throw new RangeError(
-            `${type} cannot safely represent number "${v}". Use bigint, Date, or string.`,
-          );
-        }
-        const ms = BigInt(msNum);
-        const ticks = precision >= 3 ? ms * scale : ms / scale;
-        toBigIntInRange(ticks, type, INT64_MIN, INT64_MAX);
-        result[i] = new ClickHouseDateTime64(ticks, precision);
-      } else if (typeof v === "string") {
-        const d = toValidDate(v, type);
-        const ms = BigInt(d.getTime());
-        const ticks = precision >= 3 ? ms * scale : ms / scale;
-        toBigIntInRange(ticks, type, INT64_MIN, INT64_MAX);
-        result[i] = new ClickHouseDateTime64(ticks, precision);
-      } else if (v == null) {
-        result[i] = new ClickHouseDateTime64(0n, precision);
       } else {
-        throw new TypeError(`Cannot coerce ${typeof v} to ${type}`);
+        result[i] = new ClickHouseDateTime64(this.coerceToTicks(v), precision);
       }
     }
-    return new DataColumn(type, result);
+    return new DataColumn(this.type, result);
   }
 
   zeroValue() {
@@ -1040,25 +1007,24 @@ class DateTime64Codec extends BaseCodec {
   estimateSize(rows: number) {
     return rows * 8;
   }
+  private formatTicks(ticks: bigint): string {
+    const scale = 10n ** BigInt(this.precision);
+    const seconds = ticks / scale;
+    const frac = ticks % scale;
+    if (frac === 0n) return String(seconds);
+    const fracStr = String(frac < 0n ? -frac : frac).padStart(this.precision, "0");
+    return `${seconds}.${fracStr}`;
+  }
+
   serializeLiteral(value: unknown): string {
     if (value instanceof ClickHouseDateTime64) {
-      const scale = 10n ** BigInt(this.precision);
-      const seconds = value.ticks / scale;
-      const frac = value.ticks % scale;
-      if (frac === 0n) return String(seconds);
-      const fracStr = String(frac < 0n ? -frac : frac).padStart(this.precision, "0");
-      return `${seconds}.${fracStr}`;
+      return this.formatTicks(value.ticks);
     }
     if (value instanceof Date) {
       const ms = BigInt(value.getTime());
       const scale = 10n ** BigInt(Math.abs(this.precision - 3));
       const ticks = this.precision >= 3 ? ms * scale : ms / scale;
-      const fullScale = 10n ** BigInt(this.precision);
-      const seconds = ticks / fullScale;
-      const frac = ticks % fullScale;
-      if (frac === 0n) return String(seconds);
-      const fracStr = String(frac < 0n ? -frac : frac).padStart(this.precision, "0");
-      return `${seconds}.${fracStr}`;
+      return this.formatTicks(ticks);
     }
     return String(value);
   }
@@ -1218,8 +1184,7 @@ class IPv4Codec extends BaseCodec {
     return rows * 4;
   }
   serializeLiteral(value: unknown, quoted?: boolean): string {
-    const s = toValidIPv4(value);
-    return quoted ? `'${s}'` : s;
+    return wrapQuoted(toValidIPv4(value), quoted);
   }
 }
 
@@ -1257,8 +1222,7 @@ class IPv6Codec extends BaseCodec {
     return rows * IPv6Const.BYTE_SIZE;
   }
   serializeLiteral(value: unknown, quoted?: boolean): string {
-    const s = toValidIPv6(value);
-    return quoted ? `'${s}'` : s;
+    return wrapQuoted(toValidIPv6(value), quoted);
   }
 }
 
@@ -1335,30 +1299,17 @@ class ArrayCodec extends BaseCodec {
       let offset = 0n;
       let idx = 0;
       // `as never` needed: TS can't unify number|bigint with generic TypedArray element types
-      if (convert) {
-        for (let i = 0; i < values.length; i++) {
-          const v = values[i];
-          if (v == null) {
-            offsets[i] = offset;
-            continue;
-          }
-          const arr = v as ArrayLike<unknown>;
-          for (let j = 0; j < arr.length; j++) allInner[idx++] = convert(arr[j]) as never;
-          offset += BigInt(lengths[i]);
+      for (let i = 0; i < values.length; i++) {
+        const v = values[i];
+        if (v == null) {
           offsets[i] = offset;
+          continue;
         }
-      } else {
-        for (let i = 0; i < values.length; i++) {
-          const v = values[i];
-          if (v == null) {
-            offsets[i] = offset;
-            continue;
-          }
-          const arr = v as ArrayLike<number | bigint>;
-          for (let j = 0; j < arr.length; j++) allInner[idx++] = arr[j] as never;
-          offset += BigInt(lengths[i]);
-          offsets[i] = offset;
-        }
+        const arr = v as ArrayLike<unknown>;
+        for (let j = 0; j < arr.length; j++)
+          allInner[idx++] = (convert ? convert(arr[j]) : arr[j]) as never;
+        offset += BigInt(lengths[i]);
+        offsets[i] = offset;
       }
       return new ArrayColumn(this.type, offsets, new DataColumn(this.inner.type, allInner));
     }

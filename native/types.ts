@@ -207,17 +207,8 @@ export function parseEnumDefinition(type: string): EnumMapping | null {
   return { nameToValue, valueToName };
 }
 
-export interface Cursor {
-  offset: number;
-  options?: DecodeOptions;
-}
-
 export const TEXT_ENCODER = new TextEncoder();
 export const TEXT_DECODER = new TextDecoder();
-
-// 128-bit constants
-export const INT128_MAX = (1n << 127n) - 1n;
-export const INT128_MIN = -(1n << 127n);
 
 // Hex lookup tables for UUID encode/decode (~11x/~60x speedup vs parseInt/toString)
 const HEX_LUT = new Uint8Array(256); // char code -> nibble value (255 = invalid)
@@ -232,78 +223,8 @@ for (let i = 0; i < 6; i++) {
   HEX_LUT[97 + i] = 10 + i; // 'a'-'f'
 }
 
-// TypedArray mapping for fast paths
-export const TYPED_ARRAYS: Record<
-  string,
-  {
-    new (buffer: ArrayBuffer, byteOffset: number, length: number): ArrayBufferView;
-    BYTES_PER_ELEMENT: number;
-  }
-> = {
-  Int8: Int8Array,
-  UInt8: Uint8Array,
-  Int16: Int16Array,
-  UInt16: Uint16Array,
-  Int32: Int32Array,
-  UInt32: Uint32Array,
-  Int64: BigInt64Array,
-  UInt64: BigUint64Array,
-  Float32: Float32Array,
-  Float64: Float64Array,
-};
-
-/**
- * NaN wrapper classes to preserve IEEE 754 bit patterns during round-trips.
- *
- * Problem: JavaScript's DataView.setFloat32/setFloat64 canonicalize all NaN values to a single
- * "quiet NaN" representation (0x7FC00000 for float32). IEEE 754 defines many valid NaN bit
- * patterns - signaling NaNs have bit 22 clear, quiet NaNs have it set. ClickHouse's
- * generateRandom() produces signaling NaNs, which get silently converted:
- *
- *   Signaling NaN: 0xFF8C0839 (bit 22 = 0)
- *   After JS:      0xFFCC0839 (bit 22 = 1) ← canonicalized to quiet NaN
- *
- * Solution: Detect NaN on decode and store raw bytes. On encode, copy bytes directly instead
- * of using setFloat32/setFloat64. The wrapper provides NaN semantics via valueOf() so
- * arithmetic and comparisons work as expected.
- */
-export class Float32NaN {
-  readonly bytes: Uint8Array;
-  constructor(bytes: Uint8Array) {
-    this.bytes = bytes;
-  }
-  valueOf(): number {
-    return NaN;
-  }
-  toString(): string {
-    return "NaN";
-  }
-  toJSON(): null {
-    return null;
-  }
-  [Symbol.toPrimitive](): number {
-    return NaN;
-  }
-}
-
-export class Float64NaN {
-  readonly bytes: Uint8Array;
-  constructor(bytes: Uint8Array) {
-    this.bytes = bytes;
-  }
-  valueOf(): number {
-    return NaN;
-  }
-  toString(): string {
-    return "NaN";
-  }
-  toJSON(): null {
-    return null;
-  }
-  [Symbol.toPrimitive](): number {
-    return NaN;
-  }
-}
+/** JS Date range limit: ±8.64e15 milliseconds */
+const MAX_DATE_MS = 8640000000000000n;
 
 export class ClickHouseDateTime64 {
   public ticks: bigint;
@@ -322,13 +243,11 @@ export class ClickHouseDateTime64 {
    */
   toDate(): Date {
     const ms = this.precision >= 3 ? this.ticks / this.pow : this.ticks * this.pow;
-    // Check for overflow (JS Date range: ±8.64e15 ms)
-    if (ms > 8640000000000000n || ms < -8640000000000000n) {
+    if (ms > MAX_DATE_MS || ms < -MAX_DATE_MS) {
       throw new RangeError(
         `DateTime64 value ${ms}ms overflows JS Date range (±8.64e15ms). Use toClosestDate() to clamp.`,
       );
     }
-    // Check for precision loss
     if (this.precision > 3 && this.ticks % this.pow !== 0n) {
       throw new Error(
         `Precision loss: DateTime64(${this.precision}) value ${this.ticks} cannot be represented as Date without losing precision. Use toClosestDate() or access .ticks directly.`,
@@ -342,9 +261,8 @@ export class ClickHouseDateTime64 {
    */
   toClosestDate(): Date {
     let ms = this.precision >= 3 ? this.ticks / this.pow : this.ticks * this.pow;
-    // Clamp to JS Date range
-    if (ms > 8640000000000000n) ms = 8640000000000000n;
-    if (ms < -8640000000000000n) ms = -8640000000000000n;
+    if (ms > MAX_DATE_MS) ms = MAX_DATE_MS;
+    if (ms < -MAX_DATE_MS) ms = -MAX_DATE_MS;
     return new Date(Number(ms));
   }
 
@@ -355,92 +273,6 @@ export class ClickHouseDateTime64 {
   toString(): string {
     return this.toClosestDate().toString();
   }
-}
-
-export function readVarint(data: Uint8Array, cursor: { offset: number }): number {
-  let value = 0;
-  let mul = 1;
-  while (true) {
-    if (cursor.offset >= data.length) throw new RangeError("Buffer underflow");
-    const byte = data[cursor.offset++];
-    value += (byte & 0x7f) * mul;
-    if (!Number.isSafeInteger(value)) throw new RangeError("Varint exceeds JS safe integer range");
-    if ((byte & 0x80) === 0) break;
-    mul *= 0x80;
-    if (!Number.isSafeInteger(mul)) throw new RangeError("Varint exceeds JS safe integer range");
-  }
-  return value;
-}
-
-export function writeVarint(value: number): Uint8Array {
-  if (!Number.isSafeInteger(value) || value < 0) {
-    throw new RangeError(`Varint value out of range: ${value}`);
-  }
-  const arr: number[] = [];
-  let v = value;
-  while (v >= 0x80) {
-    arr.push((v % 0x80) | 0x80);
-    v = Math.floor(v / 0x80);
-  }
-  arr.push(v);
-  return new Uint8Array(arr);
-}
-
-export function leb128Size(value: number): number {
-  if (!Number.isSafeInteger(value) || value < 0) {
-    throw new RangeError(`leb128Size value out of range: ${value}`);
-  }
-  let v = value;
-  let size = 1;
-  while (v >= 0x80) {
-    size++;
-    v = Math.floor(v / 0x80);
-  }
-  return size;
-}
-
-export function utf8DecodeSmall(data: Uint8Array, start: number, end: number): string {
-  let result = "";
-  let i = start;
-  while (i < end) {
-    const byte = data[i++];
-    if (byte < 0x80) {
-      result += String.fromCharCode(byte);
-    } else if (byte < 0xe0) {
-      result += String.fromCharCode(((byte & 0x1f) << 6) | (data[i++] & 0x3f));
-    } else if (byte < 0xf0) {
-      result += String.fromCharCode(
-        ((byte & 0x0f) << 12) | ((data[i++] & 0x3f) << 6) | (data[i++] & 0x3f),
-      );
-    } else {
-      const cp =
-        ((byte & 0x07) << 18) |
-        ((data[i++] & 0x3f) << 12) |
-        ((data[i++] & 0x3f) << 6) |
-        (data[i++] & 0x3f);
-      result += String.fromCharCode(
-        0xd800 + ((cp - 0x10000) >> 10),
-        0xdc00 + ((cp - 0x10000) & 0x3ff),
-      );
-    }
-  }
-  return result;
-}
-
-export function readString(data: Uint8Array, cursor: { offset: number }): string {
-  const len = readVarint(data, cursor);
-  checkBounds(data, cursor, len);
-  const end = cursor.offset + len;
-  const str =
-    len < 12
-      ? utf8DecodeSmall(data, cursor.offset, end)
-      : TEXT_DECODER.decode(data.subarray(cursor.offset, end));
-  cursor.offset = end;
-  return str;
-}
-
-export function checkBounds(data: Uint8Array, cursor: { offset: number }, n: number): void {
-  if (cursor.offset + n > data.length) throw new RangeError("Buffer underflow");
 }
 
 export function writeBigInt128(v: DataView, o: number, val: bigint, signed: boolean): void {
@@ -587,18 +419,6 @@ export function formatScaledBigInt(val: bigint, scale: number): string {
   const fracP = str.slice(-scale);
   const r = `${intP}.${fracP}`;
   return neg ? `-${r}` : r;
-}
-
-export function expandIPv6(str: string): string[] {
-  let parts = str.split(":");
-  const emptyIdx = parts.indexOf("");
-  if (emptyIdx !== -1) {
-    const before = parts.slice(0, emptyIdx).filter((p) => p);
-    const after = parts.slice(emptyIdx + 1).filter((p) => p);
-    const missing = 8 - before.length - after.length;
-    parts = [...before, ...Array(missing).fill("0"), ...after];
-  }
-  return parts;
 }
 
 export function ipv6ToBytes(ip: string): Uint8Array {
