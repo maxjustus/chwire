@@ -1478,8 +1478,9 @@ class NullableCodec extends BaseCodec {
     if (value == null) return SQL_NULL;
     return this.inner.toLiteral(value, quoted);
   }
-  serializeLiteral(value: unknown, quoted?: boolean): string {
-    return this.inner.toLiteral(value, quoted) as string;
+  // Unreachable: toLiteral() is overridden above.
+  serializeLiteral(): string {
+    return "";
   }
 }
 
@@ -1646,8 +1647,9 @@ class LowCardinalityCodec extends BaseCodec {
     // LowCardinality is transparent - delegate to inner codec
     return this.inner.toLiteral(value, quoted);
   }
-  serializeLiteral(value: unknown, quoted?: boolean): string {
-    return this.inner.toLiteral(value, quoted) as string;
+  // Unreachable: toLiteral() is overridden above.
+  serializeLiteral(): string {
+    return "";
   }
 }
 
