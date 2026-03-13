@@ -102,6 +102,11 @@ function wrapQuoted(s: string, quoted?: boolean): string {
   return quoted ? `'${s}'` : s;
 }
 
+/** Get a Uint8Array view over a TypedArray's underlying buffer, respecting byteOffset. */
+function asBytes(arr: ArrayBufferView): Uint8Array {
+  return new Uint8Array(arr.buffer, arr.byteOffset, arr.byteLength);
+}
+
 // Re-export for public API
 export {
   toBigInt,
@@ -408,7 +413,7 @@ class NumericCodec<T extends TypedArray> extends BaseCodec {
       !(col.data instanceof DataView)
     ) {
       const data = col.data as TypedArray;
-      return new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
+      return asBytes(data);
     }
     // Fallback: virtual columns (Nullable, Variant, etc.) - materialize via get()
     const len = col.length;
@@ -417,7 +422,7 @@ class NumericCodec<T extends TypedArray> extends BaseCodec {
       const v = col.get(i);
       arr[i] = (this.converter ? this.converter(v) : v) as any;
     }
-    return new Uint8Array(arr.buffer, arr.byteOffset, arr.byteLength);
+    return asBytes(arr);
   }
 
   decodeDense(reader: BufferReader, rows: number, _state: DeserializerState): Column {
@@ -430,11 +435,10 @@ class NumericCodec<T extends TypedArray> extends BaseCodec {
       return new DataColumn(this.type, values);
     }
     const arr = new this.Ctor(values.length);
-    if (this.converter) {
-      for (let i = 0; i < values.length; i++)
-        arr[i] = this.converter((values as unknown[])[i]) as any;
-    } else {
-      for (let i = 0; i < values.length; i++) arr[i] = (values as unknown[])[i] as any;
+    const convert = this.converter;
+    for (let i = 0; i < values.length; i++) {
+      const v = (values as unknown[])[i];
+      arr[i] = (convert ? convert(v) : v) as any;
     }
     return new DataColumn(this.type, arr);
   }
@@ -509,14 +513,14 @@ class EnumCodec extends BaseCodec {
     const underlying =
       col instanceof EnumColumn ? col.data : col instanceof DataColumn ? col.data : null;
     if (underlying instanceof this.Ctor) {
-      return new Uint8Array(underlying.buffer, underlying.byteOffset, underlying.byteLength);
+      return asBytes(underlying);
     }
     const len = col.length;
     const arr = new this.Ctor(len);
     for (let i = 0; i < len; i++) {
       arr[i] = this.toEnumValue(col.get(i));
     }
-    return new Uint8Array(arr.buffer, arr.byteOffset, arr.byteLength);
+    return asBytes(arr);
   }
 
   decodeDense(reader: BufferReader, rows: number, _state: DeserializerState): Column {
@@ -915,15 +919,19 @@ class DecimalCodec extends BaseCodec {
 class DateTime64Codec extends BaseCodec {
   readonly type: string;
   private precision: number;
+  private msScale: bigint; // 10^|precision-3|: converts between ms and ticks
+  private fullScale: bigint; // 10^precision: converts between seconds and ticks
   constructor(type: string, precision: number) {
     super();
     this.type = type;
     this.precision = precision;
+    this.msScale = 10n ** BigInt(Math.abs(precision - 3));
+    this.fullScale = 10n ** BigInt(precision);
   }
 
   private coerceToTicks(v: unknown): bigint {
     const precision = this.precision;
-    const scale = 10n ** BigInt(Math.abs(precision - 3));
+    const scale = this.msScale;
     if (v instanceof ClickHouseDateTime64) {
       if (v.precision !== precision) {
         throw new TypeError(
@@ -974,7 +982,7 @@ class DateTime64Codec extends BaseCodec {
     for (let i = 0; i < len; i++) {
       arr[i] = this.coerceToTicks(col.get(i));
     }
-    return new Uint8Array(arr.buffer, arr.byteOffset, arr.byteLength);
+    return asBytes(arr);
   }
 
   decodeDense(reader: BufferReader, rows: number, _state: DeserializerState): Column {
@@ -1008,9 +1016,8 @@ class DateTime64Codec extends BaseCodec {
     return rows * 8;
   }
   private formatTicks(ticks: bigint): string {
-    const scale = 10n ** BigInt(this.precision);
-    const seconds = ticks / scale;
-    const frac = ticks % scale;
+    const seconds = ticks / this.fullScale;
+    const frac = ticks % this.fullScale;
     if (frac === 0n) return String(seconds);
     const fracStr = String(frac < 0n ? -frac : frac).padStart(this.precision, "0");
     return `${seconds}.${fracStr}`;
@@ -1022,8 +1029,7 @@ class DateTime64Codec extends BaseCodec {
     }
     if (value instanceof Date) {
       const ms = BigInt(value.getTime());
-      const scale = 10n ** BigInt(Math.abs(this.precision - 3));
-      const ticks = this.precision >= 3 ? ms * scale : ms / scale;
+      const ticks = this.precision >= 3 ? ms * this.msScale : ms / this.msScale;
       return this.formatTicks(ticks);
     }
     return String(value);
@@ -1080,7 +1086,7 @@ class EpochCodec<T extends Uint16Array | Int32Array | Uint32Array> extends BaseC
 
       arr[i] = units as any;
     }
-    return new Uint8Array(arr.buffer, arr.byteOffset, arr.byteLength);
+    return asBytes(arr);
   }
 
   decodeDense(reader: BufferReader, rows: number, _state: DeserializerState): Column {
@@ -1158,7 +1164,7 @@ class IPv4Codec extends BaseCodec {
       // ClickHouse stores IPv4 as big-endian UInt32 (network order): first octet in high bits
       arr[i] = ((parts[0] << 24) | (parts[1] << 16) | (parts[2] << 8) | parts[3]) >>> 0;
     }
-    return new Uint8Array(arr.buffer, arr.byteOffset, arr.byteLength);
+    return asBytes(arr);
   }
 
   decodeDense(reader: BufferReader, rows: number, _state: DeserializerState): Column {
@@ -1252,9 +1258,7 @@ class ArrayCodec extends BaseCodec {
     const writer = new BufferWriter(hint);
 
     // Write offsets
-    writer.write(
-      new Uint8Array(arr.offsets.buffer, arr.offsets.byteOffset, arr.offsets.byteLength),
-    );
+    writer.write(asBytes(arr.offsets));
 
     // Write inner data with estimated size
     const innerHint = this.inner.estimateSize(arr.inner.length);
@@ -1314,7 +1318,7 @@ class ArrayCodec extends BaseCodec {
       return new ArrayColumn(this.type, offsets, new DataColumn(this.inner.type, allInner));
     }
 
-    // Generic path for non-numeric types
+    // Generic path for non-numeric types (isArrayLike already validated in pre-scan)
     const allInner: unknown[] = [];
     let offset = 0n;
     for (let i = 0; i < values.length; i++) {
@@ -1322,9 +1326,6 @@ class ArrayCodec extends BaseCodec {
       if (v == null) {
         offsets[i] = offset;
         continue;
-      }
-      if (!isArrayLike(v)) {
-        throw new TypeError(`Expected array for ${this.type}, got ${typeof v}`);
       }
       const arr = v as ArrayLike<unknown> & Iterable<unknown>;
       for (const item of arr) allInner.push(item);
@@ -1633,9 +1634,7 @@ class MapCodec extends BaseCodec {
     const map = col as MapColumn;
     const hint = sizeHint ?? this.estimateSize(col.length);
     const writer = new BufferWriter(hint);
-    writer.write(
-      new Uint8Array(map.offsets.buffer, map.offsets.byteOffset, map.offsets.byteLength),
-    );
+    writer.write(asBytes(map.offsets));
     const keyHint = this.keyCodec.estimateSize(map.keys.length);
     const valHint = this.valCodec.estimateSize(map.values.length);
     writer.write(this.keyCodec.encode(map.keys, keyHint));
@@ -2046,13 +2045,7 @@ class DynamicCodec implements Codec {
     const writer = new BufferWriter(hint);
 
     // Write discriminators as-is (already the right type)
-    writer.write(
-      new Uint8Array(
-        dyn.discriminators.buffer,
-        dyn.discriminators.byteOffset,
-        dyn.discriminators.byteLength,
-      ),
-    );
+    writer.write(asBytes(dyn.discriminators));
 
     for (let i = 0; i < this.codecs.length; i++) {
       const group = dyn.groups.get(i);
