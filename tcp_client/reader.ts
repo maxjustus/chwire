@@ -96,22 +96,8 @@ export class StreamingReader {
   private async pullCompressedBlock(): Promise<void> {
     const checksum = await this.readRaw(Compression.CHECKSUM_SIZE);
     const header = await this.readRaw(Compression.HEADER_SIZE);
-
-    // Header format: 1 byte method, 4 bytes compressed size, 4 bytes uncompressed size
-    const compressedSizeWithHeader = new DataView(
-      header.buffer,
-      header.byteOffset + 1,
-      4,
-    ).getUint32(0, true);
-    const compressedDataSize = compressedSizeWithHeader - Compression.HEADER_SIZE;
-    const compressedData = await this.readRaw(compressedDataSize);
-
-    const fullBlock = new Uint8Array(Compression.FULL_HEADER_SIZE + compressedData.length);
-    fullBlock.set(checksum, 0);
-    fullBlock.set(header, Compression.CHECKSUM_SIZE);
-    fullBlock.set(compressedData, Compression.FULL_HEADER_SIZE);
-
-    this.feed(decodeBlock(fullBlock));
+    const compressedData = await this.readRaw(this.compressedDataSize(header));
+    this.feed(this.assembleAndDecodeBlock(checksum, header, compressedData));
   }
 
   private async readRaw(n: number): Promise<Uint8Array> {
@@ -251,19 +237,28 @@ export class StreamingReader {
   async readCompressedBlock(): Promise<Uint8Array> {
     const checksum = await this.readFixed(Compression.CHECKSUM_SIZE);
     const header = await this.readFixed(Compression.HEADER_SIZE);
+    const compressedData = await this.readFixed(this.compressedDataSize(header));
+    return this.assembleAndDecodeBlock(checksum, header, compressedData);
+  }
+
+  private compressedDataSize(header: Uint8Array): number {
     const compressedSizeWithHeader = new DataView(
       header.buffer,
       header.byteOffset + 1,
       4,
     ).getUint32(0, true);
-    const compressedDataSize = compressedSizeWithHeader - Compression.HEADER_SIZE;
-    const compressedData = await this.readFixed(compressedDataSize);
+    return compressedSizeWithHeader - Compression.HEADER_SIZE;
+  }
 
+  private assembleAndDecodeBlock(
+    checksum: Uint8Array,
+    header: Uint8Array,
+    compressedData: Uint8Array,
+  ): Uint8Array {
     const fullBlock = new Uint8Array(Compression.FULL_HEADER_SIZE + compressedData.length);
     fullBlock.set(checksum, 0);
     fullBlock.set(header, Compression.CHECKSUM_SIZE);
     fullBlock.set(compressedData, Compression.FULL_HEADER_SIZE);
-
     return decodeBlock(fullBlock);
   }
 }
