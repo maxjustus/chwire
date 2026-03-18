@@ -20,6 +20,16 @@ export let usingNativeLz4 = false;
 /** True if using native zstd-napi, false if using WASM */
 export let usingNativeZstd = false;
 
+function prependUint32LE(data: Uint8Array, size: number): Uint8Array {
+  const out = new Uint8Array(4 + data.length);
+  out[0] = size & 0xff;
+  out[1] = (size >> 8) & 0xff;
+  out[2] = (size >> 16) & 0xff;
+  out[3] = (size >> 24) & 0xff;
+  out.set(data, 4);
+  return out;
+}
+
 async function initLz4(): Promise<void> {
   // Try native lz4-napi first in Node.js
   if (typeof process !== "undefined" && process.versions?.node && typeof Buffer !== "undefined") {
@@ -30,15 +40,8 @@ async function initLz4(): Promise<void> {
       // LZ4 frame format for HTTP Content-Encoding
       lz4CompressFrameFn = (d) => new Uint8Array(native.compressFrameSync(Buffer.from(d)));
       // uncompressSync expects 4-byte size prefix - prepend it
-      lz4DecompressFn = (d, size) => {
-        const withPrefix = new Uint8Array(4 + d.length);
-        withPrefix[0] = size & 0xff;
-        withPrefix[1] = (size >> 8) & 0xff;
-        withPrefix[2] = (size >> 16) & 0xff;
-        withPrefix[3] = (size >> 24) & 0xff;
-        withPrefix.set(d, 4);
-        return new Uint8Array(native.uncompressSync(Buffer.from(withPrefix)));
-      };
+      lz4DecompressFn = (d, size) =>
+        new Uint8Array(native.uncompressSync(Buffer.from(prependUint32LE(d, size))));
       usingNativeLz4 = true;
       return;
     } catch {
@@ -53,17 +56,7 @@ async function initLz4(): Promise<void> {
   lz4CompressFn = (d) => lz4.compress(d).subarray(4);
   // lz4CompressFrameFn stays undefined - WASM doesn't support frame format
   // WASM decompress expects 4-byte size prefix - prepend it
-  lz4DecompressFn = (d, size) => {
-    const prefix = new Uint8Array(4);
-    prefix[0] = size & 0xff;
-    prefix[1] = (size >> 8) & 0xff;
-    prefix[2] = (size >> 16) & 0xff;
-    prefix[3] = (size >> 24) & 0xff;
-    const withPrefix = new Uint8Array(4 + d.length);
-    withPrefix.set(prefix, 0);
-    withPrefix.set(d, 4);
-    return lz4.decompress(withPrefix);
-  };
+  lz4DecompressFn = (d, size) => lz4.decompress(prependUint32LE(d, size));
 }
 
 async function initZstd(): Promise<void> {

@@ -211,8 +211,8 @@ export const TEXT_ENCODER = new TextEncoder();
 export const TEXT_DECODER = new TextDecoder();
 
 // Hex lookup tables for UUID encode/decode (~11x/~60x speedup vs parseInt/toString)
-const HEX_LUT = new Uint8Array(256); // char code -> nibble value (255 = invalid)
-const BYTE_TO_HEX: string[] = []; // byte -> "00"-"ff"
+export const HEX_LUT = new Uint8Array(256); // char code -> nibble value (255 = invalid)
+export const BYTE_TO_HEX: string[] = []; // byte -> "00"-"ff"
 for (let i = 0; i < 256; i++) {
   HEX_LUT[i] = 255;
   BYTE_TO_HEX[i] = i.toString(16).padStart(2, "0");
