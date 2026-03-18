@@ -35,12 +35,14 @@ import {
   type SerializationNode,
 } from "./serialization.ts";
 import {
+  BYTE_TO_HEX,
   bytesToIpv6,
   ClickHouseDateTime64,
   decimalByteSize,
   type EnumMapping,
   extractDecimalScale,
   formatScaledBigInt,
+  HEX_LUT,
   ipv6ToBytes,
   parseDecimalToScaledBigInt,
   parseEnumDefinition,
@@ -48,6 +50,7 @@ import {
   parseTypeList,
   readBigInt128,
   readBigInt256,
+  TEXT_DECODER,
   TEXT_ENCODER,
   type TypedArray,
   writeBigInt128,
@@ -613,10 +616,12 @@ class UUIDCodec extends BaseCodec {
       // CH stores as: [low_64_reversed] [high_64_reversed]
       const off = i * 16;
       for (let j = 0; j < 8; j++) {
-        buf[off + j] = parseInt(clean.substring((7 - j) * 2, (7 - j) * 2 + 2), 16);
+        const p = (7 - j) * 2;
+        buf[off + j] = (HEX_LUT[clean.charCodeAt(p)] << 4) | HEX_LUT[clean.charCodeAt(p + 1)];
       }
       for (let j = 0; j < 8; j++) {
-        buf[off + 8 + j] = parseInt(clean.substring((15 - j) * 2, (15 - j) * 2 + 2), 16);
+        const p = (15 - j) * 2;
+        buf[off + 8 + j] = (HEX_LUT[clean.charCodeAt(p)] << 4) | HEX_LUT[clean.charCodeAt(p + 1)];
       }
     }
     return buf;
@@ -629,15 +634,28 @@ class UUIDCodec extends BaseCodec {
       const b = reader.buffer.subarray(reader.offset, reader.offset + 16);
       reader.offset += 16;
 
-      const bytes = new Uint8Array(16);
-      for (let j = 0; j < 8; j++) bytes[7 - j] = b[j];
-      for (let j = 0; j < 8; j++) bytes[15 - j] = b[8 + j];
-
-      const hex = Array.from(bytes)
-        .map((x) => x.toString(16).padStart(2, "0"))
-        .join("");
+      // Reverse byte halves and format directly via lookup table
       values[i] =
-        `${hex.substring(0, 8)}-${hex.substring(8, 12)}-${hex.substring(12, 16)}-${hex.substring(16, 20)}-${hex.substring(20)}`;
+        BYTE_TO_HEX[b[7]] +
+        BYTE_TO_HEX[b[6]] +
+        BYTE_TO_HEX[b[5]] +
+        BYTE_TO_HEX[b[4]] +
+        "-" +
+        BYTE_TO_HEX[b[3]] +
+        BYTE_TO_HEX[b[2]] +
+        "-" +
+        BYTE_TO_HEX[b[1]] +
+        BYTE_TO_HEX[b[0]] +
+        "-" +
+        BYTE_TO_HEX[b[15]] +
+        BYTE_TO_HEX[b[14]] +
+        "-" +
+        BYTE_TO_HEX[b[13]] +
+        BYTE_TO_HEX[b[12]] +
+        BYTE_TO_HEX[b[11]] +
+        BYTE_TO_HEX[b[10]] +
+        BYTE_TO_HEX[b[9]] +
+        BYTE_TO_HEX[b[8]];
     }
     return new DataColumn(this.type, values);
   }
@@ -741,7 +759,7 @@ class FixedStringCodec extends BaseCodec {
     if (value instanceof Uint8Array) {
       let end = value.length;
       while (end > 0 && value[end - 1] === 0) end--;
-      str = new TextDecoder().decode(value.subarray(0, end));
+      str = TEXT_DECODER.decode(value.subarray(0, end));
     } else {
       str = coerceToString(value);
     }
