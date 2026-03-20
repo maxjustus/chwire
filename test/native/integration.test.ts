@@ -192,4 +192,44 @@ describe("Native format integration", { timeout: 120000 }, () => {
     assert.strictEqual(decodedRows[1][2], 42n);
     assert.strictEqual(decodedRows[2][2], null);
   });
+
+  it("round-trips JSON via V2 (default, no flattened setting)", async () => {
+    const table = "test_native_json_v2";
+    const columns: ColumnDef[] = [
+      { name: "id", type: "Int32" },
+      { name: "meta", type: "JSON" },
+    ];
+    const rows = [
+      [1, { user: "alice", age: 30 }],
+      [2, { user: "bob", score: 95.5 }],
+      [3, { user: "cora" }],
+    ];
+
+    const { decoded, decodedRows } = await roundTripTable({
+      table,
+      createSql: `
+        CREATE TABLE ${table} (
+          id Int32,
+          meta JSON
+        ) ENGINE = Memory
+      `,
+      columns,
+      rows,
+      orderBy: "id",
+      // No flattened setting — ClickHouse will use V2 (or V1 depending on protocol)
+    });
+
+    assert.strictEqual(decoded.rowCount, 3);
+    const meta0 = decodedRows[0][1] as Record<string, unknown>;
+    const meta1 = decodedRows[1][1] as Record<string, unknown>;
+    const meta2 = decodedRows[2][1] as Record<string, unknown>;
+
+    assert.strictEqual(meta0.user, "alice");
+    assert.strictEqual(meta1.user, "bob");
+    assert.strictEqual(meta2.user, "cora");
+
+    // Dynamic paths or shared data — values should be present
+    assert.ok(meta0.age !== undefined, "age should be present for row 0");
+    assert.ok(meta1.score !== undefined, "score should be present for row 1");
+  });
 });

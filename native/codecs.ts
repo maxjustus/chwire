@@ -34,6 +34,7 @@ import {
   type DeserializerState,
   type SerializationNode,
 } from "./serialization.ts";
+import { decodeBinaryValue } from "./binary_type.ts";
 import {
   BYTE_TO_HEX,
   bytesToIpv6,
@@ -2229,6 +2230,7 @@ export class JsonCodec implements Codec {
   private typedPathNames: Set<string>;
   private dynamicPaths: string[] = [];
   private dynamicCodecs = new Map<string, DynamicCodec>();
+  private version: bigint = JSONFormat.VERSION_V3;
 
   constructor(typedPaths: { name: string; type: string }[] = []) {
     this.typedPaths = typedPaths.map((p) => ({
@@ -2265,9 +2267,18 @@ export class JsonCodec implements Codec {
   }
 
   readPrefix(reader: BufferReader) {
-    const ver = reader.readU64LE();
-    if (ver !== JSONFormat.VERSION_V3) throw new Error(`JSON: only V3 supported, got V${ver}`);
+    this.version = reader.readU64LE();
 
+    if (this.version === JSONFormat.VERSION_V1 || this.version === JSONFormat.VERSION_V2) {
+      this.readPrefixV1V2(reader);
+      return;
+    }
+
+    if (this.version !== JSONFormat.VERSION_V3) {
+      throw new Error(`JSON: only V3 supported, got V${this.version}`);
+    }
+
+    // V3 flattened prefix
     const count = reader.readVarint();
     const allPathNames: string[] = [];
     for (let i = 0; i < count; i++) allPathNames.push(reader.readString());
@@ -2281,6 +2292,31 @@ export class JsonCodec implements Codec {
       codec.readPrefix(reader);
       this.dynamicCodecs.set(path, codec);
     }
+  }
+
+  private readPrefixV1V2(reader: BufferReader) {
+    // V1 (version=0) has extra max_dynamic_paths field
+    if (this.version === JSONFormat.VERSION_V1) {
+      reader.readVarint(); // skip max_dynamic_paths
+    }
+
+    // Read dynamic path names
+    const count = reader.readVarint();
+    this.dynamicPaths = [];
+    for (let i = 0; i < count; i++) this.dynamicPaths.push(reader.readString());
+
+    // Read typed path prefixes (alphabetically sorted, same as V3)
+    for (const tp of this.typedPaths) tp.codec.readPrefix?.(reader);
+
+    // Read per-dynamic-path Dynamic prefixes (each path is a full Dynamic column)
+    for (const path of this.dynamicPaths) {
+      const codec = new DynamicCodec();
+      codec.readPrefix(reader); // DynamicCodec now handles V1/V2 internally
+      this.dynamicCodecs.set(path, codec);
+    }
+
+    // Map(String, String) prefix for shared data — no-op for String key/value types
+    // (ClickHouse writes empty prefix for Map(String, String))
   }
 
   encode(col: Column, sizeHint?: number): Uint8Array {
@@ -2308,6 +2344,11 @@ export class JsonCodec implements Codec {
   }
 
   decode(reader: BufferReader, rows: number, state: DeserializerState): JsonColumn {
+    if (this.version === JSONFormat.VERSION_V1 || this.version === JSONFormat.VERSION_V2) {
+      return this.decodeV1V2(reader, rows, state);
+    }
+
+    // V3 flattened decode
     const pathColumns = new Map<string, Column>();
     let idx = 0;
 
@@ -2326,6 +2367,74 @@ export class JsonCodec implements Codec {
 
     // Combine all paths
     const allPaths = [...this.typedPaths.map((tp) => tp.name), ...this.dynamicPaths];
+    return new JsonColumn(allPaths, pathColumns, rows);
+  }
+
+  private decodeV1V2(reader: BufferReader, rows: number, state: DeserializerState): JsonColumn {
+    const pathColumns = new Map<string, Column>();
+    let idx = 0;
+
+    // 1. Typed path columns (same as V3)
+    for (const tp of this.typedPaths) {
+      pathColumns.set(tp.name, tp.codec.decode(reader, rows, childState(state, idx++)));
+    }
+
+    // 2. Per-dynamic-path Dynamic columns
+    for (const path of this.dynamicPaths) {
+      pathColumns.set(
+        path,
+        this.dynamicCodecs.get(path)!.decode(reader, rows, childState(state, idx++)),
+      );
+    }
+
+    // 3. Shared data: Map(String, String) — read manually for binary value handling
+    //    Format: offsets (BigUint64Array) + keys (String col) + values (raw bytes col)
+    const offsets = reader.readTypedArray(BigUint64Array, rows);
+    const totalEntries = rows > 0 ? Number(offsets[rows - 1]) : 0;
+
+    // Read keys (path names) as strings
+    const keys: string[] = new Array(totalEntries);
+    for (let i = 0; i < totalEntries; i++) keys[i] = reader.readString();
+
+    // Read values as raw byte arrays (NOT UTF-8 decoded — they're binary type-encoded)
+    const valueBufs: Uint8Array[] = new Array(totalEntries);
+    for (let i = 0; i < totalEntries; i++) {
+      const len = reader.readVarint();
+      valueBufs[i] = reader.readBytes(len);
+    }
+
+    // 4. Decode shared data and merge into path columns
+    //    Collect shared paths and build per-path per-row values
+    const sharedPathValues = new Map<string, unknown[]>();
+    let prevOffset = 0;
+    for (let row = 0; row < rows; row++) {
+      const end = Number(offsets[row]);
+      for (let e = prevOffset; e < end; e++) {
+        const path = keys[e];
+        if (!sharedPathValues.has(path)) {
+          // Initialize with nulls
+          const arr = new Array(rows).fill(null);
+          sharedPathValues.set(path, arr);
+        }
+        sharedPathValues.get(path)![row] = decodeBinaryValue(valueBufs[e]);
+      }
+      prevOffset = end;
+    }
+
+    // Convert shared path values into DataColumns and add to pathColumns
+    const sharedPaths: string[] = [];
+    for (const [path, values] of sharedPathValues) {
+      if (!pathColumns.has(path)) {
+        sharedPaths.push(path);
+        pathColumns.set(path, new DataColumn("Dynamic", values));
+      }
+    }
+
+    const allPaths = [
+      ...this.typedPaths.map((tp) => tp.name),
+      ...this.dynamicPaths,
+      ...sharedPaths,
+    ];
     return new JsonColumn(allPaths, pathColumns, rows);
   }
 

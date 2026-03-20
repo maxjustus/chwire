@@ -187,22 +187,83 @@ describe("version validation tests", () => {
       assert.strictEqual(result.columns[0].type, "JSON");
     });
 
-    it("throws on V1 format (not yet implemented)", () => {
-      const data = buildJSONBlock(0n, 5);
+    it("decodes V2 JSON with shared data", () => {
+      // Build a V2 JSON block: 1 typed path (UInt32), 0 dynamic paths,
+      // shared data with "name"="Alice" and "age"=30
+      const data = buildTestBlock({
+        colName: "j",
+        colType: "JSON(typed_id UInt32)",
+        rows: 1,
+        prefix: (w) => {
+          // JSON V2 prefix
+          w.writeU64LE(JSONFormat.VERSION_V2);
+          w.writeVarint(0); // 0 dynamic paths
+          // Typed path prefix (UInt32 has none)
+          // Map(String, String) prefix — no-op
+        },
+        data: (w) => {
+          // Typed path column: typed_id UInt32 = 123
+          w.writeU8(123);
+          w.writeU8(0);
+          w.writeU8(0);
+          w.writeU8(0);
 
-      assert.throws(
-        () => decodeNativeBlock(data, 0, { clientVersion: 54454 }),
-        /JSON: only V3 supported, got V0/,
-      );
+          // Shared data Map(String, String):
+          // Stream 1: offsets — 1 row with 2 entries
+          const offsetBuf = new ArrayBuffer(8);
+          new DataView(offsetBuf).setBigUint64(0, 2n, true);
+          w.write(new Uint8Array(offsetBuf));
+
+          // Stream 2: keys
+          w.writeVarint(4); // "name"
+          w.write(new Uint8Array([0x6e, 0x61, 0x6d, 0x65]));
+          w.writeVarint(3); // "age"
+          w.write(new Uint8Array([0x61, 0x67, 0x65]));
+
+          // Stream 3: values (binary-encoded)
+          // "name" = String "Alice": type=0x15, varint(5), "Alice"
+          const nameVal = new Uint8Array([0x15, 0x05, 0x41, 0x6c, 0x69, 0x63, 0x65]);
+          w.writeVarint(nameVal.length);
+          w.write(nameVal);
+          // "age" = Int64 30: type=0x0A, 30 as i64 LE
+          const ageVal = new Uint8Array([0x0a, 0x1e, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]);
+          w.writeVarint(ageVal.length);
+          w.write(ageVal);
+        },
+      });
+
+      const result = decodeNativeBlock(data, 0, { clientVersion: 54454 });
+      assert.strictEqual(result.rowCount, 1);
+
+      const col = result.columnData[0];
+      const row = col.get(0) as Record<string, unknown>;
+      assert.strictEqual(row.typed_id, 123);
+      assert.strictEqual(row.name, "Alice");
+      assert.strictEqual(row.age, 30n);
     });
 
-    it("throws on V2 format (not yet implemented)", () => {
-      const data = buildJSONBlock(2n, 5);
+    it("decodes V1 JSON (version=0) with max_dynamic_paths field", () => {
+      const data = buildTestBlock({
+        colName: "j",
+        colType: "JSON",
+        rows: 1,
+        prefix: (w) => {
+          w.writeU64LE(JSONFormat.VERSION_V1); // version=0
+          w.writeVarint(5); // max_dynamic_paths (V1 only, skipped)
+          w.writeVarint(0); // 0 dynamic paths
+        },
+        data: (w) => {
+          // Shared data: empty map (0 entries)
+          const offsetBuf = new ArrayBuffer(8);
+          new DataView(offsetBuf).setBigUint64(0, 0n, true);
+          w.write(new Uint8Array(offsetBuf));
+        },
+      });
 
-      assert.throws(
-        () => decodeNativeBlock(data, 0, { clientVersion: 54454 }),
-        /JSON: only V3 supported, got V2/,
-      );
+      const result = decodeNativeBlock(data, 0, { clientVersion: 54454 });
+      assert.strictEqual(result.rowCount, 1);
+      const row = result.columnData[0].get(0) as Record<string, unknown>;
+      assert.deepStrictEqual(row, {});
     });
 
     it("throws on unknown version", () => {
