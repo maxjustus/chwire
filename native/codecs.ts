@@ -2028,6 +2028,7 @@ class DynamicCodec implements Codec {
   readonly type = "Dynamic";
   private types: string[] = [];
   private codecs: Codec[] = [];
+  private version: bigint = Dynamic.VERSION_V3;
 
   writePrefix(writer: BufferWriter, col: Column) {
     const dyn = col as DynamicColumn;
@@ -2045,15 +2046,49 @@ class DynamicCodec implements Codec {
   }
 
   readPrefix(reader: BufferReader) {
-    const version = reader.readU64LE();
-    if (version !== Dynamic.VERSION_V3)
-      throw new Error(`Dynamic: only V3 supported, got V${version}`);
+    this.version = reader.readU64LE();
 
+    if (
+      this.version === Dynamic.VERSION_V1_LEGACY ||
+      this.version === Dynamic.VERSION_V1 ||
+      this.version === Dynamic.VERSION_V2
+    ) {
+      this.readPrefixV1V2(reader);
+      return;
+    }
+
+    if (this.version !== Dynamic.VERSION_V3) {
+      throw new Error(`Dynamic: unsupported version V${this.version}`);
+    }
+
+    // V3 flattened prefix
     const count = reader.readVarint();
     this.types = [];
     for (let i = 0; i < count; i++) this.types.push(reader.readString());
     this.codecs = this.types.map((t) => getCodec(t));
 
+    for (const c of this.codecs) c.readPrefix?.(reader);
+  }
+
+  private readPrefixV1V2(reader: BufferReader) {
+    // V1 (legacy=0 or modern=1) has extra max_dynamic_types field
+    if (this.version === Dynamic.VERSION_V1_LEGACY || this.version === Dynamic.VERSION_V1) {
+      reader.readVarint(); // skip max_dynamic_types
+    }
+
+    // Read type names
+    const count = reader.readVarint();
+    this.types = [];
+    for (let i = 0; i < count; i++) this.types.push(reader.readString());
+
+    // V1/V2 always appends implicit SharedVariant (String type)
+    this.types.push("String");
+    this.codecs = this.types.map((t) => getCodec(t));
+
+    // V1/V2 wraps data in Variant serialization — read and skip variant version
+    reader.readU64LE(); // variant_version
+
+    // Read nested type prefixes (including SharedVariant's String prefix, which is a no-op)
     for (const c of this.codecs) c.readPrefix?.(reader);
   }
 
@@ -2076,6 +2111,15 @@ class DynamicCodec implements Codec {
   }
 
   decode(reader: BufferReader, rows: number, state: DeserializerState): DynamicColumn {
+    if (
+      this.version === Dynamic.VERSION_V1_LEGACY ||
+      this.version === Dynamic.VERSION_V1 ||
+      this.version === Dynamic.VERSION_V2
+    ) {
+      return this.decodeV1V2(reader, rows, state);
+    }
+
+    // V3: variable-size discriminators
     const nullDisc = this.types.length;
     const discLimit = nullDisc + 1;
 
@@ -2083,6 +2127,23 @@ class DynamicCodec implements Codec {
     if (discLimit <= 256) discriminators = reader.readTypedArray(Uint8Array, rows);
     else if (discLimit <= 65536) discriminators = reader.readTypedArray(Uint16Array, rows);
     else discriminators = reader.readTypedArray(Uint32Array, rows);
+
+    const { counts, indices } = countAndIndexDiscriminators(discriminators, nullDisc);
+    const groups = decodeGroups(reader, this.codecs, counts, state);
+    return new DynamicColumn(this.types, discriminators, groups, indices);
+  }
+
+  private decodeV1V2(reader: BufferReader, rows: number, state: DeserializerState): DynamicColumn {
+    // V1/V2: u8 discriminators, 0xFF = NULL
+    const V1V2_NULL = 0xff;
+    const raw = reader.readTypedArray(Uint8Array, rows);
+    const nullDisc = this.types.length;
+
+    // Remap 0xFF → types.length (our null discriminator convention)
+    const discriminators = new Uint8Array(rows);
+    for (let i = 0; i < rows; i++) {
+      discriminators[i] = raw[i] === V1V2_NULL ? nullDisc : raw[i];
+    }
 
     const { counts, indices } = countAndIndexDiscriminators(discriminators, nullDisc);
     const groups = decodeGroups(reader, this.codecs, counts, state);

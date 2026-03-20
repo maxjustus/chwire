@@ -40,11 +40,16 @@ export const LowCardinality = {
 } as const;
 
 export const Dynamic = {
-  VERSION_V3: 3n,
+  VERSION_V1_LEGACY: 0n, // Pre-25.6 wire format
+  VERSION_V1: 1n, // 25.6+ wire format
+  VERSION_V2: 2n, // Default for modern clients
+  VERSION_V3: 3n, // Flattened (requires explicit setting)
 } as const;
 
 export const JSONFormat = {
-  VERSION_V3: 3n,
+  VERSION_V1: 0n, // Legacy with max_dynamic_paths field
+  VERSION_V2: 2n, // Modern with shared data (default)
+  VERSION_V3: 3n, // Flattened (requires explicit setting)
 } as const;
 
 export const Variant = {
