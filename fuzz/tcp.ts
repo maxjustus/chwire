@@ -74,9 +74,7 @@ describe("Native TCP Integration Fuzz Tests", { timeout: 600000 }, () => {
             // Stream via TCP - collect batches
             const batches: RecordBatch[] = [];
             let columns: ColumnDef[] = [];
-            const stream = client.query(`SELECT * FROM ${srcTable}`, {
-              settings: { output_format_native_use_flattened_dynamic_and_json_serialization: 1 },
-            });
+            const stream = client.query(`SELECT * FROM ${srcTable}`, {});
             for await (const packet of stream) {
               if (packet.type === "Data" && packet.batch.rowCount > 0) {
                 columns = packet.batch.columns;
@@ -225,9 +223,7 @@ describe("Native TCP Integration Fuzz Tests", { timeout: 600000 }, () => {
 
             // Read from source via TCP - collect all batches
             const batches: RecordBatch[] = [];
-            const stream = client.query(`SELECT * FROM ${srcTable} ORDER BY id`, {
-              settings: { output_format_native_use_flattened_dynamic_and_json_serialization: 1 },
-            });
+            const stream = client.query(`SELECT * FROM ${srcTable} ORDER BY id`, {});
             for await (const packet of stream) {
               if (packet.type === "Data" && packet.batch.rowCount > 0) {
                 batches.push(packet.batch);

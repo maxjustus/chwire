@@ -135,11 +135,9 @@ describe("TCP Query Parameters", { timeout: 60000 }, () => {
     assert.strictEqual(Number(arr[1]), 42);
   });
 
-  // Dynamic type requires V3 serialization format - enabled via setting
   it("handles Dynamic param with string", async () => {
     const stream = client.query("SELECT {d: Dynamic}", {
       params: { d: "dynamic_str" },
-      settings: { output_format_native_use_flattened_dynamic_and_json_serialization: 1 },
     });
     for await (const packet of stream) {
       if (packet.type === "Data" && packet.batch.rowCount > 0) {
@@ -153,7 +151,6 @@ describe("TCP Query Parameters", { timeout: 60000 }, () => {
   it("handles Dynamic param with number", async () => {
     const stream = client.query("SELECT {d: Dynamic}", {
       params: { d: 123 },
-      settings: { output_format_native_use_flattened_dynamic_and_json_serialization: 1 },
     });
     for await (const packet of stream) {
       if (packet.type === "Data" && packet.batch.rowCount > 0) {

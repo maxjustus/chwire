@@ -354,9 +354,7 @@ describe("TCP Client Integration", () => {
         {"id": 2, "data": {"currency": "EUR", "amount": 200, "extra": "dynamic"}}
       `);
 
-      const allRows = await collectRows(client, `SELECT * FROM ${tableName} ORDER BY id`, {
-        settings: { output_format_native_use_flattened_dynamic_and_json_serialization: 1 },
-      });
+      const allRows = await collectRows(client, `SELECT * FROM ${tableName} ORDER BY id`);
 
       assert.strictEqual(allRows.length, 2);
       assert.strictEqual(allRows[0].id, 1);

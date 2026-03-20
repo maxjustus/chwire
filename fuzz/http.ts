@@ -74,11 +74,11 @@ describe("Native HTTP Integration Fuzz Tests", { timeout: 600000 }, () => {
             );
 
             // Stream decode and insert block-by-block
-            const queryResult = query(
-              `SELECT * FROM ${srcTable} FORMAT Native SETTINGS output_format_native_use_flattened_dynamic_and_json_serialization=1`,
-              sessionId,
-              { baseUrl, auth, compression },
-            );
+            const queryResult = query(`SELECT * FROM ${srcTable} FORMAT Native`, sessionId, {
+              baseUrl,
+              auth,
+              compression,
+            });
 
             let columns: ColumnDef[] = [];
             let blocksProcessed = 0;
@@ -266,7 +266,7 @@ describe("Native HTTP Integration Fuzz Tests", { timeout: 600000 }, () => {
 
             // Stream decode and insert block-by-block
             const queryResult = query(
-              `SELECT * FROM ${srcTable} ORDER BY id FORMAT Native SETTINGS output_format_native_use_flattened_dynamic_and_json_serialization=1`,
+              `SELECT * FROM ${srcTable} ORDER BY id FORMAT Native`,
               sessionId,
               { baseUrl, auth, compression },
             );

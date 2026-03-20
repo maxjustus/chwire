@@ -45,9 +45,7 @@ const options = {
   port: parseInt(process.env.CH_PORT ?? "9000", 10),
   user: process.env.CH_USER ?? "default",
   password: process.env.CH_PASSWORD ?? "",
-  settings: {
-    output_format_native_use_flattened_dynamic_and_json_serialization: 1,
-  },
+  settings: {},
 };
 
 // Convert non-JSON-safe types for serialization

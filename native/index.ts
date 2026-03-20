@@ -4,8 +4,8 @@
  * Native is ClickHouse's columnar wire format - data doesn't need row-to-column
  * conversion on the server.
  *
- * Note: Only Dynamic/JSON V3 format is supported at present. For ClickHouse 25.6+, enable
- * `output_format_native_use_flattened_dynamic_and_json_serialization` setting.
+ * Supports Dynamic/JSON V1 (version=0), V2, and V3 (flattened) decode.
+ * Encode currently always produces V3.
  */
 
 import { getCodec } from "./codecs.ts";
