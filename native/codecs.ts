@@ -34,7 +34,7 @@ import {
   type DeserializerState,
   type SerializationNode,
 } from "./serialization.ts";
-import { decodeBinaryValue } from "./binary_type.ts";
+import { decodeBinaryValue, encodeBinaryValue } from "./binary_type.ts";
 import {
   BYTE_TO_HEX,
   bytesToIpv6,
@@ -2369,14 +2369,16 @@ export class JsonCodec implements Codec {
   private dynamicCodecs = new Map<string, DynamicCodec>();
   private readVersion: bigint = JSONFormat.VERSION_V3;
   private writeVersion: bigint = JSONFormat.VERSION_V3;
+  private maxDynamicPaths: number;
 
-  constructor(typedPaths: { name: string; type: string }[] = []) {
+  constructor(typedPaths: { name: string; type: string }[] = [], maxDynamicPaths = 32) {
     this.typedPaths = typedPaths.map((p) => ({
       name: p.name,
       type: p.type,
       codec: getCodec(p.type),
     }));
     this.typedPathNames = new Set(this.typedPaths.map((tp) => tp.name));
+    this.maxDynamicPaths = maxDynamicPaths;
   }
 
   /** Set the version used for encoding. Default V3. */
@@ -2418,17 +2420,26 @@ export class JsonCodec implements Codec {
     }
   }
 
+  /** Paths that overflow max_dynamic_paths and go into the shared data Map. */
+  private sharedPaths: string[] = [];
+
   private writePrefixV1V2(writer: BufferWriter, json: JsonColumn) {
+    // Split dynamic paths: first maxDynamicPaths get Dynamic columns, rest overflow
+    const allDynamic = this.dynamicPaths.slice().sort();
+    const dynPaths = allDynamic.slice(0, this.maxDynamicPaths);
+    this.sharedPaths = allDynamic.slice(this.maxDynamicPaths);
+    this.dynamicPaths = dynPaths;
+
     writer.writeU64LE(this.writeVersion);
 
     // V1 has extra max_dynamic_paths field
     if (this.writeVersion === JSONFormat.VERSION_V1) {
-      writer.writeVarint(this.dynamicPaths.length);
+      writer.writeVarint(this.maxDynamicPaths);
     }
 
-    // Dynamic path names
-    writer.writeVarint(this.dynamicPaths.length);
-    for (const p of this.dynamicPaths) writer.writeString(p);
+    // Dynamic path names (sorted, limited to max_dynamic_paths)
+    writer.writeVarint(dynPaths.length);
+    for (const p of dynPaths) writer.writeString(p);
 
     // Typed path prefixes
     for (const tp of this.typedPaths) {
@@ -2437,7 +2448,7 @@ export class JsonCodec implements Codec {
     }
 
     // Per-dynamic-path Dynamic V2 prefixes
-    for (const path of this.dynamicPaths) {
+    for (const path of dynPaths) {
       const codec = new DynamicCodec();
       codec.setWriteVersion(Dynamic.VERSION_V2);
       const pathCol = json.pathColumns.get(path)!;
@@ -2533,18 +2544,52 @@ export class JsonCodec implements Codec {
       if (pathCol) writer.write(tp.codec.encode(pathCol));
     }
 
-    // 2. Dynamic path columns (V2 encoding)
+    // 2. Dynamic path columns (V2 encoding, limited to maxDynamicPaths)
     for (const path of this.dynamicPaths) {
       const pathCol = json.pathColumns.get(path)!;
       const pathCodec = this.dynamicCodecs.get(path)!;
       writer.write(pathCodec.encode(pathCol, pathCodec.estimateSize(pathCol.length)));
     }
 
-    // 3. Shared data Map(String, String) — empty map (no overflow paths)
-    //    Format: offsets (BigUint64Array all zeros) + 0 keys + 0 values
-    const offsets = new BigUint64Array(rows); // all 0n = no entries per row
-    writer.write(new Uint8Array(offsets.buffer, offsets.byteOffset, offsets.byteLength));
-    // No keys or values to write (0 total entries)
+    // 3. Shared data Map(String, String) for overflow paths
+    //    Format: offsets (BigUint64Array cumulative) + keys (String col) + values (String col)
+    //    Each value is binary-encoded: [type_byte(s)][value_data]
+    if (this.sharedPaths.length === 0) {
+      // No overflow — write empty map
+      const offsets = new BigUint64Array(rows);
+      writer.write(new Uint8Array(offsets.buffer, offsets.byteOffset, offsets.byteLength));
+    } else {
+      // Collect per-row entries: [path, binary-encoded value]
+      const allKeys: string[] = [];
+      const allValues: Uint8Array[] = [];
+      const offsets = new BigUint64Array(rows);
+      let cumulative = 0n;
+
+      for (let row = 0; row < rows; row++) {
+        for (const path of this.sharedPaths) {
+          const pathCol = json.pathColumns.get(path);
+          if (!pathCol) continue;
+          const val = pathCol.get(row);
+          if (val === null || val === undefined) continue;
+          allKeys.push(path);
+          allValues.push(encodeBinaryValue(val));
+        }
+        cumulative = BigInt(allKeys.length);
+        offsets[row] = cumulative;
+      }
+
+      // Stream 1: offsets
+      writer.write(new Uint8Array(offsets.buffer, offsets.byteOffset, offsets.byteLength));
+
+      // Stream 2: keys (path names as strings)
+      for (const key of allKeys) writer.writeString(key);
+
+      // Stream 3: values (binary blobs as varint-length-prefixed bytes)
+      for (const val of allValues) {
+        writer.writeVarint(val.length);
+        writer.write(val);
+      }
+    }
 
     return writer.finish();
   }
@@ -2763,7 +2808,9 @@ function createCodec(type: string): Codec {
   if (type === "Dynamic") return new DynamicCodec();
   if (type === "JSON" || type.startsWith("JSON")) {
     const typedPaths = parseJsonTypedPaths(type);
-    return new JsonCodec(typedPaths);
+    const mdpMatch = type.match(/max_dynamic_paths\s*=\s*(\d+)/);
+    const maxDynamicPaths = mdpMatch ? parseInt(mdpMatch[1], 10) : 32;
+    return new JsonCodec(typedPaths, maxDynamicPaths);
   }
 
   if (type.startsWith("FixedString"))

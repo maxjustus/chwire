@@ -423,44 +423,49 @@ describe("Native HTTP Integration Fuzz Tests", { timeout: 600000 }, () => {
             );
           }
 
-          // Read via Native (V1/V2 with shared data) and decode.
-          // Tests decode correctness — shared data paths are decoded from binary
-          // format and values are verified. V1/V2 round-trip encode is NOT tested
-          // because shared data Map reconstruction requires binary value encoding
-          // back into the Map(String, String) format.
+          // Read via Native (V1/V2 with shared data), decode, re-encode, insert to dst
+          const dstTable = `fuzz_json_shared_dst_${i}`;
+          await consume(
+            query(
+              `CREATE TABLE ${dstTable} (id UInt64, data JSON(max_dynamic_paths=2)) ENGINE = MergeTree ORDER BY id`,
+              sessionId,
+              { baseUrl, auth },
+            ),
+          );
+
           const queryResult = query(
             `SELECT * FROM ${srcTable} ORDER BY id FORMAT Native`,
             sessionId,
             { baseUrl, auth },
           );
 
-          let totalRows = 0;
           let blocksDecoded = 0;
           for await (const block of streamDecodeNative(dataChunks(queryResult))) {
             blocksDecoded++;
-            totalRows += block.rowCount;
-            // Verify every row can be accessed without error
-            for (let r = 0; r < block.rowCount; r++) {
-              const row = block.columnData[1].get(r) as Record<string, unknown>;
-              if (row === null) continue;
-              // Verify it's a valid object with at least some paths
-              if (typeof row !== "object") {
-                throw new Error(`Row ${r}: expected object, got ${typeof row}`);
-              }
-            }
+            const encoded = encodeNative(block);
+            await insert(`INSERT INTO ${dstTable} FORMAT Native`, encoded, insertSessionId, {
+              baseUrl,
+              auth,
+            });
           }
 
-          // Verify row count via SQL
+          // Verify row counts match
           const srcCount = await collectText(
             query(`SELECT count() FROM ${srcTable} FORMAT TabSeparated`, sessionId, {
               baseUrl,
               auth,
             }),
           );
-          if (parseInt(srcCount.trim(), 10) !== totalRows) {
-            throw new Error(`Row count mismatch: SQL=${srcCount.trim()}, decoded=${totalRows}`);
+          const dstCount = await collectText(
+            query(`SELECT count() FROM ${dstTable} FORMAT TabSeparated`, sessionId, {
+              baseUrl,
+              auth,
+            }),
+          );
+          if (srcCount.trim() !== dstCount.trim()) {
+            throw new Error(`Row count mismatch: src=${srcCount.trim()}, dst=${dstCount.trim()}`);
           }
-          console.log(`  [${i + 1}/${N}] done: ${totalRows} rows, ${blocksDecoded} blocks`);
+          console.log(`  [${i + 1}/${N}] done: ${srcCount.trim()} rows, ${blocksDecoded} blocks`);
         } catch (err) {
           logFuzzError(
             {
@@ -477,6 +482,12 @@ describe("Native HTTP Integration Fuzz Tests", { timeout: 600000 }, () => {
         } finally {
           await consume(
             query(`DROP TABLE IF EXISTS ${srcTable} SYNC`, insertSessionId, {
+              baseUrl,
+              auth,
+            }),
+          );
+          await consume(
+            query(`DROP TABLE IF EXISTS fuzz_json_shared_dst_${i} SYNC`, insertSessionId, {
               baseUrl,
               auth,
             }),
