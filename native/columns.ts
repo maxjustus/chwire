@@ -275,14 +275,26 @@ export class DynamicColumn extends AbstractColumn {
 export class JsonColumn extends AbstractColumn {
   readonly type: string = "JSON";
   readonly paths: string[];
-  readonly pathColumns: Map<string, Column>; // Polymorphic: typed paths use their codecs
+  readonly pathColumns: Map<string, Column>;
+  /** Dynamic path names from V1/V2 decode (preserves server's path split for round-trip). */
+  readonly decodedDynamicPaths?: string[];
+  /** Shared data path names from V1/V2 decode. */
+  readonly decodedSharedPaths?: string[];
   private _length: number;
 
-  constructor(paths: string[], pathColumns: Map<string, Column>, length: number) {
+  constructor(
+    paths: string[],
+    pathColumns: Map<string, Column>,
+    length: number,
+    decodedDynamicPaths?: string[],
+    decodedSharedPaths?: string[],
+  ) {
     super();
     this.paths = paths;
     this.pathColumns = pathColumns;
     this._length = length;
+    this.decodedDynamicPaths = decodedDynamicPaths;
+    this.decodedSharedPaths = decodedSharedPaths;
   }
 
   get length(): number {

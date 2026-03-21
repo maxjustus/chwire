@@ -2468,18 +2468,24 @@ export class JsonCodec implements Codec {
    * Sorts by frequency (most non-null values first), then alphabetically for ties.
    * Top maxDynamicPaths paths get Dynamic columns; rest go to shared data Map.
    */
-  private splitPathsByFrequency(_json: JsonColumn): void {
-    // Sort alphabetically, take first maxDynamicPaths as dynamic columns.
-    // TODO: sort by frequency (most non-null values first) like ClickHouse does.
-    // Alphabetical is correct but suboptimal — infrequent paths may get Dynamic
-    // columns while frequent ones overflow to shared data.
+  private splitDynamicAndSharedPaths(json: JsonColumn): void {
+    // If the column was decoded from V1/V2, preserve the server's path assignment.
+    // This ensures round-trip fidelity — the server expects the same dynamic/shared
+    // split when re-inserting into the same table.
+    if (json.decodedDynamicPaths && json.decodedSharedPaths) {
+      this.dynamicPaths = json.decodedDynamicPaths;
+      this.sharedPaths = json.decodedSharedPaths;
+      return;
+    }
+
+    // Fresh data: sort alphabetically, take first maxDynamicPaths.
     const sorted = this.dynamicPaths.slice().sort();
     this.dynamicPaths = sorted.slice(0, this.maxDynamicPaths);
     this.sharedPaths = sorted.slice(this.maxDynamicPaths);
   }
 
   private writePrefixV1V2(writer: BufferWriter, json: JsonColumn) {
-    this.splitPathsByFrequency(json);
+    this.splitDynamicAndSharedPaths(json);
 
     writer.writeU64LE(this.writeVersion);
 
@@ -2496,8 +2502,12 @@ export class JsonCodec implements Codec {
     }
 
     for (const path of this.dynamicPaths) {
-      const codec = new DynamicCodec();
-      codec.setWriteVersion(Dynamic.VERSION_V2);
+      // Reuse decoded codecs if available (they have correct V1/V2 state from readPrefix)
+      let codec = this.dynamicCodecs.get(path);
+      if (!codec) {
+        codec = new DynamicCodec();
+        codec.setWriteVersion(Dynamic.VERSION_V2);
+      }
       const pathCol = json.pathColumns.get(path)!;
       codec.writePrefix(writer, pathCol);
       this.dynamicCodecs.set(path, codec);
@@ -2728,7 +2738,7 @@ export class JsonCodec implements Codec {
       ...this.dynamicPaths,
       ...sharedPaths,
     ];
-    return new JsonColumn(allPaths, pathColumns, rows);
+    return new JsonColumn(allPaths, pathColumns, rows, this.dynamicPaths, sharedPaths);
   }
 
   fromValues(values: unknown[]): JsonColumn {
