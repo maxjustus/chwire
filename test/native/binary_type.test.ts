@@ -100,10 +100,127 @@ describe("decodeBinaryValue", () => {
   });
 
   it("Date: days since epoch", () => {
-    // 0x0F Date + 19737 days (2024-01-15) as U16 LE
     const data = new Uint8Array([0x0f, 0x19, 0x4d]);
-    const result = decodeBinaryValue(data);
-    assert.strictEqual(result, 0x4d19); // 19737
+    assert.strictEqual(decodeBinaryValue(data), 0x4d19);
+  });
+
+  it("DateTime: unix timestamp", () => {
+    // 0x11 DateTime + empty timezone (varint 0) + timestamp 1705312245 as U32 LE
+    const buf = new ArrayBuffer(4);
+    new DataView(buf).setUint32(0, 1705312245, true);
+    const data = new Uint8Array([0x11, 0x00, ...new Uint8Array(buf)]);
+    assert.strictEqual(decodeBinaryValue(data), 1705312245);
+  });
+
+  it("DateTime64: ticks", () => {
+    // 0x12 DateTime64 + precision=3 + empty timezone + ticks as I64 LE
+    const buf = new ArrayBuffer(8);
+    new DataView(buf).setBigInt64(0, 1705312245123n, true);
+    const data = new Uint8Array([0x12, 0x03, 0x00, ...new Uint8Array(buf)]);
+    assert.strictEqual(decodeBinaryValue(data), 1705312245123n);
+  });
+
+  it("Int32: -42", () => {
+    const buf = new ArrayBuffer(4);
+    new DataView(buf).setInt32(0, -42, true);
+    const data = new Uint8Array([0x09, ...new Uint8Array(buf)]);
+    assert.strictEqual(decodeBinaryValue(data), -42);
+  });
+
+  it("Int16: 1234", () => {
+    const buf = new ArrayBuffer(2);
+    new DataView(buf).setInt16(0, 1234, true);
+    const data = new Uint8Array([0x08, ...new Uint8Array(buf)]);
+    assert.strictEqual(decodeBinaryValue(data), 1234);
+  });
+
+  it("UUID: 16 bytes", () => {
+    const uuidBytes = new Uint8Array(16);
+    for (let i = 0; i < 16; i++) uuidBytes[i] = i + 1;
+    const data = new Uint8Array([0x1d, ...uuidBytes]);
+    const result = decodeBinaryValue(data) as Uint8Array;
+    assert.strictEqual(result.length, 16);
+    assert.deepStrictEqual(Array.from(result), Array.from(uuidBytes));
+  });
+
+  it("IPv4: u32", () => {
+    // 0x25 IPv4 + 0xC0A80001 = 192.168.0.1 as u32 LE
+    const data = new Uint8Array([0x25, 0x01, 0x00, 0xa8, 0xc0]);
+    assert.strictEqual(decodeBinaryValue(data), 0xc0a80001);
+  });
+
+  it("IPv6: 16 bytes", () => {
+    const ipv6Bytes = new Uint8Array(16);
+    ipv6Bytes[0] = 0xfe;
+    ipv6Bytes[1] = 0x80;
+    const data = new Uint8Array([0x26, ...ipv6Bytes]);
+    const result = decodeBinaryValue(data) as Uint8Array;
+    assert.strictEqual(result.length, 16);
+    assert.strictEqual(result[0], 0xfe);
+  });
+
+  it("Nullable(Int64): non-null", () => {
+    const buf = new ArrayBuffer(8);
+    new DataView(buf).setBigInt64(0, 99n, true);
+    const data = new Uint8Array([0x23, 0x0a, 0x00, ...new Uint8Array(buf)]); // Nullable + Int64 + not-null + value
+    assert.strictEqual(decodeBinaryValue(data), 99n);
+  });
+
+  it("Nullable(Int64): null", () => {
+    const data = new Uint8Array([0x23, 0x0a, 0x01]); // Nullable + Int64 + is-null
+    assert.strictEqual(decodeBinaryValue(data), null);
+  });
+
+  it("Map(String, Int64)", () => {
+    // Map type + String key type + Int64 val type + count=1 + key "x" + val 7
+    const valBuf = new ArrayBuffer(8);
+    new DataView(valBuf).setBigInt64(0, 7n, true);
+    const data = new Uint8Array([
+      0x27,
+      0x15,
+      0x0a, // Map(String, Int64)
+      0x01, // count=1
+      0x01,
+      0x78, // key: varint(1) + "x"
+      ...new Uint8Array(valBuf), // val: 7 as I64 LE
+    ]);
+    const result = decodeBinaryValue(data) as { keys: unknown[]; values: unknown[] };
+    assert.strictEqual(result.keys[0], "x");
+    assert.strictEqual(result.values[0], 7n);
+  });
+
+  it("Tuple(UInt32, String)", () => {
+    const data = new Uint8Array([
+      0x1f, // Tuple
+      0x02, // 2 elements
+      0x03, // UInt32
+      0x15, // String
+      0x2a,
+      0x00,
+      0x00,
+      0x00, // UInt32: 42
+      0x03,
+      0x61,
+      0x62,
+      0x63, // String: "abc"
+    ]);
+    const result = decodeBinaryValue(data) as unknown[];
+    assert.strictEqual(result[0], 42);
+    assert.strictEqual(result[1], "abc");
+  });
+
+  it("FixedString(4)", () => {
+    const data = new Uint8Array([0x16, 0x04, 0x41, 0x42, 0x43, 0x00]); // FixedString(4) + "ABC\0"
+    const result = decodeBinaryValue(data) as Uint8Array;
+    assert.strictEqual(result.length, 4);
+    assert.strictEqual(result[0], 0x41); // 'A'
+  });
+
+  it("Date32: signed days", () => {
+    const buf = new ArrayBuffer(4);
+    new DataView(buf).setInt32(0, -100, true);
+    const data = new Uint8Array([0x10, ...new Uint8Array(buf)]);
+    assert.strictEqual(decodeBinaryValue(data), -100);
   });
 });
 

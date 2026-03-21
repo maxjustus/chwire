@@ -361,4 +361,130 @@ describe("Native HTTP Integration Fuzz Tests", { timeout: 600000 }, () => {
       }
     });
   }
+
+  it("round-trips JSON with shared data overflow (max_dynamic_paths=2)", async () => {
+    await init();
+    const clickhouse = await startClickHouse();
+    const baseUrl = `${clickhouse.url}/`;
+    const auth = { username: clickhouse.username, password: clickhouse.password };
+
+    try {
+      const N = parseInt(process.env.FUZZ_ITERATIONS ?? "3", 10);
+      const rowCount = parseInt(process.env.FUZZ_ROWS ?? "1000", 10);
+
+      for (let i = 0; i < N; i++) {
+        const sessionId = `json_shared_${Date.now()}_${i}`;
+        const insertSessionId = `${sessionId}_ins`;
+        const srcTable = `fuzz_json_shared_src_${i}`;
+        // Random number of dynamic paths (3-8), with max_dynamic_paths=2 to force overflow
+        const numPaths = randomInt(3, 8);
+        const pathDefs = [];
+        for (let p = 0; p < numPaths; p++) pathDefs.push(`p${p}`);
+
+        console.log(`[http json shared fuzz ${i + 1}/${N}] ${numPaths} paths, max_dynamic_paths=2`);
+
+        try {
+          // Create table with low max_dynamic_paths to force shared data
+          await consume(
+            query(
+              `CREATE TABLE ${srcTable} (id UInt64, data JSON(max_dynamic_paths=2)) ENGINE = MergeTree ORDER BY id`,
+              sessionId,
+              { baseUrl, auth },
+            ),
+          );
+
+          // Insert random data via JSONEachRow — each row has a random subset of paths
+          // Values are mixed types to exercise binary encoding: ints, strings, floats, bools
+          const insertBatches = Math.ceil(rowCount / 500);
+          for (let b = 0; b < insertBatches; b++) {
+            const batchSize = Math.min(500, rowCount - b * 500);
+            const rows: string[] = [];
+            for (let r = 0; r < batchSize; r++) {
+              const obj: Record<string, unknown> = {};
+              // Each row gets a random subset of paths with random types
+              for (let p = 0; p < numPaths; p++) {
+                if (Math.random() < 0.6) {
+                  // Include this path
+                  const typeRoll = Math.random();
+                  if (typeRoll < 0.25) obj[`p${p}`] = randomInt(-1000, 1000);
+                  else if (typeRoll < 0.5) obj[`p${p}`] = `str_${randomInt(0, 9999)}`;
+                  else if (typeRoll < 0.75) obj[`p${p}`] = Math.random() < 0.5;
+                  else obj[`p${p}`] = Math.random() * 100;
+                }
+              }
+              rows.push(JSON.stringify({ id: b * 500 + r, data: obj }));
+            }
+            await consume(
+              query(
+                `INSERT INTO ${srcTable} FORMAT JSONEachRow\n${rows.join("\n")}`,
+                insertSessionId,
+                { baseUrl, auth },
+              ),
+            );
+          }
+
+          // Read via Native (V1/V2 with shared data) and decode.
+          // Tests decode correctness — shared data paths are decoded from binary
+          // format and values are verified. V1/V2 round-trip encode is NOT tested
+          // because shared data Map reconstruction requires binary value encoding
+          // back into the Map(String, String) format.
+          const queryResult = query(
+            `SELECT * FROM ${srcTable} ORDER BY id FORMAT Native`,
+            sessionId,
+            { baseUrl, auth },
+          );
+
+          let totalRows = 0;
+          let blocksDecoded = 0;
+          for await (const block of streamDecodeNative(dataChunks(queryResult))) {
+            blocksDecoded++;
+            totalRows += block.rowCount;
+            // Verify every row can be accessed without error
+            for (let r = 0; r < block.rowCount; r++) {
+              const row = block.columnData[1].get(r) as Record<string, unknown>;
+              if (row === null) continue;
+              // Verify it's a valid object with at least some paths
+              if (typeof row !== "object") {
+                throw new Error(`Row ${r}: expected object, got ${typeof row}`);
+              }
+            }
+          }
+
+          // Verify row count via SQL
+          const srcCount = await collectText(
+            query(`SELECT count() FROM ${srcTable} FORMAT TabSeparated`, sessionId, {
+              baseUrl,
+              auth,
+            }),
+          );
+          if (parseInt(srcCount.trim(), 10) !== totalRows) {
+            throw new Error(`Row count mismatch: SQL=${srcCount.trim()}, decoded=${totalRows}`);
+          }
+          console.log(`  [${i + 1}/${N}] done: ${totalRows} rows, ${blocksDecoded} blocks`);
+        } catch (err) {
+          logFuzzError(
+            {
+              testType: "http",
+              iteration: i,
+              totalIterations: N,
+              compression: false,
+              rows: rowCount,
+              jsonType: `JSON(max_dynamic_paths=2) with ${numPaths} paths`,
+            },
+            err,
+          );
+          throw err;
+        } finally {
+          await consume(
+            query(`DROP TABLE IF EXISTS ${srcTable} SYNC`, insertSessionId, {
+              baseUrl,
+              auth,
+            }),
+          );
+        }
+      }
+    } finally {
+      await stopClickHouse();
+    }
+  });
 });

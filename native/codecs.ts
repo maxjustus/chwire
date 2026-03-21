@@ -2029,46 +2029,85 @@ class DynamicCodec implements Codec {
   readonly type = "Dynamic";
   private types: string[] = [];
   private codecs: Codec[] = [];
-  private version: bigint = Dynamic.VERSION_V3;
+  private readVersion: bigint = Dynamic.VERSION_V3;
+  private writeVersion: bigint = Dynamic.VERSION_V3;
+  /** Maps original DynamicColumn type indices → compacted V3 write indices (set by writePrefix). */
+  private v3IndexMap: Map<number, number> | null = null;
 
-  private isV1V2(): boolean {
+  private isReadV1V2(): boolean {
     return (
-      this.version === Dynamic.VERSION_V1_LEGACY ||
-      this.version === Dynamic.VERSION_V1 ||
-      this.version === Dynamic.VERSION_V2
+      this.readVersion === Dynamic.VERSION_V1_LEGACY ||
+      this.readVersion === Dynamic.VERSION_V1 ||
+      this.readVersion === Dynamic.VERSION_V2
+    );
+  }
+
+  private isWriteV1V2(): boolean {
+    return (
+      this.writeVersion === Dynamic.VERSION_V1_LEGACY ||
+      this.writeVersion === Dynamic.VERSION_V1 ||
+      this.writeVersion === Dynamic.VERSION_V2
     );
   }
 
   /** Set the version used for encoding. Default V3, set to V2 for legacy servers. */
   setWriteVersion(v: bigint) {
-    this.version = v;
+    this.writeVersion = v;
   }
 
   writePrefix(writer: BufferWriter, col: Column) {
     const dyn = col as DynamicColumn;
-    this.types = dyn.types;
-    this.codecs = this.types.map((t) => getCodec(t));
 
-    if (this.isV1V2()) {
+    if (this.isWriteV1V2()) {
+      this.types = dyn.types;
+      this.codecs = this.types.map((t) => getCodec(t));
       this.writePrefixV2(writer, dyn);
       return;
     }
 
-    // V3 flattened
+    // V3 flattened: strip types with empty groups (e.g. SharedVariant from V1/V2 decode)
+    // and build a compact index map for discriminator remapping in encode().
+    this.v3IndexMap = new Map();
+    const activeTypes: string[] = [];
+    const origIndices: number[] = []; // new index → original index
+    for (let i = 0; i < dyn.types.length; i++) {
+      if (dyn.groups.has(i)) {
+        this.v3IndexMap.set(i, activeTypes.length);
+        origIndices.push(i);
+        activeTypes.push(dyn.types[i]);
+      }
+    }
+    this.types = activeTypes;
+    this.codecs = this.types.map((t) => getCodec(t));
+
     writer.writeU64LE(Dynamic.VERSION_V3);
     writer.writeVarint(this.types.length);
     for (const t of this.types) writer.writeString(t);
 
     for (let i = 0; i < this.types.length; i++) {
-      const group = dyn.groups.get(i);
+      const group = dyn.groups.get(origIndices[i]);
       if (group) this.codecs[i].writePrefix?.(writer, group);
     }
   }
 
+  /** Position where SV was inserted during writePrefixV2, or -1 if SV was already present. */
+  private insertedSvPos = -1;
+
   private writePrefixV2(writer: BufferWriter, dyn: DynamicColumn) {
-    // Compute wire types: all types sorted, with SharedVariant "String" removed.
-    // SharedVariant is at its sorted position in this.types (from decode or fromValues).
-    const svPos = this.findSharedVariantPos();
+    // V1/V2 requires SharedVariant "String" at its sorted position in the type list.
+    // If SV is already present (V1/V2 decoded column), strip it for wire types.
+    // If not present (fromValues column), insert it now and track the position for
+    // discriminator/group remapping in encode.
+    this.insertedSvPos = -1;
+    let svPos = this.findSharedVariantPos();
+    if (svPos === -1) {
+      // Insert SV at sorted position
+      svPos = this.types.findIndex((t) => t >= "String");
+      if (svPos === -1) svPos = this.types.length;
+      this.types.splice(svPos, 0, "String");
+      this.codecs = this.types.map((t) => getCodec(t));
+      this.insertedSvPos = svPos;
+    }
     const wireTypes = this.types.filter((_, i) => i !== svPos);
 
     writer.writeU64LE(Dynamic.VERSION_V2);
@@ -2096,15 +2135,16 @@ class DynamicCodec implements Codec {
   }
 
   readPrefix(reader: BufferReader) {
-    this.version = reader.readU64LE();
+    this.readVersion = reader.readU64LE();
+    this.writeVersion = this.readVersion;
 
-    if (this.isV1V2()) {
+    if (this.isReadV1V2()) {
       this.readPrefixV1V2(reader);
       return;
     }
 
-    if (this.version !== Dynamic.VERSION_V3) {
-      throw new Error(`Dynamic: unsupported version V${this.version}`);
+    if (this.readVersion !== Dynamic.VERSION_V3) {
+      throw new Error(`Dynamic: unsupported version V${this.readVersion}`);
     }
 
     // V3 flattened prefix
@@ -2118,7 +2158,7 @@ class DynamicCodec implements Codec {
 
   private readPrefixV1V2(reader: BufferReader) {
     // V1 (legacy=0 or modern=1) has extra max_dynamic_types field
-    if (this.version === Dynamic.VERSION_V1_LEGACY || this.version === Dynamic.VERSION_V1) {
+    if (this.readVersion === Dynamic.VERSION_V1_LEGACY || this.readVersion === Dynamic.VERSION_V1) {
       reader.readVarint(); // skip max_dynamic_types
     }
 
@@ -2147,17 +2187,36 @@ class DynamicCodec implements Codec {
     const hint = sizeHint ?? this.estimateSize(col.length);
     const writer = new BufferWriter(hint);
 
-    if (this.isV1V2()) {
+    if (this.isWriteV1V2()) {
       // V1/V2: u8 discriminators, 0xFF = NULL
-      const nullDisc = this.types.length;
+      const origNull = dyn.types.length;
+      const svIns = this.insertedSvPos; // -1 if SV was already present
       const rows = dyn.discriminators.length;
       const discs = new Uint8Array(rows);
       for (let i = 0; i < rows; i++) {
-        discs[i] = dyn.discriminators[i] === nullDisc ? 0xff : dyn.discriminators[i];
+        const d = dyn.discriminators[i];
+        if (d === origNull) {
+          discs[i] = 0xff;
+        } else if (svIns >= 0 && d >= svIns) {
+          discs[i] = d + 1; // shift past inserted SV
+        } else {
+          discs[i] = d;
+        }
       }
       writer.write(discs);
+    } else if (this.v3IndexMap && this.v3IndexMap.size !== dyn.types.length) {
+      // V3 with remapped indices (V1/V2 decoded data → V3 encode, stripped SharedVariant)
+      const nullDisc = this.types.length;
+      const origNull = dyn.types.length;
+      const rows = dyn.discriminators.length;
+      const remapped = new Uint8Array(rows);
+      for (let i = 0; i < rows; i++) {
+        const d = dyn.discriminators[i];
+        remapped[i] = d === origNull ? nullDisc : (this.v3IndexMap.get(d) ?? nullDisc);
+      }
+      writer.write(remapped);
     } else {
-      // V3: variable-size discriminators
+      // V3: discriminators match type list, write as-is
       writer.write(asBytes(dyn.discriminators));
     }
 
@@ -2166,8 +2225,26 @@ class DynamicCodec implements Codec {
   }
 
   private encodeGroups(dyn: DynamicColumn, writer: BufferWriter): void {
+    // Map codec index → original group key in dyn.groups
+    // - v3IndexMap: V3 encode with stripped types (V1/V2 decoded → V3)
+    // - insertedSvPos: V1/V2 encode with inserted SV (fromValues → V1/V2)
+    const v3Reverse = this.v3IndexMap
+      ? new Map([...this.v3IndexMap.entries()].map(([orig, compact]) => [compact, orig]))
+      : null;
     for (let i = 0; i < this.codecs.length; i++) {
-      const group = dyn.groups.get(i);
+      let groupKey: number;
+      if (v3Reverse) {
+        groupKey = v3Reverse.get(i) ?? i;
+      } else if (this.insertedSvPos >= 0) {
+        // SV was inserted: codec[svPos] = SV (no group), others shift
+        if (i < this.insertedSvPos) groupKey = i;
+        else if (i === this.insertedSvPos) {
+          continue; // SV has no group data
+        } else groupKey = i - 1;
+      } else {
+        groupKey = i;
+      }
+      const group = dyn.groups.get(groupKey);
       if (group) {
         const groupHint = this.codecs[i].estimateSize(group.length);
         writer.write(this.codecs[i].encode(group, groupHint));
@@ -2176,7 +2253,7 @@ class DynamicCodec implements Codec {
   }
 
   decode(reader: BufferReader, rows: number, state: DeserializerState): DynamicColumn {
-    if (this.isV1V2()) {
+    if (this.isReadV1V2()) {
       return this.decodeV1V2(reader, rows, state);
     }
 
@@ -2290,7 +2367,8 @@ export class JsonCodec implements Codec {
   private typedPathNames: Set<string>;
   private dynamicPaths: string[] = [];
   private dynamicCodecs = new Map<string, DynamicCodec>();
-  private version: bigint = JSONFormat.VERSION_V3;
+  private readVersion: bigint = JSONFormat.VERSION_V3;
+  private writeVersion: bigint = JSONFormat.VERSION_V3;
 
   constructor(typedPaths: { name: string; type: string }[] = []) {
     this.typedPaths = typedPaths.map((p) => ({
@@ -2303,14 +2381,17 @@ export class JsonCodec implements Codec {
 
   /** Set the version used for encoding. Default V3. */
   setWriteVersion(v: bigint) {
-    this.version = v;
+    this.writeVersion = v;
   }
 
   writePrefix(writer: BufferWriter, col: Column) {
     const json = col as JsonColumn;
     this.dynamicPaths = json.paths.filter((p) => !this.typedPathNames.has(p));
 
-    if (this.version === JSONFormat.VERSION_V1 || this.version === JSONFormat.VERSION_V2) {
+    if (
+      this.writeVersion === JSONFormat.VERSION_V1 ||
+      this.writeVersion === JSONFormat.VERSION_V2
+    ) {
       this.writePrefixV1V2(writer, json);
       return;
     }
@@ -2338,10 +2419,10 @@ export class JsonCodec implements Codec {
   }
 
   private writePrefixV1V2(writer: BufferWriter, json: JsonColumn) {
-    writer.writeU64LE(this.version);
+    writer.writeU64LE(this.writeVersion);
 
     // V1 has extra max_dynamic_paths field
-    if (this.version === JSONFormat.VERSION_V1) {
+    if (this.writeVersion === JSONFormat.VERSION_V1) {
       writer.writeVarint(this.dynamicPaths.length);
     }
 
@@ -2368,15 +2449,16 @@ export class JsonCodec implements Codec {
   }
 
   readPrefix(reader: BufferReader) {
-    this.version = reader.readU64LE();
+    this.readVersion = reader.readU64LE();
+    this.writeVersion = this.readVersion;
 
-    if (this.version === JSONFormat.VERSION_V1 || this.version === JSONFormat.VERSION_V2) {
+    if (this.readVersion === JSONFormat.VERSION_V1 || this.readVersion === JSONFormat.VERSION_V2) {
       this.readPrefixV1V2(reader);
       return;
     }
 
-    if (this.version !== JSONFormat.VERSION_V3) {
-      throw new Error(`JSON: only V3 supported, got V${this.version}`);
+    if (this.readVersion !== JSONFormat.VERSION_V3) {
+      throw new Error(`JSON: only V3 supported, got V${this.readVersion}`);
     }
 
     // V3 flattened prefix
@@ -2397,7 +2479,7 @@ export class JsonCodec implements Codec {
 
   private readPrefixV1V2(reader: BufferReader) {
     // V1 (version=0) has extra max_dynamic_paths field
-    if (this.version === JSONFormat.VERSION_V1) {
+    if (this.readVersion === JSONFormat.VERSION_V1) {
       reader.readVarint(); // skip max_dynamic_paths
     }
 
@@ -2425,7 +2507,7 @@ export class JsonCodec implements Codec {
     const hint = sizeHint ?? this.estimateSize(col.length);
     const writer = new BufferWriter(hint);
 
-    if (this.version === JSONFormat.VERSION_V1 || this.version === JSONFormat.VERSION_V2) {
+    if (this.readVersion === JSONFormat.VERSION_V1 || this.readVersion === JSONFormat.VERSION_V2) {
       return this.encodeV1V2(json, writer);
     }
 
@@ -2468,7 +2550,7 @@ export class JsonCodec implements Codec {
   }
 
   decode(reader: BufferReader, rows: number, state: DeserializerState): JsonColumn {
-    if (this.version === JSONFormat.VERSION_V1 || this.version === JSONFormat.VERSION_V2) {
+    if (this.readVersion === JSONFormat.VERSION_V1 || this.readVersion === JSONFormat.VERSION_V2) {
       return this.decodeV1V2(reader, rows, state);
     }
 
@@ -2544,14 +2626,16 @@ export class JsonCodec implements Codec {
       prevOffset = end;
     }
 
-    // Materialize sparse entries into dense DataColumns
+    // Materialize sparse entries into DynamicColumns (not DataColumns) so
+    // the encode path can treat all dynamic paths uniformly.
     const sharedPaths: string[] = [];
+    const dynCodec = new DynamicCodec();
     for (const [path, rowMap] of sharedSparse) {
       if (!pathColumns.has(path)) {
         sharedPaths.push(path);
         const values = new Array(rows).fill(null);
         for (const [row, val] of rowMap) values[row] = val;
-        pathColumns.set(path, new DataColumn("Dynamic", values));
+        pathColumns.set(path, dynCodec.fromValues(values));
       }
     }
 

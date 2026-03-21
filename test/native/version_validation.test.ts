@@ -8,8 +8,10 @@
 
 import assert from "node:assert";
 import { describe, it } from "node:test";
-import { decodeNativeBlock } from "../../native/index.ts";
+import { decodeNativeBlock, getCodec } from "../../native/index.ts";
 import { Dynamic, JSONFormat } from "../../native/constants.ts";
+import { BufferReader, BufferWriter } from "../../native/io.ts";
+import { DataColumn, DynamicColumn } from "../../native/columns.ts";
 import { buildTestBlock } from "../test_utils.ts";
 
 /** Build a V3 Dynamic block (flattened format). */
@@ -174,6 +176,44 @@ describe("version validation tests", () => {
         () => decodeNativeBlock(data, 0, { clientVersion: 54454 }),
         /Dynamic: unsupported version V99/,
       );
+    });
+
+    it("round-trips Dynamic V2 encode → decode", () => {
+      // Build a DynamicColumn with 2 types + NULL, encode as V2, decode, verify
+      // SharedVariant "String" inserts at sorted position → ["Int64", "String(SV)", "String"]
+      // disc: 0=Int64, 1=SV, 2=String, 3=NULL
+      const discriminators = new Uint8Array([0, 2, 3, 0]); // Int64, String, NULL, Int64
+      const groups = new Map<number, import("../../native/columns.ts").Column>();
+      groups.set(0, new DataColumn("Int64", new BigInt64Array([42n, 99n])));
+      groups.set(2, new DataColumn("String", ["hello"]));
+
+      // Insert SharedVariant at sorted position (between Int64 and String)
+      const allTypes = ["Int64", "String", "String"]; // SV at index 1
+      const col = new DynamicColumn(allTypes, discriminators, groups);
+
+      // Encode as V2
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const codec = getCodec("Dynamic") as any;
+      codec.setWriteVersion(Dynamic.VERSION_V2);
+      const writer = new BufferWriter();
+      codec.writePrefix!(writer, col);
+      writer.write(codec.encode(col));
+      const encoded = writer.finish();
+
+      // Decode the V2 bytes
+      const reader = new BufferReader(encoded, 0);
+      const codec2 = getCodec("Dynamic");
+      codec2.readPrefix?.(reader);
+      const decoded = codec2.decode(reader, 4, {
+        serNode: { kind: 0, children: [] },
+        sparseRuntime: new Map(),
+      }) as DynamicColumn;
+
+      assert.strictEqual(decoded.length, 4);
+      assert.strictEqual(decoded.get(0), 42n); // Int64
+      assert.strictEqual(decoded.get(1), "hello"); // String
+      assert.strictEqual(decoded.get(2), null); // NULL
+      assert.strictEqual(decoded.get(3), 99n); // Int64
     });
   });
 
