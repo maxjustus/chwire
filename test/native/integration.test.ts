@@ -164,10 +164,7 @@ describe("Native format integration", { timeout: 120000 }, () => {
     assert.strictEqual(meta2.scores, undefined);
 
     assert.strictEqual(decodedRows[0][2], "hello");
-    assert.ok(
-      decodedRows[1][2] === 42n || decodedRows[1][2] === 42 || String(decodedRows[1][2]) === "42",
-      `Expected 42, got ${decodedRows[1][2]}`,
-    );
+    assert.strictEqual(decodedRows[1][2], 42n);
     assert.strictEqual(decodedRows[2][2], null);
   }
 

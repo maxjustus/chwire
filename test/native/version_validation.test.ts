@@ -3,7 +3,7 @@
  *
  * These types use readPrefix() which validates the format version.
  * Dynamic supports V1 (legacy=0, modern=1), V2, and V3 (flattened).
- * JSON currently supports V3 only (V1/V2 decode coming soon).
+ * JSON supports V1, V2, and V3 (flattened).
  */
 
 import assert from "node:assert";
