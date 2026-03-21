@@ -89,6 +89,7 @@ import {
   UINT16_MAX,
   UINT32_MAX,
   UINT256_MAX,
+  inferClickHouseType,
 } from "./coercion.ts";
 
 /**
@@ -2330,7 +2331,7 @@ class DynamicCodec implements Codec {
         // Will set null discriminator after we know typeOrder.length
         continue;
       }
-      const vType = this.guessType(v);
+      const vType = inferClickHouseType(v);
       let idx = typeIndex.get(vType);
       if (idx === undefined) {
         idx = typeOrder.length;
@@ -2366,25 +2367,12 @@ class DynamicCodec implements Codec {
     return rows * 2 + this.codecs.reduce((sum, c) => sum + c.estimateSize(Math.ceil(rows / 3)), 0);
   }
 
-  guessType(value: unknown): string {
-    if (value === null) return "String";
-    if (typeof value === "string") return "String";
-    if (typeof value === "number") return Number.isInteger(value) ? "Int64" : "Float64";
-    if (typeof value === "bigint") return "Int64";
-    if (typeof value === "boolean") return "Bool";
-    if (value instanceof Date) return "DateTime64(3)";
-    if (Array.isArray(value))
-      return value.length ? `Array(${this.guessType(value[0])})` : "Array(String)";
-    if (typeof value === "object") return "Map(String,String)";
-    return "String";
-  }
-
   readKinds(reader: BufferReader): SerializationNode {
     return readKindsMany(reader, this.codecs);
   }
   toLiteral(value: unknown): string | typeof SQL_NULL {
     if (value == null) return SQL_NULL;
-    const vType = this.guessType(value);
+    const vType = inferClickHouseType(value);
     const codec = getCodec(vType);
     return nullToLiteral(codec.toLiteral(value));
   }

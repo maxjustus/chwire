@@ -150,6 +150,7 @@ class Cursor {
   }
 }
 
+import { inferClickHouseType } from "./coercion.ts";
 import { parseTypeList, TEXT_DECODER, TEXT_ENCODER } from "./types.ts";
 
 // ---------- Type decoding: type byte → CH type name string ----------
@@ -307,24 +308,11 @@ export function decodeBinaryValue(data: Uint8Array): unknown {
  */
 export function encodeBinaryValue(value: unknown): Uint8Array {
   const parts: number[] = [];
-  const typeName = inferType(value);
+  // Binary encoding uses "Nothing" for null; inferClickHouseType returns "String"
+  const typeName = value == null ? "Nothing" : inferClickHouseType(value);
   encodeTypeBytes(parts, typeName);
   encodeValueBytes(parts, value, typeName);
   return new Uint8Array(parts);
-}
-
-function inferType(value: unknown): string {
-  if (value === null || value === undefined) return "Nothing";
-  if (typeof value === "boolean") return "Bool";
-  if (typeof value === "number") return Number.isInteger(value) ? "Int64" : "Float64";
-  if (typeof value === "bigint") return "Int64";
-  if (typeof value === "string") return "String";
-  if (value instanceof Date) return "DateTime";
-  if (Array.isArray(value)) {
-    if (value.length === 0) return "Array(Nothing)";
-    return `Array(${inferType(value[0])})`;
-  }
-  return "String"; // fallback: stringify objects
 }
 
 function encodeTypeBytes(out: number[], typeName: string): void {

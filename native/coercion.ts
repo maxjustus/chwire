@@ -255,3 +255,21 @@ export function toValidDecimal(v: unknown): string {
 export function isArrayLike(v: unknown): v is unknown[] | TypedArray {
   return Array.isArray(v) || (ArrayBuffer.isView(v) && !(v instanceof DataView));
 }
+
+/**
+ * Infer the ClickHouse type name for a JavaScript value.
+ * Used by DynamicCodec.fromValues and binary value encoding.
+ */
+export function inferClickHouseType(value: unknown): string {
+  if (value === null || value === undefined) return "String";
+  if (typeof value === "string") return "String";
+  if (typeof value === "number") return Number.isInteger(value) ? "Int64" : "Float64";
+  if (typeof value === "bigint") return "Int64";
+  if (typeof value === "boolean") return "Bool";
+  if (value instanceof ClickHouseDateTime64) return `DateTime64(${value.precision})`;
+  if (value instanceof Date) return "DateTime64(3)";
+  if (Array.isArray(value))
+    return value.length ? `Array(${inferClickHouseType(value[0])})` : "Array(String)";
+  if (typeof value === "object") return "Map(String,String)";
+  return "String";
+}
