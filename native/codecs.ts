@@ -2031,11 +2031,26 @@ class DynamicCodec implements Codec {
   private codecs: Codec[] = [];
   private version: bigint = Dynamic.VERSION_V3;
 
+  /** Set the version used for encoding. Default V3, set to V2 for legacy servers. */
+  setWriteVersion(v: bigint) {
+    this.version = v;
+  }
+
   writePrefix(writer: BufferWriter, col: Column) {
     const dyn = col as DynamicColumn;
     this.types = dyn.types;
     this.codecs = this.types.map((t) => getCodec(t));
 
+    if (
+      this.version === Dynamic.VERSION_V1_LEGACY ||
+      this.version === Dynamic.VERSION_V1 ||
+      this.version === Dynamic.VERSION_V2
+    ) {
+      this.writePrefixV2(writer, dyn);
+      return;
+    }
+
+    // V3 flattened
     writer.writeU64LE(Dynamic.VERSION_V3);
     writer.writeVarint(this.types.length);
     for (const t of this.types) writer.writeString(t);
@@ -2044,6 +2059,36 @@ class DynamicCodec implements Codec {
       const group = dyn.groups.get(i);
       if (group) this.codecs[i].writePrefix?.(writer, group);
     }
+  }
+
+  private writePrefixV2(writer: BufferWriter, dyn: DynamicColumn) {
+    // Compute wire types: all types sorted, with SharedVariant "String" removed.
+    // SharedVariant is at its sorted position in this.types (from decode or fromValues).
+    const svPos = this.findSharedVariantPos();
+    const wireTypes = this.types.filter((_, i) => i !== svPos);
+
+    writer.writeU64LE(Dynamic.VERSION_V2);
+    writer.writeVarint(wireTypes.length);
+    for (const t of wireTypes) writer.writeString(t);
+
+    // Variant mode u64 (BASIC=0)
+    writer.writeU64LE(0n);
+
+    // Nested type prefixes (all types including SV, in sorted order)
+    for (let i = 0; i < this.codecs.length; i++) {
+      const group = dyn.groups.get(i);
+      if (group) this.codecs[i].writePrefix?.(writer, group);
+    }
+  }
+
+  /** Find the SharedVariant position in the type list (sorted "String" insertion point). */
+  private findSharedVariantPos(): number {
+    // SharedVariant is the "String" that was inserted at sorted position.
+    // If there's no "String" type, SV doesn't exist in the list (V3 origin).
+    // For V2 encode of V3-origin data, insert SV now.
+    const pos = this.types.findIndex((t) => t >= "String");
+    if (pos >= 0 && this.types[pos] === "String") return pos;
+    return -1; // No SharedVariant present
   }
 
   readPrefix(reader: BufferReader) {
@@ -2102,9 +2147,39 @@ class DynamicCodec implements Codec {
     const hint = sizeHint ?? this.estimateSize(col.length);
     const writer = new BufferWriter(hint);
 
-    // Write discriminators as-is (already the right type)
+    if (
+      this.version === Dynamic.VERSION_V1_LEGACY ||
+      this.version === Dynamic.VERSION_V1 ||
+      this.version === Dynamic.VERSION_V2
+    ) {
+      return this.encodeV1V2(dyn, writer);
+    }
+
+    // V3: write discriminators as-is (variable-size based on type count)
     writer.write(asBytes(dyn.discriminators));
 
+    for (let i = 0; i < this.codecs.length; i++) {
+      const group = dyn.groups.get(i);
+      if (group) {
+        const groupHint = this.codecs[i].estimateSize(group.length);
+        writer.write(this.codecs[i].encode(group, groupHint));
+      }
+    }
+    return writer.finish();
+  }
+
+  private encodeV1V2(dyn: DynamicColumn, writer: BufferWriter): Uint8Array {
+    const nullDisc = this.types.length;
+    const rows = dyn.discriminators.length;
+
+    // V1/V2: u8 discriminators, 0xFF = NULL
+    const discs = new Uint8Array(rows);
+    for (let i = 0; i < rows; i++) {
+      discs[i] = dyn.discriminators[i] === nullDisc ? 0xff : dyn.discriminators[i];
+    }
+    writer.write(discs);
+
+    // Write group data for each type (including SharedVariant) in sorted order
     for (let i = 0; i < this.codecs.length; i++) {
       const group = dyn.groups.get(i);
       if (group) {
@@ -2245,10 +2320,21 @@ export class JsonCodec implements Codec {
     this.typedPathNames = new Set(this.typedPaths.map((tp) => tp.name));
   }
 
+  /** Set the version used for encoding. Default V3. */
+  setWriteVersion(v: bigint) {
+    this.version = v;
+  }
+
   writePrefix(writer: BufferWriter, col: Column) {
     const json = col as JsonColumn;
     this.dynamicPaths = json.paths.filter((p) => !this.typedPathNames.has(p));
 
+    if (this.version === JSONFormat.VERSION_V1 || this.version === JSONFormat.VERSION_V2) {
+      this.writePrefixV1V2(writer, json);
+      return;
+    }
+
+    // V3 flattened
     writer.writeU64LE(JSONFormat.VERSION_V3);
     writer.writeVarint(this.dynamicPaths.length);
     for (const p of this.dynamicPaths) writer.writeString(p);
@@ -2268,6 +2354,36 @@ export class JsonCodec implements Codec {
       codec.writePrefix(writer, pathCol);
       this.dynamicCodecs.set(path, codec);
     }
+  }
+
+  private writePrefixV1V2(writer: BufferWriter, json: JsonColumn) {
+    writer.writeU64LE(this.version);
+
+    // V1 has extra max_dynamic_paths field
+    if (this.version === JSONFormat.VERSION_V1) {
+      writer.writeVarint(this.dynamicPaths.length);
+    }
+
+    // Dynamic path names
+    writer.writeVarint(this.dynamicPaths.length);
+    for (const p of this.dynamicPaths) writer.writeString(p);
+
+    // Typed path prefixes
+    for (const tp of this.typedPaths) {
+      const pathCol = json.pathColumns.get(tp.name);
+      if (pathCol) tp.codec.writePrefix?.(writer, pathCol);
+    }
+
+    // Per-dynamic-path Dynamic V2 prefixes
+    for (const path of this.dynamicPaths) {
+      const codec = new DynamicCodec();
+      codec.setWriteVersion(Dynamic.VERSION_V2);
+      const pathCol = json.pathColumns.get(path)!;
+      codec.writePrefix(writer, pathCol);
+      this.dynamicCodecs.set(path, codec);
+    }
+
+    // Map(String, String) prefix — no-op for String key/value types
   }
 
   readPrefix(reader: BufferReader) {
@@ -2328,22 +2444,45 @@ export class JsonCodec implements Codec {
     const hint = sizeHint ?? this.estimateSize(col.length);
     const writer = new BufferWriter(hint);
 
-    // Encode typed path columns first (in schema order)
-    for (const tp of this.typedPaths) {
-      const pathCol = json.pathColumns.get(tp.name);
-      if (pathCol) {
-        const encoded = tp.codec.encode(pathCol);
-        writer.write(encoded);
-      }
+    if (this.version === JSONFormat.VERSION_V1 || this.version === JSONFormat.VERSION_V2) {
+      return this.encodeV1V2(json, writer);
     }
 
-    // Encode dynamic path columns
+    // V3: typed path columns + dynamic path columns
+    for (const tp of this.typedPaths) {
+      const pathCol = json.pathColumns.get(tp.name);
+      if (pathCol) writer.write(tp.codec.encode(pathCol));
+    }
     for (const path of this.dynamicPaths) {
       const pathCol = json.pathColumns.get(path)!;
       const pathCodec = this.dynamicCodecs.get(path)!;
-      const pathHint = pathCodec.estimateSize(pathCol.length);
-      writer.write(pathCodec.encode(pathCol, pathHint));
+      writer.write(pathCodec.encode(pathCol, pathCodec.estimateSize(pathCol.length)));
     }
+    return writer.finish();
+  }
+
+  private encodeV1V2(json: JsonColumn, writer: BufferWriter): Uint8Array {
+    const rows = json.length;
+
+    // 1. Typed path columns (same as V3)
+    for (const tp of this.typedPaths) {
+      const pathCol = json.pathColumns.get(tp.name);
+      if (pathCol) writer.write(tp.codec.encode(pathCol));
+    }
+
+    // 2. Dynamic path columns (V2 encoding)
+    for (const path of this.dynamicPaths) {
+      const pathCol = json.pathColumns.get(path)!;
+      const pathCodec = this.dynamicCodecs.get(path)!;
+      writer.write(pathCodec.encode(pathCol, pathCodec.estimateSize(pathCol.length)));
+    }
+
+    // 3. Shared data Map(String, String) — empty map (no overflow paths)
+    //    Format: offsets (BigUint64Array all zeros) + 0 keys + 0 values
+    const offsets = new BigUint64Array(rows); // all 0n = no entries per row
+    writer.write(new Uint8Array(offsets.buffer, offsets.byteOffset, offsets.byteLength));
+    // No keys or values to write (0 total entries)
+
     return writer.finish();
   }
 
