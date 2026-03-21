@@ -239,6 +239,8 @@ export class DynamicColumn extends AbstractColumn {
   readonly types: string[];
   readonly discriminators: DiscriminatorArray;
   readonly groups: Map<number, Column>;
+  /** True if types includes an implicit SharedVariant "String" from V1/V2 decode. */
+  readonly hasSharedVariant: boolean;
   private readonly groupIndices: Uint32Array;
   private readonly nullDisc: number;
 
@@ -247,11 +249,13 @@ export class DynamicColumn extends AbstractColumn {
     discriminators: DiscriminatorArray,
     groups: Map<number, Column>,
     groupIndices?: Uint32Array,
+    hasSharedVariant = false,
   ) {
     super();
     this.types = types;
     this.discriminators = discriminators;
     this.groups = groups;
+    this.hasSharedVariant = hasSharedVariant;
     this.nullDisc = types.length;
     this.groupIndices =
       groupIndices ?? countAndIndexDiscriminators(discriminators, this.nullDisc).indices;

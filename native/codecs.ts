@@ -2031,6 +2031,8 @@ class DynamicCodec implements Codec {
   private codecs: Codec[] = [];
   private readVersion: bigint = Dynamic.VERSION_V3;
   private writeVersion: bigint = Dynamic.VERSION_V3;
+  /** SharedVariant position in the types list (set by readPrefixV1V2). */
+  private svPos = -1;
   /** Maps original DynamicColumn type indices → compacted V3 write indices (set by writePrefix). */
   private v3IndexMap: Map<number, number> | null = null;
 
@@ -2094,13 +2096,15 @@ class DynamicCodec implements Codec {
   private insertedSvPos = -1;
 
   private writePrefixV2(writer: BufferWriter, dyn: DynamicColumn) {
-    // V1/V2 requires SharedVariant "String" at its sorted position in the type list.
-    // If SV is already present (V1/V2 decoded column), strip it for wire types.
-    // If not present (fromValues column), insert it now and track the position for
-    // discriminator/group remapping in encode.
+    // V1/V2 requires SharedVariant "String" at its sorted position.
+    // Use dyn.hasSharedVariant to determine if SV is already in the type list
+    // (from V1/V2 decode) vs a real "String" data type (from fromValues).
     this.insertedSvPos = -1;
-    let svPos = this.findSharedVariantPos();
-    if (svPos === -1) {
+    let svPos: number;
+    if (dyn.hasSharedVariant) {
+      // SV already present from decode — find its position
+      svPos = this.types.findIndex((t) => t >= "String");
+    } else {
       // Insert SV at sorted position
       svPos = this.types.findIndex((t) => t >= "String");
       if (svPos === -1) svPos = this.types.length;
@@ -2122,16 +2126,6 @@ class DynamicCodec implements Codec {
       const group = dyn.groups.get(i);
       if (group) this.codecs[i].writePrefix?.(writer, group);
     }
-  }
-
-  /** Find the SharedVariant position in the type list (sorted "String" insertion point). */
-  private findSharedVariantPos(): number {
-    // SharedVariant is the "String" that was inserted at sorted position.
-    // If there's no "String" type, SV doesn't exist in the list (V3 origin).
-    // For V2 encode of V3-origin data, insert SV now.
-    const pos = this.types.findIndex((t) => t >= "String");
-    if (pos >= 0 && this.types[pos] === "String") return pos;
-    return -1; // No SharedVariant present
   }
 
   readPrefix(reader: BufferReader) {
@@ -2173,7 +2167,29 @@ class DynamicCodec implements Codec {
     const svPos = this.types.findIndex((t) => t >= "String");
     if (svPos === -1) this.types.push("String");
     else this.types.splice(svPos, 0, "String");
+    this.svPos = svPos === -1 ? this.types.length - 1 : svPos;
     this.codecs = this.types.map((t) => getCodec(t));
+
+    // SharedVariant stores binary-encoded type+value blobs. Use raw bytes codec
+    // instead of StringCodec to avoid lossy UTF-8 decode of binary data.
+    const strCodec = this.codecs[this.svPos];
+    this.codecs[this.svPos] = {
+      type: "String",
+      decode: (reader: BufferReader, rows: number) => {
+        const values: Uint8Array[] = new Array(rows);
+        for (let i = 0; i < rows; i++) {
+          const len = reader.readVarint();
+          values[i] = reader.readBytes(len).slice();
+        }
+        return new DataColumn("String", values);
+      },
+      encode: (col: Column) => strCodec.encode(col),
+      fromValues: (vals: unknown[]) => new DataColumn("String", vals),
+      estimateSize: (rows: number) => rows * 16,
+      zeroValue: () => new Uint8Array(0),
+      readKinds: (reader: BufferReader) => strCodec.readKinds(reader),
+      toLiteral: (v: unknown) => strCodec.toLiteral(v),
+    };
 
     // V1/V2 wraps data in Variant serialization — read and skip variant mode
     reader.readU64LE(); // variant_mode (BASIC=0, COMPACT=1)
@@ -2285,7 +2301,31 @@ class DynamicCodec implements Codec {
 
     const { counts, indices } = countAndIndexDiscriminators(discriminators, nullDisc);
     const groups = decodeGroups(reader, this.codecs, counts, state);
-    return new DynamicColumn(this.types, discriminators, groups, indices);
+
+    // If SharedVariant has values, decode them from binary format and rebuild
+    // the column so get() returns proper typed values, not raw binary blobs.
+    const svGroup = this.svPos >= 0 ? groups.get(this.svPos) : undefined;
+    if (svGroup && svGroup.length > 0) {
+      const allValues = new Array(rows).fill(null);
+      const col = new DynamicColumn(this.types, discriminators, groups, indices, true);
+      for (let i = 0; i < rows; i++) {
+        const d = discriminators[i];
+        if (d === nullDisc) continue;
+        if (d === this.svPos) {
+          const raw = svGroup.get(indices[i]) as Uint8Array;
+          try {
+            allValues[i] = decodeBinaryValue(raw);
+          } catch {
+            allValues[i] = raw;
+          }
+        } else {
+          allValues[i] = col.get(i);
+        }
+      }
+      return this.fromValues(allValues);
+    }
+
+    return new DynamicColumn(this.types, discriminators, groups, indices, true);
   }
 
   fromValues(values: unknown[]): DynamicColumn {
