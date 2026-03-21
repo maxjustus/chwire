@@ -2030,8 +2030,6 @@ class DynamicCodec implements Codec {
   private svPos = -1;
   /** Maps original DynamicColumn type indices → compacted V3 write indices. */
   private v3IndexMap: Map<number, number> | null = null;
-  /** Reverse of v3IndexMap: compacted index → original index. */
-  private v3ReverseMap: Map<number, number> | null = null;
   /** Maps codec index → group key in DynamicColumn.groups (set by writePrefix). */
   private codecToGroupKey: Map<number, number> | null = null;
 
@@ -2062,7 +2060,6 @@ class DynamicCodec implements Codec {
     // and build a compact index map for discriminator remapping in encode().
     // Strip empty-group types (e.g. SharedVariant from V1/V2 decode) and build maps
     this.v3IndexMap = new Map();
-    this.v3ReverseMap = new Map();
     this.codecToGroupKey = new Map();
     this.insertedSvPos = -1;
     const activeTypes: string[] = [];
@@ -2070,7 +2067,6 @@ class DynamicCodec implements Codec {
       if (dyn.groups.has(i)) {
         const compacted = activeTypes.length;
         this.v3IndexMap.set(i, compacted);
-        this.v3ReverseMap.set(compacted, i);
         this.codecToGroupKey.set(compacted, i);
         activeTypes.push(dyn.types[i]);
       }
@@ -2094,7 +2090,6 @@ class DynamicCodec implements Codec {
   private writePrefixV2(writer: BufferWriter, dyn: DynamicColumn) {
     // Reset V3-specific state
     this.v3IndexMap = null;
-    this.v3ReverseMap = null;
     this.insertedSvPos = -1;
 
     // V1/V2: SharedVariant "String" at sorted position.
@@ -2398,11 +2393,6 @@ export class JsonCodec implements Codec {
     this.maxDynamicPaths = maxDynamicPaths;
   }
 
-  /** Set the version used for encoding. Default V3. */
-  setWriteVersion(v: bigint) {
-    this.writeVersion = v;
-  }
-
   writePrefix(writer: BufferWriter, col: Column) {
     const json = col as JsonColumn;
     this.dynamicPaths = json.paths.filter((p) => !this.typedPathNames.has(p));
@@ -2440,11 +2430,7 @@ export class JsonCodec implements Codec {
   /** Paths that overflow max_dynamic_paths and go into the shared data Map. */
   private sharedPaths: string[] = [];
 
-  /**
-   * Split paths into dynamic columns vs shared data overflow.
-   * Sorts by frequency (most non-null values first), then alphabetically for ties.
-   * Top maxDynamicPaths paths get Dynamic columns; rest go to shared data Map.
-   */
+  /** Split paths into dynamic columns (first maxDynamicPaths alphabetically) vs shared data. */
   private splitDynamicAndSharedPaths(json: JsonColumn): void {
     // If the column was decoded from V1/V2, preserve the server's path assignment.
     // This ensures round-trip fidelity — the server expects the same dynamic/shared
@@ -2552,7 +2538,10 @@ export class JsonCodec implements Codec {
     const hint = sizeHint ?? this.estimateSize(col.length);
     const writer = new BufferWriter(hint);
 
-    if (this.readVersion === JSONFormat.VERSION_V1 || this.readVersion === JSONFormat.VERSION_V2) {
+    if (
+      this.writeVersion === JSONFormat.VERSION_V1 ||
+      this.writeVersion === JSONFormat.VERSION_V2
+    ) {
       this.encodeTypedPaths(json, writer);
       this.encodeDynamicPaths(json, writer);
       this.encodeSharedDataMap(json, writer);
@@ -2593,34 +2582,33 @@ export class JsonCodec implements Codec {
       return;
     }
 
+    // Resolve shared path columns once (avoid repeated Map lookups)
+    const sharedCols = this.sharedPaths
+      .map((path) => ({ path, col: json.pathColumns.get(path)! }))
+      .filter(({ col }) => col);
+
     // Pass 1: compute cumulative offsets (count non-null entries per row)
     const offsets = new BigUint64Array(rows);
     let entryCount = 0;
     for (let row = 0; row < rows; row++) {
-      for (const path of this.sharedPaths) {
-        const pathCol = json.pathColumns.get(path);
-        if (!pathCol) continue;
-        if (pathCol.get(row) !== null && pathCol.get(row) !== undefined) entryCount++;
+      for (const { col } of sharedCols) {
+        const val = col.get(row);
+        if (val != null) entryCount++;
       }
       offsets[row] = BigInt(entryCount);
     }
     writer.write(new Uint8Array(offsets.buffer, offsets.byteOffset, offsets.byteLength));
 
-    // Pass 2: write keys then values (same iteration order as pass 1)
+    // Pass 2: write keys (path names for non-null entries)
     for (let row = 0; row < rows; row++) {
-      for (const path of this.sharedPaths) {
-        const pathCol = json.pathColumns.get(path);
-        if (!pathCol) continue;
-        if (pathCol.get(row) !== null && pathCol.get(row) !== undefined) {
-          writer.writeString(path);
-        }
+      for (const { path, col } of sharedCols) {
+        if (col.get(row) != null) writer.writeString(path);
       }
     }
+    // Pass 3: write values (binary-encoded for non-null entries)
     for (let row = 0; row < rows; row++) {
-      for (const path of this.sharedPaths) {
-        const pathCol = json.pathColumns.get(path);
-        if (!pathCol) continue;
-        const val = pathCol.get(row);
+      for (const { col } of sharedCols) {
+        const val = col.get(row);
         if (val !== null && val !== undefined) {
           const encoded = encodeBinaryValue(val);
           writer.writeVarint(encoded.length);
