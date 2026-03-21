@@ -2031,6 +2031,14 @@ class DynamicCodec implements Codec {
   private codecs: Codec[] = [];
   private version: bigint = Dynamic.VERSION_V3;
 
+  private isV1V2(): boolean {
+    return (
+      this.version === Dynamic.VERSION_V1_LEGACY ||
+      this.version === Dynamic.VERSION_V1 ||
+      this.version === Dynamic.VERSION_V2
+    );
+  }
+
   /** Set the version used for encoding. Default V3, set to V2 for legacy servers. */
   setWriteVersion(v: bigint) {
     this.version = v;
@@ -2041,11 +2049,7 @@ class DynamicCodec implements Codec {
     this.types = dyn.types;
     this.codecs = this.types.map((t) => getCodec(t));
 
-    if (
-      this.version === Dynamic.VERSION_V1_LEGACY ||
-      this.version === Dynamic.VERSION_V1 ||
-      this.version === Dynamic.VERSION_V2
-    ) {
+    if (this.isV1V2()) {
       this.writePrefixV2(writer, dyn);
       return;
     }
@@ -2094,11 +2098,7 @@ class DynamicCodec implements Codec {
   readPrefix(reader: BufferReader) {
     this.version = reader.readU64LE();
 
-    if (
-      this.version === Dynamic.VERSION_V1_LEGACY ||
-      this.version === Dynamic.VERSION_V1 ||
-      this.version === Dynamic.VERSION_V2
-    ) {
+    if (this.isV1V2()) {
       this.readPrefixV1V2(reader);
       return;
     }
@@ -2147,39 +2147,25 @@ class DynamicCodec implements Codec {
     const hint = sizeHint ?? this.estimateSize(col.length);
     const writer = new BufferWriter(hint);
 
-    if (
-      this.version === Dynamic.VERSION_V1_LEGACY ||
-      this.version === Dynamic.VERSION_V1 ||
-      this.version === Dynamic.VERSION_V2
-    ) {
-      return this.encodeV1V2(dyn, writer);
-    }
-
-    // V3: write discriminators as-is (variable-size based on type count)
-    writer.write(asBytes(dyn.discriminators));
-
-    for (let i = 0; i < this.codecs.length; i++) {
-      const group = dyn.groups.get(i);
-      if (group) {
-        const groupHint = this.codecs[i].estimateSize(group.length);
-        writer.write(this.codecs[i].encode(group, groupHint));
+    if (this.isV1V2()) {
+      // V1/V2: u8 discriminators, 0xFF = NULL
+      const nullDisc = this.types.length;
+      const rows = dyn.discriminators.length;
+      const discs = new Uint8Array(rows);
+      for (let i = 0; i < rows; i++) {
+        discs[i] = dyn.discriminators[i] === nullDisc ? 0xff : dyn.discriminators[i];
       }
+      writer.write(discs);
+    } else {
+      // V3: variable-size discriminators
+      writer.write(asBytes(dyn.discriminators));
     }
+
+    this.encodeGroups(dyn, writer);
     return writer.finish();
   }
 
-  private encodeV1V2(dyn: DynamicColumn, writer: BufferWriter): Uint8Array {
-    const nullDisc = this.types.length;
-    const rows = dyn.discriminators.length;
-
-    // V1/V2: u8 discriminators, 0xFF = NULL
-    const discs = new Uint8Array(rows);
-    for (let i = 0; i < rows; i++) {
-      discs[i] = dyn.discriminators[i] === nullDisc ? 0xff : dyn.discriminators[i];
-    }
-    writer.write(discs);
-
-    // Write group data for each type (including SharedVariant) in sorted order
+  private encodeGroups(dyn: DynamicColumn, writer: BufferWriter): void {
     for (let i = 0; i < this.codecs.length; i++) {
       const group = dyn.groups.get(i);
       if (group) {
@@ -2187,15 +2173,10 @@ class DynamicCodec implements Codec {
         writer.write(this.codecs[i].encode(group, groupHint));
       }
     }
-    return writer.finish();
   }
 
   decode(reader: BufferReader, rows: number, state: DeserializerState): DynamicColumn {
-    if (
-      this.version === Dynamic.VERSION_V1_LEGACY ||
-      this.version === Dynamic.VERSION_V1 ||
-      this.version === Dynamic.VERSION_V2
-    ) {
+    if (this.isV1V2()) {
       return this.decodeV1V2(reader, rows, state);
     }
 
@@ -2546,29 +2527,30 @@ export class JsonCodec implements Codec {
       valueBufs[i] = reader.readBytes(len);
     }
 
-    // 4. Decode shared data and merge into path columns
-    //    Collect shared paths and build per-path per-row values
-    const sharedPathValues = new Map<string, unknown[]>();
+    // 4. Decode shared data: collect sparse entries per path, then materialize
+    const sharedSparse = new Map<string, Map<number, unknown>>();
     let prevOffset = 0;
     for (let row = 0; row < rows; row++) {
       const end = Number(offsets[row]);
       for (let e = prevOffset; e < end; e++) {
         const path = keys[e];
-        if (!sharedPathValues.has(path)) {
-          // Initialize with nulls
-          const arr = new Array(rows).fill(null);
-          sharedPathValues.set(path, arr);
+        let rowMap = sharedSparse.get(path);
+        if (!rowMap) {
+          rowMap = new Map();
+          sharedSparse.set(path, rowMap);
         }
-        sharedPathValues.get(path)![row] = decodeBinaryValue(valueBufs[e]);
+        rowMap.set(row, decodeBinaryValue(valueBufs[e]));
       }
       prevOffset = end;
     }
 
-    // Convert shared path values into DataColumns and add to pathColumns
+    // Materialize sparse entries into dense DataColumns
     const sharedPaths: string[] = [];
-    for (const [path, values] of sharedPathValues) {
+    for (const [path, rowMap] of sharedSparse) {
       if (!pathColumns.has(path)) {
         sharedPaths.push(path);
+        const values = new Array(rows).fill(null);
+        for (const [row, val] of rowMap) values[row] = val;
         pathColumns.set(path, new DataColumn("Dynamic", values));
       }
     }

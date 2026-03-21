@@ -150,8 +150,7 @@ class Cursor {
   }
 }
 
-const TEXT_DECODER = new TextDecoder();
-const TEXT_ENCODER = new TextEncoder();
+import { parseTypeList, TEXT_DECODER, TEXT_ENCODER } from "./types.ts";
 
 // ---------- Type decoding: type byte → CH type name string ----------
 
@@ -328,25 +327,6 @@ function decodeValue(c: Cursor, typeName: string): unknown {
   }
 
   throw new Error(`Unsupported type for binary value decode: ${t}`);
-}
-
-/** Parse comma-separated type list respecting parenthesis nesting. */
-function parseTypeList(inner: string): string[] {
-  const types: string[] = [];
-  let depth = 0;
-  let current = "";
-  for (const char of inner) {
-    if (char === "(") depth++;
-    if (char === ")") depth--;
-    if (char === "," && depth === 0) {
-      types.push(current.trim());
-      current = "";
-    } else {
-      current += char;
-    }
-  }
-  if (current.trim()) types.push(current.trim());
-  return types;
 }
 
 // ---------- Public API ----------
