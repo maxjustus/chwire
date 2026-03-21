@@ -374,7 +374,9 @@ export abstract class BaseCodec implements Codec {
   abstract zeroValue(): unknown;
   abstract estimateSize(rows: number): number;
   abstract decodeDense(reader: BufferReader, rows: number, state: DeserializerState): Column;
-  abstract serializeLiteral(value: unknown, quoted?: boolean): string;
+  serializeLiteral(_value: unknown, _quoted?: boolean): string {
+    throw new Error(`${this.type}: serializeLiteral not implemented`);
+  }
 
   toLiteral(value: unknown, quoted?: boolean): string | typeof SQL_NULL {
     if (value == null) value = this.zeroValue();
@@ -453,7 +455,7 @@ class NumericCodec<T extends TypedArray> extends BaseCodec {
   estimateSize(rows: number) {
     return rows * this.Ctor.BYTES_PER_ELEMENT;
   }
-  serializeLiteral(value: unknown): string {
+  serializeLiteral(value: unknown, _quoted?: boolean): string {
     if (this.type === "Bool") return toBool(value) ? "true" : "false";
     const v = this.converter ? this.converter(value) : value;
     return String(v);
@@ -829,7 +831,7 @@ class BigIntCodec extends BaseCodec {
   estimateSize(rows: number) {
     return rows * this.byteSize;
   }
-  serializeLiteral(value: unknown): string {
+  serializeLiteral(value: unknown, _quoted?: boolean): string {
     return String(this.coerce(value));
   }
 }
@@ -929,7 +931,7 @@ class DecimalCodec extends BaseCodec {
   estimateSize(rows: number) {
     return rows * this.byteSize;
   }
-  serializeLiteral(value: unknown): string {
+  serializeLiteral(value: unknown, _quoted?: boolean): string {
     if (typeof value === "bigint") return formatScaledBigInt(value, this.scale);
     return toValidDecimal(value);
   }
@@ -1042,7 +1044,7 @@ class DateTime64Codec extends BaseCodec {
     return `${seconds}.${fracStr}`;
   }
 
-  serializeLiteral(value: unknown): string {
+  serializeLiteral(value: unknown, _quoted?: boolean): string {
     if (value instanceof ClickHouseDateTime64) {
       return this.formatTicks(value.ticks);
     }
@@ -1143,7 +1145,7 @@ class EpochCodec<T extends Uint16Array | Int32Array | Uint32Array> extends BaseC
   estimateSize(rows: number) {
     return rows * this.Ctor.BYTES_PER_ELEMENT;
   }
-  serializeLiteral(value: unknown): string {
+  serializeLiteral(value: unknown, _quoted?: boolean): string {
     let d: Date;
     if (value instanceof Date) {
       d = value;
@@ -1365,7 +1367,7 @@ class ArrayCodec extends BaseCodec {
   readKinds(reader: BufferReader): SerializationNode {
     return readKinds1(reader, this.inner);
   }
-  serializeLiteral(value: unknown): string {
+  serializeLiteral(value: unknown, _quoted?: boolean): string {
     if (!isArrayLike(value)) {
       throw new TypeError(`Expected array for ${this.type}, got ${typeof value}`);
     }
@@ -1448,10 +1450,6 @@ class NullableCodec extends BaseCodec {
   toLiteral(value: unknown, quoted?: boolean): string | typeof SQL_NULL {
     if (value == null) return SQL_NULL;
     return this.inner.toLiteral(value, quoted);
-  }
-  // Unreachable: toLiteral() is overridden above.
-  serializeLiteral(): string {
-    return "";
   }
 }
 
@@ -1618,10 +1616,6 @@ class LowCardinalityCodec extends BaseCodec {
     // LowCardinality is transparent - delegate to inner codec
     return this.inner.toLiteral(value, quoted);
   }
-  // Unreachable: toLiteral() is overridden above.
-  serializeLiteral(): string {
-    return "";
-  }
 }
 
 // Map is serialized as Array(Tuple(K, V))
@@ -1734,7 +1728,7 @@ class MapCodec extends BaseCodec {
   readKinds(reader: BufferReader): SerializationNode {
     return readKinds2(reader, this.keyCodec, this.valCodec);
   }
-  serializeLiteral(value: unknown): string {
+  serializeLiteral(value: unknown, _quoted?: boolean): string {
     let entries: [unknown, unknown][];
     if (value instanceof Map) {
       entries = Array.from(value.entries());
@@ -1844,7 +1838,7 @@ class TupleCodec extends BaseCodec {
       this.elements.map((e) => e.codec),
     );
   }
-  serializeLiteral(value: unknown): string {
+  serializeLiteral(value: unknown, _quoted?: boolean): string {
     if (!this.isNamed && !Array.isArray(value)) {
       throw new TypeError(`Expected array for tuple ${this.type}, got ${typeof value}`);
     }
