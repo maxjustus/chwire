@@ -11,11 +11,6 @@ const QUERY_SETTINGS = {
   allow_experimental_variant_type: true,
   allow_experimental_dynamic_type: true,
   allow_experimental_json_type: true,
-  // V3 flattened setting needed for TCP fuzz: V1/V2 Dynamic's serialization kind tree
-  // requires knowing variant types before readPrefix, but kinds are written first.
-  // Simple Dynamic queries (params, integration) work without this; complex multi-type
-  // Dynamic columns with has_custom_serialization=1 desync the stream.
-  output_format_native_use_flattened_dynamic_and_json_serialization: true,
 };
 
 describe("TCP Client Fuzz Tests", { timeout: 600000, concurrency: 1 }, () => {

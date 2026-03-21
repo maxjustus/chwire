@@ -2082,14 +2082,18 @@ class DynamicCodec implements Codec {
     this.types = [];
     for (let i = 0; i < count; i++) this.types.push(reader.readString());
 
-    // V1/V2 always appends implicit SharedVariant (String type)
-    this.types.push("String");
+    // V1/V2 inserts implicit SharedVariant (String) at its sorted position.
+    // ClickHouse sorts ALL variant types (including SV) alphabetically.
+    // SharedVariant sorts before any identical type name.
+    const svPos = this.types.findIndex((t) => t >= "String");
+    if (svPos === -1) this.types.push("String");
+    else this.types.splice(svPos, 0, "String");
     this.codecs = this.types.map((t) => getCodec(t));
 
-    // V1/V2 wraps data in Variant serialization — read and skip variant version
-    reader.readU64LE(); // variant_version
+    // V1/V2 wraps data in Variant serialization — read and skip variant mode
+    reader.readU64LE(); // variant_mode (BASIC=0, COMPACT=1)
 
-    // Read nested type prefixes (including SharedVariant's String prefix, which is a no-op)
+    // Read nested type prefixes (SharedVariant String + real types; all no-ops for simple types)
     for (const c of this.codecs) c.readPrefix?.(reader);
   }
 

@@ -124,33 +124,35 @@ describe("version validation tests", () => {
     });
 
     it("decodes V2 block with Int64 and String types", () => {
-      // Build a V2 Dynamic block with 2 types: Int64, String (+ implicit SharedVariant String)
-      // 3 rows: row0=42n (Int64, disc=0), row1="hello" (String, disc=1), row2=NULL (disc=0xFF)
+      // V1/V2 Dynamic: SharedVariant "String" inserted at sorted position.
+      // Wire types: ["Int64", "String"]. Sorted with SV: ["Int64", "String(SV)", "String"].
+      // Discriminators: 0=Int64, 1=SharedVariant, 2=String, 0xFF=NULL.
       const data = buildTestBlock({
         colName: "d",
         colType: "Dynamic",
         rows: 3,
         prefix: (w) => {
           w.writeU64LE(Dynamic.VERSION_V2);
-          w.writeVarint(2); // 2 real types
+          w.writeVarint(2); // 2 real types on wire
           w.writeString("Int64");
           w.writeString("String");
-          // variant_version
+          // variant_mode u64 (BASIC=0)
           w.writeU64LE(0n);
-          // No nested prefixes (Int64, String, SharedVariant String have none)
         },
         data: (w) => {
-          // u8 discriminators: [0, 1, 0xFF]
+          // disc: 0=Int64, 1=SV(0 rows), 2=String, 0xFF=NULL
           w.writeU8(0); // Int64
-          w.writeU8(1); // String
+          w.writeU8(2); // String
           w.writeU8(0xff); // NULL
 
-          // Int64 group (1 row: 42)
+          // Int64 group (disc=0): 1 row
           const buf = new ArrayBuffer(8);
           new DataView(buf).setBigInt64(0, 42n, true);
           w.write(new Uint8Array(buf));
 
-          // String group (1 row: "hello")
+          // SharedVariant group (disc=1): 0 rows → nothing
+
+          // String group (disc=2): 1 row
           w.writeVarint(5);
           w.write(new Uint8Array([0x68, 0x65, 0x6c, 0x6c, 0x6f]));
         },
@@ -160,11 +162,8 @@ describe("version validation tests", () => {
       assert.strictEqual(result.rowCount, 3);
 
       const col = result.columnData[0];
-      // Row 0: Int64 value 42
       assert.strictEqual(col.get(0), 42n);
-      // Row 1: String value "hello"
       assert.strictEqual(col.get(1), "hello");
-      // Row 2: NULL
       assert.strictEqual(col.get(2), null);
     });
 
