@@ -2033,22 +2033,18 @@ class DynamicCodec implements Codec {
   private writeVersion: bigint = Dynamic.VERSION_V3;
   /** SharedVariant position in the types list (set by readPrefixV1V2). */
   private svPos = -1;
-  /** Maps original DynamicColumn type indices → compacted V3 write indices (set by writePrefix). */
+  /** Maps original DynamicColumn type indices → compacted V3 write indices. */
   private v3IndexMap: Map<number, number> | null = null;
+  /** Reverse of v3IndexMap: compacted index → original index. */
+  private v3ReverseMap: Map<number, number> | null = null;
+  /** Maps codec index → group key in DynamicColumn.groups (set by writePrefix). */
+  private codecToGroupKey: Map<number, number> | null = null;
 
-  private isReadV1V2(): boolean {
+  private static isV1V2(version: bigint): boolean {
     return (
-      this.readVersion === Dynamic.VERSION_V1_LEGACY ||
-      this.readVersion === Dynamic.VERSION_V1 ||
-      this.readVersion === Dynamic.VERSION_V2
-    );
-  }
-
-  private isWriteV1V2(): boolean {
-    return (
-      this.writeVersion === Dynamic.VERSION_V1_LEGACY ||
-      this.writeVersion === Dynamic.VERSION_V1 ||
-      this.writeVersion === Dynamic.VERSION_V2
+      version === Dynamic.VERSION_V1_LEGACY ||
+      version === Dynamic.VERSION_V1 ||
+      version === Dynamic.VERSION_V2
     );
   }
 
@@ -2060,7 +2056,7 @@ class DynamicCodec implements Codec {
   writePrefix(writer: BufferWriter, col: Column) {
     const dyn = col as DynamicColumn;
 
-    if (this.isWriteV1V2()) {
+    if (DynamicCodec.isV1V2(this.writeVersion)) {
       this.types = dyn.types;
       this.codecs = this.types.map((t) => getCodec(t));
       this.writePrefixV2(writer, dyn);
@@ -2069,13 +2065,18 @@ class DynamicCodec implements Codec {
 
     // V3 flattened: strip types with empty groups (e.g. SharedVariant from V1/V2 decode)
     // and build a compact index map for discriminator remapping in encode().
+    // Strip empty-group types (e.g. SharedVariant from V1/V2 decode) and build maps
     this.v3IndexMap = new Map();
+    this.v3ReverseMap = new Map();
+    this.codecToGroupKey = new Map();
+    this.insertedSvPos = -1;
     const activeTypes: string[] = [];
-    const origIndices: number[] = []; // new index → original index
     for (let i = 0; i < dyn.types.length; i++) {
       if (dyn.groups.has(i)) {
-        this.v3IndexMap.set(i, activeTypes.length);
-        origIndices.push(i);
+        const compacted = activeTypes.length;
+        this.v3IndexMap.set(i, compacted);
+        this.v3ReverseMap.set(compacted, i);
+        this.codecToGroupKey.set(compacted, i);
         activeTypes.push(dyn.types[i]);
       }
     }
@@ -2087,7 +2088,7 @@ class DynamicCodec implements Codec {
     for (const t of this.types) writer.writeString(t);
 
     for (let i = 0; i < this.types.length; i++) {
-      const group = dyn.groups.get(origIndices[i]);
+      const group = dyn.groups.get(this.codecToGroupKey.get(i)!);
       if (group) this.codecs[i].writePrefix?.(writer, group);
     }
   }
@@ -2096,22 +2097,32 @@ class DynamicCodec implements Codec {
   private insertedSvPos = -1;
 
   private writePrefixV2(writer: BufferWriter, dyn: DynamicColumn) {
-    // V1/V2 requires SharedVariant "String" at its sorted position.
-    // Use dyn.hasSharedVariant to determine if SV is already in the type list
-    // (from V1/V2 decode) vs a real "String" data type (from fromValues).
+    // Reset V3-specific state
+    this.v3IndexMap = null;
+    this.v3ReverseMap = null;
     this.insertedSvPos = -1;
+
+    // V1/V2: SharedVariant "String" at sorted position.
+    // dyn.hasSharedVariant distinguishes SV from real "String" data type.
     let svPos: number;
     if (dyn.hasSharedVariant) {
-      // SV already present from decode — find its position
       svPos = this.types.findIndex((t) => t >= "String");
     } else {
-      // Insert SV at sorted position
       svPos = this.types.findIndex((t) => t >= "String");
       if (svPos === -1) svPos = this.types.length;
       this.types.splice(svPos, 0, "String");
       this.codecs = this.types.map((t) => getCodec(t));
       this.insertedSvPos = svPos;
     }
+
+    // Build codec→group key map for encodeGroups
+    this.codecToGroupKey = new Map();
+    for (let i = 0; i < this.codecs.length; i++) {
+      if (i === this.insertedSvPos) continue; // SV has no group
+      const groupKey = this.insertedSvPos >= 0 && i > this.insertedSvPos ? i - 1 : i;
+      this.codecToGroupKey.set(i, groupKey);
+    }
+
     const wireTypes = this.types.filter((_, i) => i !== svPos);
 
     writer.writeU64LE(Dynamic.VERSION_V2);
@@ -2132,7 +2143,7 @@ class DynamicCodec implements Codec {
     this.readVersion = reader.readU64LE();
     this.writeVersion = this.readVersion;
 
-    if (this.isReadV1V2()) {
+    if (DynamicCodec.isV1V2(this.readVersion)) {
       this.readPrefixV1V2(reader);
       return;
     }
@@ -2203,7 +2214,7 @@ class DynamicCodec implements Codec {
     const hint = sizeHint ?? this.estimateSize(col.length);
     const writer = new BufferWriter(hint);
 
-    if (this.isWriteV1V2()) {
+    if (DynamicCodec.isV1V2(this.writeVersion)) {
       // V1/V2: u8 discriminators, 0xFF = NULL
       const origNull = dyn.types.length;
       const svIns = this.insertedSvPos; // -1 if SV was already present
@@ -2241,25 +2252,9 @@ class DynamicCodec implements Codec {
   }
 
   private encodeGroups(dyn: DynamicColumn, writer: BufferWriter): void {
-    // Map codec index → original group key in dyn.groups
-    // - v3IndexMap: V3 encode with stripped types (V1/V2 decoded → V3)
-    // - insertedSvPos: V1/V2 encode with inserted SV (fromValues → V1/V2)
-    const v3Reverse = this.v3IndexMap
-      ? new Map([...this.v3IndexMap.entries()].map(([orig, compact]) => [compact, orig]))
-      : null;
     for (let i = 0; i < this.codecs.length; i++) {
-      let groupKey: number;
-      if (v3Reverse) {
-        groupKey = v3Reverse.get(i) ?? i;
-      } else if (this.insertedSvPos >= 0) {
-        // SV was inserted: codec[svPos] = SV (no group), others shift
-        if (i < this.insertedSvPos) groupKey = i;
-        else if (i === this.insertedSvPos) {
-          continue; // SV has no group data
-        } else groupKey = i - 1;
-      } else {
-        groupKey = i;
-      }
+      const groupKey = this.codecToGroupKey ? this.codecToGroupKey.get(i) : i;
+      if (groupKey === undefined) continue; // SV slot — no group data
       const group = dyn.groups.get(groupKey);
       if (group) {
         const groupHint = this.codecs[i].estimateSize(group.length);
@@ -2269,7 +2264,7 @@ class DynamicCodec implements Codec {
   }
 
   decode(reader: BufferReader, rows: number, state: DeserializerState): DynamicColumn {
-    if (this.isReadV1V2()) {
+    if (DynamicCodec.isV1V2(this.readVersion)) {
       return this.decodeV1V2(reader, rows, state);
     }
 
@@ -2616,30 +2611,40 @@ export class JsonCodec implements Codec {
       return;
     }
 
-    const allKeys: string[] = [];
-    const allValues: Uint8Array[] = [];
+    // Pass 1: compute cumulative offsets (count non-null entries per row)
     const offsets = new BigUint64Array(rows);
+    let entryCount = 0;
+    for (let row = 0; row < rows; row++) {
+      for (const path of this.sharedPaths) {
+        const pathCol = json.pathColumns.get(path);
+        if (!pathCol) continue;
+        if (pathCol.get(row) !== null && pathCol.get(row) !== undefined) entryCount++;
+      }
+      offsets[row] = BigInt(entryCount);
+    }
+    writer.write(new Uint8Array(offsets.buffer, offsets.byteOffset, offsets.byteLength));
 
+    // Pass 2: write keys then values (same iteration order as pass 1)
+    for (let row = 0; row < rows; row++) {
+      for (const path of this.sharedPaths) {
+        const pathCol = json.pathColumns.get(path);
+        if (!pathCol) continue;
+        if (pathCol.get(row) !== null && pathCol.get(row) !== undefined) {
+          writer.writeString(path);
+        }
+      }
+    }
     for (let row = 0; row < rows; row++) {
       for (const path of this.sharedPaths) {
         const pathCol = json.pathColumns.get(path);
         if (!pathCol) continue;
         const val = pathCol.get(row);
-        if (val === null || val === undefined) continue;
-        allKeys.push(path);
-        allValues.push(encodeBinaryValue(val));
+        if (val !== null && val !== undefined) {
+          const encoded = encodeBinaryValue(val);
+          writer.writeVarint(encoded.length);
+          writer.write(encoded);
+        }
       }
-      offsets[row] = BigInt(allKeys.length);
-    }
-
-    // Stream 1: cumulative offsets
-    writer.write(new Uint8Array(offsets.buffer, offsets.byteOffset, offsets.byteLength));
-    // Stream 2: path name keys
-    for (const key of allKeys) writer.writeString(key);
-    // Stream 3: binary-encoded values (varint length + bytes)
-    for (const val of allValues) {
-      writer.writeVarint(val.length);
-      writer.write(val);
     }
   }
 
