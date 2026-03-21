@@ -4,8 +4,8 @@
 
 import assert from "node:assert";
 import { after, before, describe, it } from "node:test";
-import { collectBytes, init, insert, query } from "../../client.ts";
-import type { ColumnDef } from "../../native/index.ts";
+import { collectBytes, collectText, dataChunks, init, insert, query } from "../../client.ts";
+import { type ColumnDef, encodeNative, streamDecodeNative } from "../../native/index.ts";
 import { startClickHouse, stopClickHouse } from "../setup.ts";
 import { consume, decodeBatch, encodeNativeRows, toArrayRows } from "../test_utils.ts";
 
@@ -369,6 +369,102 @@ describe("Native format integration", { timeout: 120000 }, () => {
       assertJsonDynValues(toArrayRows(decodedV3));
     } finally {
       await consume(query(`DROP TABLE ${table}`, sessionId, { baseUrl, auth }));
+    }
+  });
+
+  it("round-trips JSON with shared data overflow preserving values", async () => {
+    // 6 paths, max_dynamic_paths=2 → 4 overflow to shared data.
+    // Mixed types: int, string, float, bool, null.
+    // Verifies exact values survive V1/V2 decode → re-encode → server accept → read back.
+    const table = "test_shared_data_values";
+    await consume(query(`DROP TABLE IF EXISTS ${table}`, sessionId, { baseUrl, auth }));
+    await consume(
+      query(
+        `CREATE TABLE ${table} (id UInt64, data JSON(max_dynamic_paths=2)) ENGINE = MergeTree ORDER BY id`,
+        sessionId,
+        { baseUrl, auth },
+      ),
+    );
+    try {
+      await consume(
+        query(
+          `INSERT INTO ${table} FORMAT JSONEachRow
+          {"id":0,"data":{"a":1,"b":"hello","c":3.14,"d":true,"e":[1,2,3],"f":"extra"}}
+          {"id":1,"data":{"a":2,"b":"world","c":2.71,"d":false,"f":"more"}}
+          {"id":2,"data":{"a":3,"b":"test"}}
+          {"id":3,"data":{"a":4,"c":99.9,"d":true,"e":[4,5]}}
+          {"id":4,"data":{"a":5,"b":"five","c":0.5,"d":false,"e":[6],"f":"last"}}`,
+          sessionId,
+          { baseUrl, auth },
+        ),
+      );
+
+      // Read V1/V2, decode, re-encode, insert to dst table
+      const dstTable = `${table}_dst`;
+      await consume(query(`DROP TABLE IF EXISTS ${dstTable}`, sessionId, { baseUrl, auth }));
+      await consume(
+        query(
+          `CREATE TABLE ${dstTable} (id UInt64, data JSON(max_dynamic_paths=2)) ENGINE = MergeTree ORDER BY id`,
+          sessionId,
+          { baseUrl, auth },
+        ),
+      );
+
+      const queryResult = query(`SELECT * FROM ${table} ORDER BY id FORMAT Native`, sessionId, {
+        baseUrl,
+        auth,
+      });
+      for await (const block of streamDecodeNative(dataChunks(queryResult))) {
+        const encoded = encodeNative(block);
+        await insert(`INSERT INTO ${dstTable} FORMAT Native`, encoded, sessionId + "_ins", {
+          baseUrl,
+          auth,
+        });
+      }
+
+      // Verify row count
+      const srcCount = await collectText(
+        query(`SELECT count() FROM ${table} FORMAT TabSeparated`, sessionId, { baseUrl, auth }),
+      );
+      const dstCount = await collectText(
+        query(`SELECT count() FROM ${dstTable} FORMAT TabSeparated`, sessionId, { baseUrl, auth }),
+      );
+      assert.strictEqual(dstCount.trim(), srcCount.trim(), "row counts should match");
+
+      // Verify values via cityHash64 — accounts for type coercion (Bool→UInt8)
+      const diff = await collectText(
+        query(
+          `SELECT count() FROM (
+            SELECT id, cityHash64(toString(data.a), toString(data.b), toString(data.c), toString(data.e), toString(data.f)) AS h FROM ${table}
+            EXCEPT
+            SELECT id, cityHash64(toString(data.a), toString(data.b), toString(data.c), toString(data.e), toString(data.f)) AS h FROM ${dstTable}
+          ) FORMAT TabSeparated`,
+          sessionId,
+          { baseUrl, auth },
+        ),
+      );
+      assert.strictEqual(diff.trim(), "0", "hashed values should match (excluding bool paths)");
+
+      // Verify specific values from decoded dst
+      const dstData = await collectBytes(
+        query(`SELECT * FROM ${dstTable} ORDER BY id FORMAT Native`, sessionId, { baseUrl, auth }),
+      );
+      const dstDecoded = await decodeBatch(dstData);
+      assert.strictEqual(dstDecoded.rowCount, 5);
+      const r0 = dstDecoded.columnData[1].get(0) as Record<string, unknown>;
+      const r2 = dstDecoded.columnData[1].get(2) as Record<string, unknown>;
+      const r4 = dstDecoded.columnData[1].get(4) as Record<string, unknown>;
+      assert.ok(r0.a !== undefined, "row 0 path 'a' present");
+      assert.ok(r0.b === "hello", "row 0 path 'b' = hello");
+      assert.ok(r0.f === "extra", "row 0 path 'f' = extra");
+      assert.ok(r2.a !== undefined, "row 2 path 'a' present");
+      assert.ok(r2.b === "test", "row 2 path 'b' = test");
+      assert.strictEqual(r2.c, undefined, "row 2 path 'c' absent");
+      assert.ok(r4.b === "five", "row 4 path 'b' = five");
+      assert.ok(r4.f === "last", "row 4 path 'f' = last");
+    } finally {
+      await consume(query(`DROP TABLE IF EXISTS ${table}`, sessionId, { baseUrl, auth }));
+      await consume(query(`DROP TABLE IF EXISTS ${table}_dst`, sessionId, { baseUrl, auth }));
     }
   });
 

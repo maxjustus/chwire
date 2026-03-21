@@ -449,6 +449,7 @@ describe("Native HTTP Integration Fuzz Tests", { timeout: 600000 }, () => {
             });
           }
 
+          // Verify row counts
           const srcCount = await collectText(
             query(`SELECT count() FROM ${srcTable} FORMAT TabSeparated`, sessionId, {
               baseUrl,
@@ -464,6 +465,25 @@ describe("Native HTTP Integration Fuzz Tests", { timeout: 600000 }, () => {
           if (srcCount.trim() !== dstCount.trim()) {
             throw new Error(`Row count mismatch: src=${srcCount.trim()}, dst=${dstCount.trim()}`);
           }
+
+          // Verify values via cityHash64 — compare JSON data by id.
+          // Use replaceAll to normalize Bool→Int coercion (true→1, false→0)
+          // which is expected since ClickHouse stores Bool as UInt8 internally.
+          const diff = await collectText(
+            query(
+              `SELECT count() FROM (
+                SELECT id, cityHash64(replaceAll(replaceAll(toString(data), 'true', '1'), 'false', '0')) AS h FROM ${srcTable}
+                EXCEPT
+                SELECT id, cityHash64(replaceAll(replaceAll(toString(data), 'true', '1'), 'false', '0')) AS h FROM ${dstTable}
+              ) FORMAT TabSeparated`,
+              sessionId,
+              { baseUrl, auth },
+            ),
+          );
+          if (diff.trim() !== "0") {
+            throw new Error(`Value mismatch: ${diff.trim()} rows differ between src and dst`);
+          }
+
           console.log(`  [${i + 1}/${N}] done: ${srcCount.trim()} rows, ${blocksDecoded} blocks`);
         } catch (err) {
           logFuzzError(

@@ -2501,13 +2501,10 @@ export class JsonCodec implements Codec {
       if (pathCol) tp.codec.writePrefix?.(writer, pathCol);
     }
 
+    this.dynamicCodecs = new Map();
     for (const path of this.dynamicPaths) {
-      // Reuse decoded codecs if available (they have correct V1/V2 state from readPrefix)
-      let codec = this.dynamicCodecs.get(path);
-      if (!codec) {
-        codec = new DynamicCodec();
-        codec.setWriteVersion(Dynamic.VERSION_V2);
-      }
+      const codec = new DynamicCodec();
+      codec.setWriteVersion(Dynamic.VERSION_V2);
       const pathCol = json.pathColumns.get(path)!;
       codec.writePrefix(writer, pathCol);
       this.dynamicCodecs.set(path, codec);
@@ -2546,7 +2543,10 @@ export class JsonCodec implements Codec {
   }
 
   private readPrefixV1V2(reader: BufferReader) {
-    // V1 (version=0) has extra max_dynamic_paths field
+    // Reset encode-related state (codec is cached, may have stale state from previous block)
+    this.sharedPaths = [];
+    this.dynamicCodecs = new Map();
+
     if (this.readVersion === JSONFormat.VERSION_V1) {
       reader.readVarint(); // skip max_dynamic_paths
     }
@@ -2949,6 +2949,12 @@ const CODEC_CACHE = new Map<string, Codec>();
 const CODEC_CACHE_LIMIT = 131072;
 
 export function getCodec(type: string): Codec {
+  // Dynamic and JSON codecs are stateful (readVersion, writeVersion, dynamicPaths, etc.)
+  // and MUST NOT be cached — each decode/encode cycle needs a fresh instance.
+  if (type === "Dynamic" || type === "JSON" || type.startsWith("JSON(")) {
+    return createCodec(type);
+  }
+
   const cached = CODEC_CACHE.get(type);
   if (cached !== undefined) {
     CODEC_CACHE.delete(type);
