@@ -2423,32 +2423,39 @@ export class JsonCodec implements Codec {
   /** Paths that overflow max_dynamic_paths and go into the shared data Map. */
   private sharedPaths: string[] = [];
 
+  /**
+   * Split paths into dynamic columns vs shared data overflow.
+   * Sorts by frequency (most non-null values first), then alphabetically for ties.
+   * Top maxDynamicPaths paths get Dynamic columns; rest go to shared data Map.
+   */
+  private splitPathsByFrequency(_json: JsonColumn): void {
+    // Sort alphabetically, take first maxDynamicPaths as dynamic columns.
+    // TODO: sort by frequency (most non-null values first) like ClickHouse does.
+    // Alphabetical is correct but suboptimal — infrequent paths may get Dynamic
+    // columns while frequent ones overflow to shared data.
+    const sorted = this.dynamicPaths.slice().sort();
+    this.dynamicPaths = sorted.slice(0, this.maxDynamicPaths);
+    this.sharedPaths = sorted.slice(this.maxDynamicPaths);
+  }
+
   private writePrefixV1V2(writer: BufferWriter, json: JsonColumn) {
-    // Split dynamic paths: first maxDynamicPaths get Dynamic columns, rest overflow
-    const allDynamic = this.dynamicPaths.slice().sort();
-    const dynPaths = allDynamic.slice(0, this.maxDynamicPaths);
-    this.sharedPaths = allDynamic.slice(this.maxDynamicPaths);
-    this.dynamicPaths = dynPaths;
+    this.splitPathsByFrequency(json);
 
     writer.writeU64LE(this.writeVersion);
 
-    // V1 has extra max_dynamic_paths field
     if (this.writeVersion === JSONFormat.VERSION_V1) {
       writer.writeVarint(this.maxDynamicPaths);
     }
 
-    // Dynamic path names (sorted, limited to max_dynamic_paths)
-    writer.writeVarint(dynPaths.length);
-    for (const p of dynPaths) writer.writeString(p);
+    writer.writeVarint(this.dynamicPaths.length);
+    for (const p of this.dynamicPaths) writer.writeString(p);
 
-    // Typed path prefixes
     for (const tp of this.typedPaths) {
       const pathCol = json.pathColumns.get(tp.name);
       if (pathCol) tp.codec.writePrefix?.(writer, pathCol);
     }
 
-    // Per-dynamic-path Dynamic V2 prefixes
-    for (const path of dynPaths) {
+    for (const path of this.dynamicPaths) {
       const codec = new DynamicCodec();
       codec.setWriteVersion(Dynamic.VERSION_V2);
       const pathCol = json.pathColumns.get(path)!;
@@ -2519,79 +2526,71 @@ export class JsonCodec implements Codec {
     const writer = new BufferWriter(hint);
 
     if (this.readVersion === JSONFormat.VERSION_V1 || this.readVersion === JSONFormat.VERSION_V2) {
-      return this.encodeV1V2(json, writer);
-    }
-
-    // V3: typed path columns + dynamic path columns
-    for (const tp of this.typedPaths) {
-      const pathCol = json.pathColumns.get(tp.name);
-      if (pathCol) writer.write(tp.codec.encode(pathCol));
-    }
-    for (const path of this.dynamicPaths) {
-      const pathCol = json.pathColumns.get(path)!;
-      const pathCodec = this.dynamicCodecs.get(path)!;
-      writer.write(pathCodec.encode(pathCol, pathCodec.estimateSize(pathCol.length)));
+      this.encodeTypedPaths(json, writer);
+      this.encodeDynamicPaths(json, writer);
+      this.encodeSharedDataMap(json, writer);
+    } else {
+      // V3: typed paths + dynamic paths, no shared data
+      this.encodeTypedPaths(json, writer);
+      this.encodeDynamicPaths(json, writer);
     }
     return writer.finish();
   }
 
-  private encodeV1V2(json: JsonColumn, writer: BufferWriter): Uint8Array {
-    const rows = json.length;
-
-    // 1. Typed path columns (same as V3)
+  private encodeTypedPaths(json: JsonColumn, writer: BufferWriter): void {
     for (const tp of this.typedPaths) {
       const pathCol = json.pathColumns.get(tp.name);
       if (pathCol) writer.write(tp.codec.encode(pathCol));
     }
+  }
 
-    // 2. Dynamic path columns (V2 encoding, limited to maxDynamicPaths)
+  private encodeDynamicPaths(json: JsonColumn, writer: BufferWriter): void {
     for (const path of this.dynamicPaths) {
       const pathCol = json.pathColumns.get(path)!;
       const pathCodec = this.dynamicCodecs.get(path)!;
       writer.write(pathCodec.encode(pathCol, pathCodec.estimateSize(pathCol.length)));
     }
+  }
 
-    // 3. Shared data Map(String, String) for overflow paths
-    //    Format: offsets (BigUint64Array cumulative) + keys (String col) + values (String col)
-    //    Each value is binary-encoded: [type_byte(s)][value_data]
+  /**
+   * Write shared data Map(String, String) for overflow paths.
+   * Format: cumulative offsets (BigUint64Array) + keys (String col) + values (String col).
+   * Each value is binary-encoded via encodeBinaryValue: [type_byte(s)][value_data].
+   */
+  private encodeSharedDataMap(json: JsonColumn, writer: BufferWriter): void {
+    const rows = json.length;
+
     if (this.sharedPaths.length === 0) {
-      // No overflow — write empty map
       const offsets = new BigUint64Array(rows);
       writer.write(new Uint8Array(offsets.buffer, offsets.byteOffset, offsets.byteLength));
-    } else {
-      // Collect per-row entries: [path, binary-encoded value]
-      const allKeys: string[] = [];
-      const allValues: Uint8Array[] = [];
-      const offsets = new BigUint64Array(rows);
-      let cumulative = 0n;
-
-      for (let row = 0; row < rows; row++) {
-        for (const path of this.sharedPaths) {
-          const pathCol = json.pathColumns.get(path);
-          if (!pathCol) continue;
-          const val = pathCol.get(row);
-          if (val === null || val === undefined) continue;
-          allKeys.push(path);
-          allValues.push(encodeBinaryValue(val));
-        }
-        cumulative = BigInt(allKeys.length);
-        offsets[row] = cumulative;
-      }
-
-      // Stream 1: offsets
-      writer.write(new Uint8Array(offsets.buffer, offsets.byteOffset, offsets.byteLength));
-
-      // Stream 2: keys (path names as strings)
-      for (const key of allKeys) writer.writeString(key);
-
-      // Stream 3: values (binary blobs as varint-length-prefixed bytes)
-      for (const val of allValues) {
-        writer.writeVarint(val.length);
-        writer.write(val);
-      }
+      return;
     }
 
-    return writer.finish();
+    const allKeys: string[] = [];
+    const allValues: Uint8Array[] = [];
+    const offsets = new BigUint64Array(rows);
+
+    for (let row = 0; row < rows; row++) {
+      for (const path of this.sharedPaths) {
+        const pathCol = json.pathColumns.get(path);
+        if (!pathCol) continue;
+        const val = pathCol.get(row);
+        if (val === null || val === undefined) continue;
+        allKeys.push(path);
+        allValues.push(encodeBinaryValue(val));
+      }
+      offsets[row] = BigInt(allKeys.length);
+    }
+
+    // Stream 1: cumulative offsets
+    writer.write(new Uint8Array(offsets.buffer, offsets.byteOffset, offsets.byteLength));
+    // Stream 2: path name keys
+    for (const key of allKeys) writer.writeString(key);
+    // Stream 3: binary-encoded values (varint length + bytes)
+    for (const val of allValues) {
+      writer.writeVarint(val.length);
+      writer.write(val);
+    }
   }
 
   decode(reader: BufferReader, rows: number, state: DeserializerState): JsonColumn {
