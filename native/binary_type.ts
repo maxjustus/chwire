@@ -132,6 +132,7 @@ class Cursor {
     this.offset += n;
     return slice;
   }
+  /** LEB128 variable-length unsigned integer: 7 data bits per byte, MSB = continuation. */
   readVarUInt(): number {
     let value = 0;
     let shift = 0;
@@ -181,35 +182,35 @@ const SCALAR_TYPES = new Map<number, string>([
   [TypeByte.Bool, "Bool"],
 ]);
 
-/** Decode a binary-encoded ClickHouse type from a cursor. */
-function decodeType(c: Cursor): string {
-  const tag = c.readU8();
+/** Decode a binary-encoded ClickHouse type from a cursor (tag byte from DataTypesBinaryEncoding.h). */
+function decodeType(cursor: Cursor): string {
+  const tag = cursor.readU8(); // type tag byte
 
   const scalar = SCALAR_TYPES.get(tag);
   if (scalar) return scalar;
 
-  // Container and parameterized types (need recursive reads)
+  // Container and parameterized types (need recursive reads after the tag)
   switch (tag) {
     case TypeByte.DateTime: {
-      const tz = c.readString();
+      const tz = cursor.readString(); // timezone string (empty = UTC)
       return tz ? `DateTime('${tz}')` : "DateTime";
     }
     case TypeByte.DateTime64: {
-      const precision = c.readU8();
-      const tz = c.readString();
+      const precision = cursor.readU8(); // precision 0-9
+      const tz = cursor.readString(); // timezone string
       return tz ? `DateTime64(${precision}, '${tz}')` : `DateTime64(${precision})`;
     }
     case TypeByte.FixedString:
-      return `FixedString(${c.readVarUInt()})`;
+      return `FixedString(${cursor.readVarUInt()})`; // byte length
     case TypeByte.Array:
-      return `Array(${decodeType(c)})`;
+      return `Array(${decodeType(cursor)})`;
     case TypeByte.Nullable:
-      return `Nullable(${decodeType(c)})`;
+      return `Nullable(${decodeType(cursor)})`;
     case TypeByte.Map:
-      return `Map(${decodeType(c)}, ${decodeType(c)})`;
+      return `Map(${decodeType(cursor)}, ${decodeType(cursor)})`;
     case TypeByte.Tuple: {
       const elements: string[] = [];
-      for (let n = c.readVarUInt(); n > 0; n--) elements.push(decodeType(c));
+      for (let n = cursor.readVarUInt(); n > 0; n--) elements.push(decodeType(cursor));
       return `Tuple(${elements.join(", ")})`;
     }
     default:
@@ -219,72 +220,74 @@ function decodeType(c: Cursor): string {
 
 // ---------- Value decoding ----------
 
-// Scalar value decoders: type name → read function
-const SCALAR_DECODERS = new Map<string, (c: Cursor) => unknown>([
+// Scalar value decoders: type name → read function (one fixed-size read per type)
+const SCALAR_DECODERS = new Map<string, (cursor: Cursor) => unknown>([
   ["Nothing", () => null],
-  ["Bool", (c) => c.readU8() !== 0],
-  ["UInt8", (c) => c.readU8()],
-  ["UInt16", (c) => c.readU16LE()],
-  ["UInt32", (c) => c.readU32LE()],
-  ["UInt64", (c) => c.readU64LE()],
-  ["Int8", (c) => c.readI8()],
-  ["Int16", (c) => c.readI16LE()],
-  ["Int32", (c) => c.readI32LE()],
-  ["Int64", (c) => c.readI64LE()],
-  ["Float32", (c) => c.readF32LE()],
-  ["Float64", (c) => c.readF64LE()],
-  ["Date", (c) => c.readU16LE()],
-  ["Date32", (c) => c.readI32LE()],
-  ["String", (c) => TEXT_DECODER.decode(c.readBytes(c.readVarUInt()))],
-  ["UUID", (c) => c.readBytes(16).slice()],
-  ["IPv4", (c) => c.readU32LE()],
-  ["IPv6", (c) => c.readBytes(16).slice()],
-  ["UInt128", (c) => c.readBytes(16).slice()],
-  ["Int128", (c) => c.readBytes(16).slice()],
-  ["UInt256", (c) => c.readBytes(32).slice()],
-  ["Int256", (c) => c.readBytes(32).slice()],
+  ["Bool", (cursor) => cursor.readU8() !== 0],
+  ["UInt8", (cursor) => cursor.readU8()],
+  ["UInt16", (cursor) => cursor.readU16LE()],
+  ["UInt32", (cursor) => cursor.readU32LE()],
+  ["UInt64", (cursor) => cursor.readU64LE()],
+  ["Int8", (cursor) => cursor.readI8()],
+  ["Int16", (cursor) => cursor.readI16LE()],
+  ["Int32", (cursor) => cursor.readI32LE()],
+  ["Int64", (cursor) => cursor.readI64LE()],
+  ["Float32", (cursor) => cursor.readF32LE()],
+  ["Float64", (cursor) => cursor.readF64LE()],
+  ["Date", (cursor) => cursor.readU16LE()], // days since epoch
+  ["Date32", (cursor) => cursor.readI32LE()], // days since epoch (signed)
+  ["String", (cursor) => TEXT_DECODER.decode(cursor.readBytes(cursor.readVarUInt()))],
+  ["UUID", (cursor) => cursor.readBytes(16).slice()],
+  ["IPv4", (cursor) => cursor.readU32LE()],
+  ["IPv6", (cursor) => cursor.readBytes(16).slice()],
+  ["UInt128", (cursor) => cursor.readBytes(16).slice()],
+  ["Int128", (cursor) => cursor.readBytes(16).slice()],
+  ["UInt256", (cursor) => cursor.readBytes(32).slice()],
+  ["Int256", (cursor) => cursor.readBytes(32).slice()],
 ]);
 
-function decodeValue(c: Cursor, typeName: string): unknown {
-  const t = typeName.trim();
+function decodeValue(cursor: Cursor, rawTypeName: string): unknown {
+  const typeName = rawTypeName.trim();
 
-  const scalar = SCALAR_DECODERS.get(t);
-  if (scalar) return scalar(c);
+  const scalar = SCALAR_DECODERS.get(typeName);
+  if (scalar) return scalar(cursor);
 
-  // DateTime variants (with optional timezone)
-  if (t === "DateTime" || t.startsWith("DateTime(")) return c.readU32LE();
-  if (t.startsWith("DateTime64(")) return c.readI64LE();
-  if (t.startsWith("FixedString(")) return c.readBytes(parseInt(t.slice(12, -1), 10)).slice();
+  // DateTime variants (with optional timezone parameter)
+  if (typeName === "DateTime" || typeName.startsWith("DateTime(")) return cursor.readU32LE();
+  if (typeName.startsWith("DateTime64(")) return cursor.readI64LE(); // ticks
+  if (typeName.startsWith("FixedString("))
+    return cursor.readBytes(parseInt(typeName.slice(12, -1), 10)).slice();
 
-  // Container types (recursive)
-  if (t.startsWith("Array(")) {
-    const inner = t.slice(6, -1);
-    const count = c.readVarUInt();
+  // Container types (recursive decode)
+  if (typeName.startsWith("Array(")) {
+    const inner = typeName.slice(6, -1);
+    const count = cursor.readVarUInt(); // element count
     const elements: unknown[] = new Array(count);
-    for (let i = 0; i < count; i++) elements[i] = decodeValue(c, inner);
+    for (let i = 0; i < count; i++) elements[i] = decodeValue(cursor, inner);
     return elements;
   }
-  if (t.startsWith("Nullable(")) {
-    if (c.readU8() !== 0) return null;
-    return decodeValue(c, t.slice(9, -1));
+  if (typeName.startsWith("Nullable(")) {
+    if (cursor.readU8() !== 0) return null; // null indicator: 0=value, nonzero=null
+    return decodeValue(cursor, typeName.slice(9, -1));
   }
-  if (t.startsWith("Tuple(")) {
-    const types = parseTypeList(t.slice(6, -1));
-    const elements: unknown[] = new Array(types.length);
-    for (let i = 0; i < types.length; i++) elements[i] = decodeValue(c, types[i]);
+  if (typeName.startsWith("Tuple(")) {
+    const elementTypes = parseTypeList(typeName.slice(6, -1));
+    const elements: unknown[] = new Array(elementTypes.length);
+    for (let i = 0; i < elementTypes.length; i++)
+      elements[i] = decodeValue(cursor, elementTypes[i]);
     return elements;
   }
-  if (t.startsWith("Map(")) {
-    const [keyType, valType] = parseTypeList(t.slice(4, -1));
-    const count = c.readVarUInt();
+  if (typeName.startsWith("Map(")) {
+    const [keyType, valType] = parseTypeList(typeName.slice(4, -1));
+    const count = cursor.readVarUInt(); // entry count
     const keys: unknown[] = new Array(count);
     const values: unknown[] = new Array(count);
-    for (let i = 0; i < count; i++) keys[i] = decodeValue(c, keyType);
-    for (let i = 0; i < count; i++) values[i] = decodeValue(c, valType);
+    for (let i = 0; i < count; i++) keys[i] = decodeValue(cursor, keyType);
+    for (let i = 0; i < count; i++) values[i] = decodeValue(cursor, valType);
     return { keys, values };
   }
 
-  throw new Error(`Unsupported type for binary value decode: ${t}`);
+  throw new Error(`Unsupported type for binary value decode: ${typeName}`);
 }
 
 // ---------- Public API ----------
@@ -295,9 +298,9 @@ function decodeValue(c: Cursor, typeName: string): unknown {
  * Returns the decoded JS value.
  */
 export function decodeBinaryValue(data: Uint8Array): unknown {
-  const c = new Cursor(data);
-  const typeName = decodeType(c);
-  return decodeValue(c, typeName);
+  const cursor = new Cursor(data);
+  const typeName = decodeType(cursor);
+  return decodeValue(cursor, typeName);
 }
 
 // ---------- Value encoding ----------
@@ -315,104 +318,107 @@ export function encodeBinaryValue(value: unknown): Uint8Array {
   return new Uint8Array(parts);
 }
 
-function encodeTypeBytes(out: number[], typeName: string): void {
-  const t = typeName.trim();
+/** Write type tag byte(s) for binary type encoding. Recursive for containers. */
+function encodeTypeBytes(out: number[], rawTypeName: string): void {
+  const typeName = rawTypeName.trim();
 
-  const simple = typeNameToByte[t];
+  const simple = typeNameToByte[typeName];
   if (simple !== undefined) {
-    out.push(simple);
+    out.push(simple); // single tag byte for scalar types
     return;
   }
 
-  if (t === "DateTime" || t.startsWith("DateTime(")) {
-    out.push(TypeByte.DateTime, 0); // + empty timezone
+  if (typeName === "DateTime" || typeName.startsWith("DateTime(")) {
+    out.push(TypeByte.DateTime, 0); // [tag][timezone_len=0]
     return;
   }
-  if (t.startsWith("DateTime64(")) {
+  if (typeName.startsWith("DateTime64(")) {
     out.push(TypeByte.DateTime64);
-    const [precStr] = t.slice(11, -1).split(",");
-    out.push(parseInt(precStr, 10), 0); // precision + empty timezone
+    const [precisionStr] = typeName.slice(11, -1).split(",");
+    out.push(parseInt(precisionStr, 10), 0); // [precision_u8][timezone_len=0]
     return;
   }
-  if (t.startsWith("FixedString(")) {
+  if (typeName.startsWith("FixedString(")) {
     out.push(TypeByte.FixedString);
-    pushVarUInt(out, parseInt(t.slice(12, -1), 10));
+    pushVarUInt(out, parseInt(typeName.slice(12, -1), 10)); // [tag][byte_length_varint]
     return;
   }
-  if (t.startsWith("Array(")) {
+  if (typeName.startsWith("Array(")) {
     out.push(TypeByte.Array);
-    encodeTypeBytes(out, t.slice(6, -1));
+    encodeTypeBytes(out, typeName.slice(6, -1)); // [tag][element_type...]
     return;
   }
-  if (t.startsWith("Nullable(")) {
+  if (typeName.startsWith("Nullable(")) {
     out.push(TypeByte.Nullable);
-    encodeTypeBytes(out, t.slice(9, -1));
+    encodeTypeBytes(out, typeName.slice(9, -1)); // [tag][inner_type...]
     return;
   }
-  if (t.startsWith("Map(")) {
+  if (typeName.startsWith("Map(")) {
     out.push(TypeByte.Map);
-    const [k, v] = parseTypeList(t.slice(4, -1));
-    encodeTypeBytes(out, k);
-    encodeTypeBytes(out, v);
+    const [keyType, valType] = parseTypeList(typeName.slice(4, -1));
+    encodeTypeBytes(out, keyType); // [tag][key_type...][val_type...]
+    encodeTypeBytes(out, valType);
     return;
   }
-  if (t.startsWith("Tuple(")) {
+  if (typeName.startsWith("Tuple(")) {
     out.push(TypeByte.Tuple);
-    const parts = parseTypeList(t.slice(6, -1));
-    pushVarUInt(out, parts.length);
-    for (const p of parts) encodeTypeBytes(out, p);
+    const elementTypes = parseTypeList(typeName.slice(6, -1));
+    pushVarUInt(out, elementTypes.length); // [tag][count_varint][type_0...][type_1...]
+    for (const elemType of elementTypes) encodeTypeBytes(out, elemType);
     return;
   }
 
-  throw new Error(`Cannot encode binary type: ${t}`);
+  throw new Error(`Cannot encode binary type: ${typeName}`);
 }
 
-function encodeValueBytes(out: number[], value: unknown, typeName: string): void {
-  const t = typeName.trim();
-  if (t === "Nothing") return;
-  if (t === "Bool") {
+/** Write value bytes for binary value encoding (type-specific layout). */
+function encodeValueBytes(out: number[], value: unknown, rawTypeName: string): void {
+  const typeName = rawTypeName.trim();
+  if (typeName === "Nothing") return;
+  if (typeName === "Bool") {
     out.push(value ? 1 : 0);
     return;
   }
-  if (t === "UInt8" || t === "Int8") {
+  if (typeName === "UInt8" || typeName === "Int8") {
     out.push((value as number) & 0xff);
     return;
   }
-  if (t === "UInt16" || t === "Int16") {
+  if (typeName === "UInt16" || typeName === "Int16") {
     pushU16LE(out, value as number);
     return;
   }
-  if (t === "UInt32" || t === "Int32") {
+  if (typeName === "UInt32" || typeName === "Int32") {
     pushU32LE(out, value as number);
     return;
   }
-  if (t === "UInt64" || t === "Int64") {
-    pushI64LE(out, typeof value === "bigint" ? value : BigInt(Math.trunc(value as number)));
+  if (typeName === "UInt64" || typeName === "Int64") {
+    const bigintVal = typeof value === "bigint" ? value : BigInt(Math.trunc(value as number));
+    pushI64LE(out, bigintVal);
     return;
   }
-  if (t === "Float32") {
-    const buf = new ArrayBuffer(4);
-    new DataView(buf).setFloat32(0, value as number, true);
-    const bytes = new Uint8Array(buf);
+  if (typeName === "Float32") {
+    const buffer = new ArrayBuffer(4);
+    new DataView(buffer).setFloat32(0, value as number, true);
+    const bytes = new Uint8Array(buffer);
     for (let i = 0; i < 4; i++) out.push(bytes[i]);
     return;
   }
-  if (t === "Float64") {
-    const buf = new ArrayBuffer(8);
-    new DataView(buf).setFloat64(0, value as number, true);
-    const bytes = new Uint8Array(buf);
+  if (typeName === "Float64") {
+    const buffer = new ArrayBuffer(8);
+    new DataView(buffer).setFloat64(0, value as number, true);
+    const bytes = new Uint8Array(buffer);
     for (let i = 0; i < 8; i++) out.push(bytes[i]);
     return;
   }
-  if (t === "Date") {
+  if (typeName === "Date") {
     pushU16LE(out, value as number);
     return;
   }
-  if (t === "Date32") {
+  if (typeName === "Date32") {
     pushU32LE(out, value as number);
     return;
   }
-  if (t === "DateTime" || t.startsWith("DateTime(")) {
+  if (typeName === "DateTime" || typeName.startsWith("DateTime(")) {
     if (value instanceof Date) {
       pushU32LE(out, Math.floor(value.getTime() / 1000));
     } else {
@@ -420,35 +426,34 @@ function encodeValueBytes(out: number[], value: unknown, typeName: string): void
     }
     return;
   }
-  if (t.startsWith("DateTime64(")) {
+  if (typeName.startsWith("DateTime64(")) {
     pushI64LE(out, typeof value === "bigint" ? value : BigInt(value as number));
     return;
   }
-  if (t === "String") {
+  if (typeName === "String") {
     const str = typeof value === "string" ? value : String(value);
     const encoded = TEXT_ENCODER.encode(str);
-    pushVarUInt(out, encoded.length);
+    pushVarUInt(out, encoded.length); // [varint_len][utf8_bytes]
     for (let i = 0; i < encoded.length; i++) out.push(encoded[i]);
     return;
   }
-  if (t.startsWith("Array(")) {
-    const innerType = t.substring(6, t.length - 1);
-    const arr = value as unknown[];
-    pushVarUInt(out, arr.length);
-    for (const elem of arr) encodeValueBytes(out, elem, innerType);
+  if (typeName.startsWith("Array(")) {
+    const arrayValues = value as unknown[];
+    pushVarUInt(out, arrayValues.length); // [count_varint][element_0...][element_1...]
+    for (const elem of arrayValues) encodeValueBytes(out, elem, typeName.slice(6, -1));
     return;
   }
-  if (t.startsWith("Nullable(")) {
+  if (typeName.startsWith("Nullable(")) {
     if (value === null || value === undefined) {
-      out.push(1); // is_null
+      out.push(1); // null indicator: 1 = null
       return;
     }
-    out.push(0); // not null
-    encodeValueBytes(out, value, t.substring(9, t.length - 1));
+    out.push(0); // null indicator: 0 = value follows
+    encodeValueBytes(out, value, typeName.slice(9, -1));
     return;
   }
 
-  throw new Error(`Cannot encode binary value for type: ${t}`);
+  throw new Error(`Cannot encode binary value for type: ${typeName}`);
 }
 
 // ---------- Little-endian write helpers (to number[]) ----------

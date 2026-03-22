@@ -2115,14 +2115,12 @@ class DynamicCodec implements Codec {
 
     const wireTypes = this.types.filter((_, i) => i !== svPos);
 
-    writer.writeU64LE(Dynamic.VERSION_V2);
-    writer.writeVarint(wireTypes.length);
-    for (const t of wireTypes) writer.writeString(t);
-
-    // Variant mode u64 (BASIC=0)
-    writer.writeU64LE(0n);
-
-    // Nested type prefixes (all types including SV, in sorted order)
+    // V1/V2 Dynamic prefix wire format:
+    // [version u64] [num_types varint] [type_name strings...] [variant_mode u64] [type prefixes...]
+    writer.writeU64LE(Dynamic.VERSION_V2); // version
+    writer.writeVarint(wireTypes.length); // num_types (excluding SharedVariant)
+    for (const wireType of wireTypes) writer.writeString(wireType);
+    writer.writeU64LE(0n); // variant_mode: 0=BASIC, 1=COMPACT
     for (let i = 0; i < this.codecs.length; i++) {
       const group = dyn.groups.get(i);
       if (group) this.codecs[i].writePrefix?.(writer, group);
@@ -2205,35 +2203,38 @@ class DynamicCodec implements Codec {
     const writer = new BufferWriter(hint);
 
     if (DynamicCodec.isV1V2(this.writeVersion)) {
-      // V1/V2: u8 discriminators, 0xFF = NULL
-      const origNull = dyn.types.length;
-      const svIns = this.insertedSvPos; // -1 if SV was already present
+      // V1/V2 data format: [u8 discriminators (0xFF=NULL)] [per-type column data...]
+      const originalNullDisc = dyn.types.length;
       const rows = dyn.discriminators.length;
-      const discs = new Uint8Array(rows);
+      const wireDiscs = new Uint8Array(rows);
       for (let i = 0; i < rows; i++) {
-        const d = dyn.discriminators[i];
-        if (d === origNull) {
-          discs[i] = 0xff;
-        } else if (svIns >= 0 && d >= svIns) {
-          discs[i] = d + 1; // shift past inserted SV
+        const disc = dyn.discriminators[i];
+        if (disc === originalNullDisc) {
+          wireDiscs[i] = 0xff; // V1/V2 null sentinel
+        } else if (this.insertedSvPos >= 0 && disc >= this.insertedSvPos) {
+          wireDiscs[i] = disc + 1; // shift past inserted SharedVariant
         } else {
-          discs[i] = d;
+          wireDiscs[i] = disc;
         }
       }
-      writer.write(discs);
+      writer.write(wireDiscs);
     } else if (this.v3IndexMap && this.v3IndexMap.size !== dyn.types.length) {
-      // V3 with remapped indices (V1/V2 decoded data → V3 encode, stripped SharedVariant)
-      const nullDisc = this.types.length;
-      const origNull = dyn.types.length;
+      // V3 with remapped indices: V1/V2-decoded data → V3 (stripped SharedVariant)
+      const compactNullDisc = this.types.length;
+      const originalNullDisc = dyn.types.length;
       const rows = dyn.discriminators.length;
       const remapped = new Uint8Array(rows);
       for (let i = 0; i < rows; i++) {
-        const d = dyn.discriminators[i];
-        remapped[i] = d === origNull ? nullDisc : (this.v3IndexMap.get(d) ?? nullDisc);
+        const disc = dyn.discriminators[i];
+        if (disc === originalNullDisc) {
+          remapped[i] = compactNullDisc;
+        } else {
+          remapped[i] = this.v3IndexMap.get(disc) ?? compactNullDisc;
+        }
       }
       writer.write(remapped);
     } else {
-      // V3: discriminators match type list, write as-is
+      // V3 direct: discriminators already match the type list
       writer.write(asBytes(dyn.discriminators));
     }
 
@@ -2273,35 +2274,37 @@ class DynamicCodec implements Codec {
   }
 
   private decodeV1V2(reader: BufferReader, rows: number, state: DeserializerState): DynamicColumn {
-    // V1/V2: u8 discriminators, 0xFF = NULL
+    // V1/V2 data format: [u8 discriminators] [per-type column data...]
+    // Discriminators: 0..N-1 = type indices, 0xFF = NULL
     const V1V2_NULL = 0xff;
-    const raw = reader.readTypedArray(Uint8Array, rows);
+    const rawDiscs = reader.readTypedArray(Uint8Array, rows);
     const nullDisc = this.types.length;
 
-    // Remap 0xFF → types.length (our null discriminator convention)
+    // Remap wire 0xFF → our internal null convention (types.length)
     const discriminators = new Uint8Array(rows);
     for (let i = 0; i < rows; i++) {
-      discriminators[i] = raw[i] === V1V2_NULL ? nullDisc : raw[i];
+      discriminators[i] = rawDiscs[i] === V1V2_NULL ? nullDisc : rawDiscs[i];
     }
 
     const { counts, indices } = countAndIndexDiscriminators(discriminators, nullDisc);
     const groups = decodeGroups(reader, this.codecs, counts, state);
 
-    // If SharedVariant has values, decode them from binary format and rebuild
-    // the column so get() returns proper typed values, not raw binary blobs.
+    // SharedVariant stores binary-encoded type+value blobs (read as raw Uint8Array).
+    // Decode them to proper JS values so the column is usable for re-encoding.
     const svGroup = this.svPos >= 0 ? groups.get(this.svPos) : undefined;
     if (svGroup && svGroup.length > 0) {
       const allValues = new Array(rows).fill(null);
       const col = new DynamicColumn(this.types, discriminators, groups, indices, true);
       for (let i = 0; i < rows; i++) {
-        const d = discriminators[i];
-        if (d === nullDisc) continue;
-        if (d === this.svPos) {
-          const raw = svGroup.get(indices[i]) as Uint8Array;
+        const disc = discriminators[i];
+        if (disc === nullDisc) continue;
+        if (disc === this.svPos) {
+          // SharedVariant: decode [type_byte(s)][value_bytes] → JS value
+          const binaryBlob = svGroup.get(indices[i]) as Uint8Array;
           try {
-            allValues[i] = decodeBinaryValue(raw);
+            allValues[i] = decodeBinaryValue(binaryBlob);
           } catch {
-            allValues[i] = raw;
+            allValues[i] = binaryBlob; // fallback: keep raw bytes
           }
         } else {
           allValues[i] = col.get(i);
