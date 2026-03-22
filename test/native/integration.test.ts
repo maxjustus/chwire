@@ -465,6 +465,99 @@ describe("Native format integration", { timeout: 120000 }, () => {
     }
   });
 
+  it("cross-version decode produces identical values (V1 vs V2 vs V3)", async () => {
+    // Insert random mixed data, decode as V1, V2, V3, compare decoded JSON strings.
+    // Catches version-specific decode bugs that silently corrupt values.
+    const table = "test_cross_version_fuzz";
+    await consume(query(`DROP TABLE IF EXISTS ${table}`, sessionId, { baseUrl, auth }));
+    await consume(
+      query(
+        `CREATE TABLE ${table} (id UInt64, data JSON) ENGINE = MergeTree ORDER BY id`,
+        sessionId,
+        { baseUrl, auth },
+      ),
+    );
+    try {
+      // Insert random data with multiple types per path
+      const rows: string[] = [];
+      for (let i = 0; i < 100; i++) {
+        const obj: Record<string, unknown> = { id: i };
+        obj.a = i;
+        obj.b = `str_${i}`;
+        if (i % 3 === 0) obj.c = i * 1.5;
+        if (i % 2 === 0) obj.d = i % 4 === 0;
+        rows.push(JSON.stringify({ id: i, data: obj }));
+      }
+      await consume(
+        query(`INSERT INTO ${table} FORMAT JSONEachRow\n${rows.join("\n")}`, sessionId, {
+          baseUrl,
+          auth,
+        }),
+      );
+
+      // Decode as V1 (HTTP default)
+      const dataV1 = await collectBytes(
+        query(`SELECT * FROM ${table} ORDER BY id FORMAT Native`, sessionId, { baseUrl, auth }),
+      );
+      const decodedV1 = await decodeBatch(dataV1);
+
+      // Decode as V2 (clientVersion >= 54473)
+      const dataV2 = await collectBytes(
+        query(`SELECT * FROM ${table} ORDER BY id FORMAT Native`, sessionId, {
+          baseUrl,
+          auth,
+          clientVersion: 54500,
+        }),
+      );
+      const decodedV2 = await decodeBatch(dataV2, { clientVersion: 54500 });
+
+      // Decode as V3 (flattened setting)
+      const dataV3 = await collectBytes(
+        query(
+          `SELECT * FROM ${table} ORDER BY id FORMAT Native SETTINGS output_format_native_use_flattened_dynamic_and_json_serialization=1`,
+          sessionId,
+          { baseUrl, auth },
+        ),
+      );
+      const decodedV3 = await decodeBatch(dataV3);
+
+      // All three should have same row count
+      assert.strictEqual(decodedV1.rowCount, 100);
+      assert.strictEqual(decodedV2.rowCount, 100);
+      assert.strictEqual(decodedV3.rowCount, 100);
+
+      // Compare decoded JSON values row by row across versions
+      for (let i = 0; i < 100; i++) {
+        const v1 = decodedV1.columnData[1].get(i) as Record<string, unknown>;
+        const v2 = decodedV2.columnData[1].get(i) as Record<string, unknown>;
+        const v3 = decodedV3.columnData[1].get(i) as Record<string, unknown>;
+
+        // All versions should have the same paths present
+        const v1keys = Object.keys(v1).sort().join(",");
+        const v2keys = Object.keys(v2).sort().join(",");
+        const v3keys = Object.keys(v3).sort().join(",");
+        assert.strictEqual(v1keys, v3keys, `row ${i}: V1 vs V3 path mismatch`);
+        assert.strictEqual(v2keys, v3keys, `row ${i}: V2 vs V3 path mismatch`);
+
+        // Values should match (use String() to normalize Bool→Int coercion)
+        for (const key of Object.keys(v3)) {
+          assert.strictEqual(
+            String(v1[key]),
+            String(v3[key]),
+            `row ${i} path '${key}': V1=${v1[key]} vs V3=${v3[key]}`,
+          );
+          assert.strictEqual(
+            String(v2[key]),
+            String(v3[key]),
+            `row ${i} path '${key}': V2=${v2[key]} vs V3=${v3[key]}`,
+          );
+        }
+      }
+    } finally {
+      await consume(query(`DROP TABLE ${table}`, sessionId, { baseUrl, auth }));
+    }
+  });
+
   it("round-trips JSON+Dynamic via Native V3 encode+decode", async () => {
     const table = "test_native_v3_roundtrip";
     await consume(query(`DROP TABLE IF EXISTS ${table}`, sessionId, { baseUrl, auth }));

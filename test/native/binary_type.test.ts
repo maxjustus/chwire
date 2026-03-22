@@ -284,7 +284,8 @@ describe("encodeBinaryValue", () => {
 });
 
 describe("round-trip", () => {
-  const cases: [string, unknown][] = [
+  // Scalars
+  const scalarCases: [string, unknown][] = [
     ["null", null],
     ["true", true],
     ["false", false],
@@ -294,10 +295,9 @@ describe("round-trip", () => {
     ["float 3.14", 3.14],
     ["string hello", "hello"],
     ["empty string", ""],
-    ["empty array", []],
   ];
 
-  for (const [label, value] of cases) {
+  for (const [label, value] of scalarCases) {
     it(`round-trips ${label}`, () => {
       const encoded = encodeBinaryValue(value);
       const decoded = decodeBinaryValue(encoded);
@@ -307,12 +307,38 @@ describe("round-trip", () => {
       } else if (typeof value === "number" && Number.isInteger(value)) {
         // integers encode as Int64, decode as bigint
         assert.strictEqual(decoded, BigInt(value));
-      } else if (Array.isArray(value) && value.length === 0) {
-        // empty array encodes as Array(Nothing), decodes as []
-        assert.deepStrictEqual(decoded, []);
       } else {
         assert.deepStrictEqual(decoded, value);
       }
     });
   }
+
+  // Containers
+  it("round-trips empty array", () => {
+    const encoded = encodeBinaryValue([]);
+    assert.deepStrictEqual(decodeBinaryValue(encoded), []);
+  });
+
+  it("round-trips Array(Int64)", () => {
+    const encoded = encodeBinaryValue([10, 20, 30]);
+    const decoded = decodeBinaryValue(encoded) as unknown[];
+    assert.strictEqual(decoded.length, 3);
+    assert.strictEqual(decoded[0], 10n);
+    assert.strictEqual(decoded[1], 20n);
+    assert.strictEqual(decoded[2], 30n);
+  });
+
+  it("round-trips Array(String)", () => {
+    const encoded = encodeBinaryValue(["foo", "bar", ""]);
+    const decoded = decodeBinaryValue(encoded) as unknown[];
+    assert.deepStrictEqual(decoded, ["foo", "bar", ""]);
+  });
+
+  it("round-trips nested Array(Array(Int64))", () => {
+    const encoded = encodeBinaryValue([[1, 2], [3]]);
+    const decoded = decodeBinaryValue(encoded) as unknown[][];
+    assert.strictEqual(decoded.length, 2);
+    assert.deepStrictEqual(decoded[0], [1n, 2n]);
+    assert.deepStrictEqual(decoded[1], [3n]);
+  });
 });

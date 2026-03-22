@@ -126,26 +126,32 @@ describe("TCP Client Fuzz Tests", { timeout: 600000, concurrency: 1 }, () => {
     dstTable: string,
     settings?: ClickHouseSettings,
   ): Promise<void> {
+    const s = settings ?? QUERY_SETTINGS;
+    // Row count check
     let srcCount = 0n,
       dstCount = 0n;
-    for await (const p of client.query(`SELECT count() as c FROM ${srcTable}`, {
-      settings: settings ?? QUERY_SETTINGS,
-    })) {
-      if (p.type === "Data" && p.batch.rowCount > 0) {
-        const firstRow = p.batch.get(0) as any;
-        srcCount = firstRow?.c;
-      }
+    for await (const p of client.query(`SELECT count() as c FROM ${srcTable}`, { settings: s })) {
+      if (p.type === "Data" && p.batch.rowCount > 0) srcCount = (p.batch.get(0) as any)?.c;
     }
-    for await (const p of client.query(`SELECT count() as c FROM ${dstTable}`, {
-      settings: settings ?? QUERY_SETTINGS,
-    })) {
-      if (p.type === "Data" && p.batch.rowCount > 0) {
-        const firstRow = p.batch.get(0) as any;
-        dstCount = firstRow?.c;
-      }
+    for await (const p of client.query(`SELECT count() as c FROM ${dstTable}`, { settings: s })) {
+      if (p.type === "Data" && p.batch.rowCount > 0) dstCount = (p.batch.get(0) as any)?.c;
     }
     if (srcCount !== dstCount) {
       throw new Error(`Row count mismatch: src=${srcCount}, dst=${dstCount}`);
+    }
+
+    // Value check — EXCEPT compares full rows (works for Variant/Dynamic/JSON unlike cityHash64)
+    let diffCount = 0n;
+    for await (const p of client.query(
+      `SELECT count() as c FROM (SELECT * FROM ${srcTable} EXCEPT SELECT * FROM ${dstTable})`,
+      { settings: s },
+    )) {
+      if (p.type === "Data" && p.batch.rowCount > 0) diffCount = (p.batch.get(0) as any)?.c;
+    }
+    if (diffCount !== 0n) {
+      throw new Error(
+        `Value mismatch: ${diffCount} rows differ between ${srcTable} and ${dstTable}`,
+      );
     }
   }
 
