@@ -2470,10 +2470,20 @@ function createCodec(type: string): Codec {
 
 // LRU codec cache. JS Maps iterate in insertion order, so deleting and
 // re-inserting moves a key to the end. Evicting map.keys().next() drops oldest.
+// IMPORTANT: Only stateless codecs may be cached. Codecs that accumulate state
+// during readPrefix/writePrefix (e.g. Dynamic, JSON) must bypass the cache —
+// otherwise block 1's state corrupts block 2 when the server sends multiple
+// MergeTree parts with different column metadata.
 const CODEC_CACHE = new Map<string, Codec>();
 const CODEC_CACHE_LIMIT = 131072;
 
 export function getCodec(type: string): Codec {
+  // Dynamic and JSON codecs are stateful (readVersion, dynamicPaths, dynamicCodecs, etc.)
+  // and MUST NOT be cached — each decode/encode cycle needs a fresh instance.
+  if (type === "Dynamic" || type === "JSON" || type.startsWith("JSON(")) {
+    return createCodec(type);
+  }
+
   const cached = CODEC_CACHE.get(type);
   if (cached !== undefined) {
     CODEC_CACHE.delete(type);
