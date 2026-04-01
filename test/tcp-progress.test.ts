@@ -4,6 +4,34 @@ import { TcpClient } from "../tcp_client/client.ts";
 import type { AccumulatedProgress } from "../tcp_client/types.ts";
 import { startClickHouse, stopClickHouse } from "./setup.ts";
 
+function sameProgress(a: AccumulatedProgress, b: AccumulatedProgress): boolean {
+  return (
+    a.readRows === b.readRows &&
+    a.readBytes === b.readBytes &&
+    a.totalRowsToRead === b.totalRowsToRead &&
+    a.totalBytesToRead === b.totalBytesToRead &&
+    a.writtenRows === b.writtenRows &&
+    a.writtenBytes === b.writtenBytes &&
+    a.elapsedNs === b.elapsedNs &&
+    a.percent === b.percent &&
+    a.memoryUsage === b.memoryUsage &&
+    a.peakMemoryUsage === b.peakMemoryUsage &&
+    a.cpuTimeMicroseconds === b.cpuTimeMicroseconds &&
+    a.cpuUsage === b.cpuUsage
+  );
+}
+
+function sameEntries(a: Map<string, bigint>, b: [string, bigint][]): boolean {
+  const entries = [...a.entries()];
+  if (entries.length !== b.length) return false;
+  for (let i = 0; i < entries.length; i++) {
+    if (entries[i][0] !== b[i][0] || entries[i][1] !== b[i][1]) {
+      return false;
+    }
+  }
+  return true;
+}
+
 describe("TCP progress accumulation", { timeout: 60000 }, () => {
   let client: TcpClient;
 
@@ -132,6 +160,65 @@ describe("TCP progress accumulation", { timeout: 60000 }, () => {
         );
       }
     }
+  });
+
+  it("yields snapshot copies for accumulated progress and profile events", async () => {
+    let firstProgressRef: AccumulatedProgress | null = null;
+    let firstProgressSnapshot: AccumulatedProgress | null = null;
+    let sawLaterProgressChange = false;
+
+    let firstProfileEventsRef: Map<string, bigint> | null = null;
+    let firstProfileEventsSnapshot: [string, bigint][] | null = null;
+    let sawLaterProfileEventsChange = false;
+
+    for await (const packet of client.query(
+      "SELECT number FROM numbers(200) WHERE sleepEachRow(0.01) = 0",
+      {
+        settings: {
+          max_block_size: 1n,
+          interactive_delay: 10000n,
+          send_profile_events: true,
+          profile_events_delay_ms: 20n,
+        },
+      },
+    )) {
+      if (packet.type === "Progress") {
+        if (!firstProgressRef) {
+          firstProgressRef = packet.accumulated;
+          firstProgressSnapshot = { ...packet.accumulated };
+        } else if (!sameProgress(packet.accumulated, firstProgressSnapshot!)) {
+          sawLaterProgressChange = true;
+        }
+      } else if (packet.type === "ProfileEvents") {
+        if (!firstProfileEventsRef) {
+          firstProfileEventsRef = packet.accumulated;
+          firstProfileEventsSnapshot = [...packet.accumulated.entries()];
+        } else if (!sameEntries(packet.accumulated, firstProfileEventsSnapshot!)) {
+          sawLaterProfileEventsChange = true;
+        }
+      }
+    }
+
+    assert.ok(firstProgressRef, "Expected at least one Progress packet");
+    assert.ok(firstProgressSnapshot, "Expected to capture first Progress snapshot");
+    assert.ok(sawLaterProgressChange, "Expected later Progress packets to accumulate further");
+    assert.deepStrictEqual(
+      firstProgressRef,
+      firstProgressSnapshot,
+      "Earlier Progress packet should remain an immutable snapshot",
+    );
+
+    assert.ok(firstProfileEventsRef, "Expected at least one ProfileEvents packet");
+    assert.ok(firstProfileEventsSnapshot, "Expected to capture first ProfileEvents snapshot");
+    assert.ok(
+      sawLaterProfileEventsChange,
+      "Expected later ProfileEvents packets to accumulate further",
+    );
+    assert.deepStrictEqual(
+      [...firstProfileEventsRef.entries()],
+      firstProfileEventsSnapshot,
+      "Earlier ProfileEvents packet should remain an immutable snapshot",
+    );
   });
 
   it("yields progress packets from insert()", async () => {

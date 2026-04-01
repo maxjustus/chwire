@@ -218,8 +218,10 @@ export class TcpClient {
 
     const abortHandler = () => {
       if (!settled) {
+        const rejectAbort = abortRejectFn;
         cleanup();
         this.socket?.destroy();
+        rejectAbort?.();
       }
     };
     signal?.addEventListener("abort", abortHandler);
@@ -438,13 +440,12 @@ export class TcpClient {
     options: InsertOptions = {},
   ): AsyncGenerator<Packet> {
     this.ensureConnected();
-    if (this.busy)
-      throw new Error("Connection busy - cannot run concurrent operations on the same TcpClient");
-    this.busy = true;
-
     const signal = options.signal;
     const batchSize = options.batchSize ?? 10000;
     if (signal?.aborted) throw new Error("Insert aborted before start");
+    if (this.busy)
+      throw new Error("Connection busy - cannot run concurrent operations on the same TcpClient");
+    this.busy = true;
 
     let cancelled = false;
     let reachedEndOfStream = false;
@@ -593,7 +594,11 @@ export class TcpClient {
           case ServerPacketId.Progress: {
             const progress = await this.readProgress();
             this.accumulateProgress(progress, progressAccumulated);
-            yield { type: "Progress", progress, accumulated: progressAccumulated };
+            yield {
+              type: "Progress",
+              progress,
+              accumulated: this.snapshotProgress(progressAccumulated),
+            };
             break;
           }
           case ServerPacketId.ProfileInfo:
@@ -602,7 +607,7 @@ export class TcpClient {
           case ServerPacketId.ProfileEvents: {
             const batch = await this.readBlock(false);
             this.processProfileEventsBlock(batch, profileEventsAccumulated, progressAccumulated);
-            yield { type: "ProfileEvents", batch, accumulated: profileEventsAccumulated };
+            yield { type: "ProfileEvents", batch, accumulated: new Map(profileEventsAccumulated) };
             break;
           }
           case ServerPacketId.Data:
@@ -631,6 +636,10 @@ export class TcpClient {
       if (!reachedEndOfStream && !receivedException && this.socket && this.reader) {
         if (sentDataDelimiter) {
           try {
+            if (!cancelled) {
+              cancelled = true;
+              await this.writeWithBackpressure(this.writer.encodeCancel());
+            }
             await this.drainPackets(useCompression);
           } catch (err) {
             this.log(
@@ -785,6 +794,10 @@ export class TcpClient {
       } as AccumulatedProgress,
       profileEvents: new Map<string, bigint>(),
     };
+  }
+
+  private snapshotProgress(progress: AccumulatedProgress): AccumulatedProgress {
+    return { ...progress };
   }
 
   private accumulateProgress(progress: Progress, accumulated: AccumulatedProgress): void {
@@ -951,12 +964,11 @@ export class TcpClient {
 
   private async *queryImpl(sql: string, options: QueryOptions = {}): AsyncGenerator<Packet> {
     this.ensureConnected();
+    const { settings = {}, signal } = options;
+    if (signal?.aborted) throw new Error("Query aborted before start");
     if (this.busy)
       throw new Error("Connection busy - cannot run concurrent operations on the same TcpClient");
     this.busy = true;
-
-    const { settings = {}, signal } = options;
-    if (signal?.aborted) throw new Error("Query aborted before start");
 
     const useCompression = !!this.options.compression;
     const compressionMethod = toMethodCode(this.options.compression || "lz4");
@@ -1088,7 +1100,11 @@ export class TcpClient {
                 progressDenom > 0n
                   ? Number((progressAccumulated.readRows * 100n) / progressDenom)
                   : 0;
-              yield { type: "Progress", progress, accumulated: progressAccumulated };
+              yield {
+                type: "Progress",
+                progress,
+                accumulated: this.snapshotProgress(progressAccumulated),
+              };
               break;
             }
             case ServerPacketId.ProfileInfo:
@@ -1097,7 +1113,11 @@ export class TcpClient {
             case ServerPacketId.ProfileEvents: {
               const batch = await this.readBlock(false);
               this.processProfileEventsBlock(batch, profileEventsAccumulated, progressAccumulated);
-              yield { type: "ProfileEvents", batch, accumulated: profileEventsAccumulated };
+              yield {
+                type: "ProfileEvents",
+                batch,
+                accumulated: new Map(profileEventsAccumulated),
+              };
               break;
             }
             case ServerPacketId.Totals:
@@ -1144,6 +1164,10 @@ export class TcpClient {
       // Skip draining if we received an exception - server sends nothing after exception.
       if (!reachedEndOfStream && !receivedException && this.socket && this.reader) {
         try {
+          if (!cancelled) {
+            cancelled = true;
+            await this.writeWithBackpressure(this.writer.encodeCancel());
+          }
           await this.drainPackets(useCompression);
         } catch (err) {
           // Drain failed - connection is in unknown state, close it to prevent corruption
@@ -1264,12 +1288,19 @@ export class TcpClient {
    * Useful for checking connection health.
    */
   async ping(): Promise<void> {
-    if (!this.socket || !this.reader) throw new Error("Not connected");
-
-    this.socket!.write(this.writer.encodePing());
-    const packetId = Number(await this.reader.readVarInt());
-    if (packetId !== ServerPacketId.Pong) {
-      throw new Error(`Expected Pong (4), got packet ${packetId}`);
+    this.ensureConnected();
+    if (this.busy) {
+      throw new Error("Connection busy - cannot ping during an active operation");
+    }
+    this.busy = true;
+    try {
+      await this.writeWithBackpressure(this.writer.encodePing());
+      const packetId = Number(await this.reader!.readVarInt());
+      if (packetId !== ServerPacketId.Pong) {
+        throw new Error(`Expected Pong (4), got packet ${packetId}`);
+      }
+    } finally {
+      this.busy = false;
     }
   }
 

@@ -103,6 +103,36 @@ describe("TCP Client Reliability", () => {
       assert.ok(true);
     }));
 
+  test("should cancel and keep connection reusable when query iteration stops early", () =>
+    withClient(async (client) => {
+      const startedAt = Date.now();
+      let firstBatchRows = 0;
+
+      for await (const packet of client.query(
+        "SELECT number FROM numbers(1000) WHERE sleepEachRow(0.02) = 0 SETTINGS max_block_size = 1",
+      )) {
+        if (packet.type === "Data") {
+          firstBatchRows = packet.batch.rowCount;
+          break;
+        }
+      }
+
+      const elapsedMs = Date.now() - startedAt;
+      assert.strictEqual(firstBatchRows, 1, "Expected first batch to contain one row");
+      assert.ok(
+        elapsedMs < 2000,
+        `Breaking query iteration should cancel quickly, took ${elapsedMs}ms`,
+      );
+
+      let result: number | null = null;
+      for await (const packet of client.query("SELECT 1 as x")) {
+        if (packet.type === "Data" && packet.batch.rowCount > 0) {
+          result = Number(packet.batch.getAt(0, 0));
+        }
+      }
+      assert.strictEqual(result, 1, "Connection should remain reusable after early exit");
+    }));
+
   test("should timeout query that takes too long", async () => {
     const client = new TcpClient({
       ...toClientOptions(options),
@@ -148,6 +178,14 @@ describe("TCP Client Reliability", () => {
       } catch (err: any) {
         assert.ok(err.message.includes("aborted"), "Should mention aborted");
       }
+
+      let result: number | null = null;
+      for await (const packet of client.query("SELECT 7 as value")) {
+        if (packet.type === "Data" && packet.batch.rowCount > 0) {
+          result = Number(packet.batch.getAt(0, 0));
+        }
+      }
+      assert.strictEqual(result, 7, "Client should still be usable after pre-aborted query");
     }));
 
   test("should handle connection timeout", async () => {
@@ -232,6 +270,41 @@ describe("TCP Client Reliability", () => {
       } catch (err: any) {
         assert.ok(err.message.includes("aborted"), "Should mention aborted");
       }
+
+      let result: number | null = null;
+      for await (const packet of client.query("SELECT 9 as value")) {
+        if (packet.type === "Data" && packet.batch.rowCount > 0) {
+          result = Number(packet.batch.getAt(0, 0));
+        }
+      }
+      assert.strictEqual(result, 9, "Client should still be usable after pre-aborted insert");
+    }));
+
+  test("should reject ping during an active query", () =>
+    withClient(async (client) => {
+      const stream = client.query(
+        "SELECT number FROM numbers(1000) WHERE sleepEachRow(0.01) = 0 SETTINGS max_block_size = 1",
+      );
+
+      try {
+        while (true) {
+          const next = await stream.next();
+          assert.ok(!next.done, "Expected query to yield at least one packet");
+          if (next.value.type === "Data") break;
+        }
+
+        await assert.rejects(() => client.ping(), /Connection busy/);
+      } finally {
+        await stream.return(undefined);
+      }
+
+      let result: number | null = null;
+      for await (const packet of client.query("SELECT 11 as value")) {
+        if (packet.type === "Data" && packet.batch.rowCount > 0) {
+          result = Number(packet.batch.getAt(0, 0));
+        }
+      }
+      assert.strictEqual(result, 11, "Connection should remain usable after rejecting ping");
     }));
 
   test("should cancel connect via AbortSignal", async () => {
