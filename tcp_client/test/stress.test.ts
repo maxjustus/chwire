@@ -59,8 +59,7 @@ describe("TCP Client Stress Tests", () => {
               [2n, "test"],
             ],
           );
-          for await (const _ of client.insert(`INSERT INTO ${tableName} VALUES`, batch)) {
-          }
+          await client.insert(`INSERT INTO ${tableName} VALUES`, batch);
 
           // 3. Run another SELECT and verify it works
           let rowCount = 0;
@@ -93,8 +92,7 @@ describe("TCP Client Stress Tests", () => {
                 [BigInt(cycle * 10 + 1), cycle],
               ],
             );
-            for await (const _ of client.insert(`INSERT INTO ${tableName} VALUES`, batch)) {
-            }
+            await client.insert(`INSERT INTO ${tableName} VALUES`, batch);
 
             // QUERY and verify
             let count = 0n;
@@ -184,10 +182,9 @@ describe("TCP Client Stress Tests", () => {
         }
 
         try {
-          for await (const _ of client.insert(`INSERT INTO ${tableName} VALUES`, generateBlocks(), {
+          await client.insert(`INSERT INTO ${tableName} VALUES`, generateBlocks(), {
             signal: controller.signal,
-          })) {
-          }
+          });
         } catch {
           // Expected cancellation
         }
@@ -262,8 +259,7 @@ describe("TCP Client Stress Tests", () => {
               ],
               rows,
             );
-            for await (const _ of client.insert(`INSERT INTO ${tableName} VALUES`, batch)) {
-            }
+            await client.insert(`INSERT INTO ${tableName} VALUES`, batch);
 
             // Verify count
             let count = 0n;
@@ -359,11 +355,7 @@ describe("TCP Client Stress Tests", () => {
             }
           }
 
-          for await (const _ of client.insert(
-            `INSERT INTO ${tableName} VALUES`,
-            generateBatches(),
-          )) {
-          }
+          await client.insert(`INSERT INTO ${tableName} VALUES`, generateBatches());
 
           // Verify count
           let count = 0n;
@@ -419,8 +411,7 @@ describe("TCP Client Stress Tests", () => {
             ],
             rows,
           );
-          for await (const _ of client.insert(`INSERT INTO ${tableName} VALUES`, batch)) {
-          }
+          await client.insert(`INSERT INTO ${tableName} VALUES`, batch);
 
           // Verify count and compute aggregate hash server-side
           let count = 0n;

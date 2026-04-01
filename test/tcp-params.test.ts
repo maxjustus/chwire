@@ -206,8 +206,7 @@ describe("TCP Query Parameters", { timeout: 60000 }, () => {
 
     // Insert using native format
     const rows = testIPs.map((ip) => ({ ip }));
-    for await (const _ of client.insert(`INSERT INTO ${tableName} VALUES`, rows)) {
-    }
+    await client.insert(`INSERT INTO ${tableName} VALUES`, rows);
 
     // Read back via native format
     const results: string[] = [];

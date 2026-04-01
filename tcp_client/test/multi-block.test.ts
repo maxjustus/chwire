@@ -76,8 +76,7 @@ describe("TCP Client Multi-block Integration", () => {
         }
       }
 
-      for await (const _ of client.insert(`INSERT INTO ${tableName} VALUES`, generateBlocks())) {
-      }
+      await client.insert(`INSERT INTO ${tableName} VALUES`, generateBlocks());
 
       const stream = client.query(`SELECT count() FROM ${tableName}`);
       let totalCount = 0n;

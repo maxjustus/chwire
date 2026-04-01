@@ -231,12 +231,9 @@ describe("TCP Client Reliability", () => {
       // Cancel after 50ms
       setTimeout(() => controller.abort(), 50);
 
-      for await (const _ of client.insert(
-        "INSERT INTO test_abort_insert FORMAT Native",
-        slowTables(),
-        { signal: controller.signal },
-      )) {
-      }
+      await client.insert("INSERT INTO test_abort_insert FORMAT Native", slowTables(), {
+        signal: controller.signal,
+      });
       // Insert may complete or be cancelled
     } catch (err: any) {
       assert.ok(
@@ -262,10 +259,9 @@ describe("TCP Client Reliability", () => {
         const table = batchFromCols({
           x: getCodec("UInt64").fromValues(BigInt64Array.from([1n, 2n, 3n])),
         });
-        for await (const _ of client.insert("INSERT INTO system.numbers FORMAT Native", table, {
+        await client.insert("INSERT INTO system.numbers FORMAT Native", table, {
           signal: controller.signal,
-        })) {
-        }
+        });
         assert.fail("Should have thrown an error");
       } catch (err: any) {
         assert.ok(err.message.includes("aborted"), "Should mention aborted");

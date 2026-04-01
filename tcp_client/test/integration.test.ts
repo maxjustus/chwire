@@ -56,8 +56,7 @@ describe("TCP Client Integration", () => {
         ],
       );
 
-      for await (const _ of client.insert(`INSERT INTO ${tableName} VALUES`, batch)) {
-      }
+      await client.insert(`INSERT INTO ${tableName} VALUES`, batch);
 
       const allRows = await collectRows(client, `SELECT * FROM ${tableName} ORDER BY id`);
       assert.strictEqual(allRows.length, 2, "Should have 2 rows");
@@ -84,12 +83,11 @@ describe("TCP Client Integration", () => {
         `CREATE TABLE ${tableName} (id UInt32, name String, value Float64) ENGINE = Memory`,
       );
 
-      for await (const _ of client.insert(`INSERT INTO ${tableName} VALUES`, [
+      await client.insert(`INSERT INTO ${tableName} VALUES`, [
         { id: 1, name: "alice", value: 1.5 },
         { id: 2, name: "bob", value: 2.5 },
         { id: 3, name: "charlie", value: 3.5 },
-      ])) {
-      }
+      ]);
 
       const allRows = await collectRows(client, `SELECT * FROM ${tableName} ORDER BY id`);
       assert.strictEqual(allRows.length, 3);
@@ -112,10 +110,9 @@ describe("TCP Client Integration", () => {
         }
       }
 
-      for await (const _ of client.insert(`INSERT INTO ${tableName} VALUES`, generateRows(), {
+      await client.insert(`INSERT INTO ${tableName} VALUES`, generateRows(), {
         batchSize: 100,
-      })) {
-      }
+      });
 
       const stream = client.query(`SELECT count() as cnt FROM ${tableName}`);
       let count = 0;
@@ -140,12 +137,7 @@ describe("TCP Client Integration", () => {
         { name: "name", type: "String" },
       ];
 
-      for await (const _ of client.insert(
-        `INSERT INTO ${tableName} VALUES`,
-        [{ id: 1, name: "test" }],
-        { schema },
-      )) {
-      }
+      await client.insert(`INSERT INTO ${tableName} VALUES`, [{ id: 1, name: "test" }], { schema });
 
       const stream = client.query(`SELECT count() as cnt FROM ${tableName}`);
       let count = 0;
@@ -174,12 +166,9 @@ describe("TCP Client Integration", () => {
       ];
 
       await assert.rejects(async () => {
-        for await (const _ of client.insert(
-          `INSERT INTO ${tableName} VALUES`,
-          [{ id: 1, name: "test" }],
-          { schema: wrongSchema },
-        )) {
-        }
+        await client.insert(`INSERT INTO ${tableName} VALUES`, [{ id: 1, name: "test" }], {
+          schema: wrongSchema,
+        });
       }, /Schema mismatch.*UInt64.*UInt32/);
     });
 
@@ -202,12 +191,9 @@ describe("TCP Client Integration", () => {
       ];
 
       await assert.rejects(async () => {
-        for await (const _ of client.insert(
-          `INSERT INTO ${tableName} VALUES`,
-          [{ id: 1, name: "test" }],
-          { schema: wrongSchema },
-        )) {
-        }
+        await client.insert(`INSERT INTO ${tableName} VALUES`, [{ id: 1, name: "test" }], {
+          schema: wrongSchema,
+        });
       }, /Schema mismatch.*user_id.*id/);
     });
 
@@ -230,10 +216,9 @@ describe("TCP Client Integration", () => {
       ];
 
       await assert.rejects(async () => {
-        for await (const _ of client.insert(`INSERT INTO ${tableName} VALUES`, [{ id: 1 }], {
+        await client.insert(`INSERT INTO ${tableName} VALUES`, [{ id: 1 }], {
           schema: wrongSchema,
-        })) {
-        }
+        });
       }, /Schema mismatch.*expected 1 columns.*got 2/);
     });
 
@@ -254,12 +239,11 @@ describe("TCP Client Integration", () => {
         ) ENGINE = Memory
       `);
 
-      for await (const _ of client.insert(`INSERT INTO ${tableName} (id) VALUES`, [
+      await client.insert(`INSERT INTO ${tableName} (id) VALUES`, [
         { id: 1 },
         { id: 2 },
         { id: 3 },
-      ])) {
-      }
+      ]);
 
       const allRows = await collectRows(client, `SELECT * FROM ${tableName} ORDER BY id`);
       assert.strictEqual(allRows.length, 3);
@@ -284,10 +268,7 @@ describe("TCP Client Integration", () => {
         ) ENGINE = Memory
       `);
 
-      for await (const _ of client.insert(`INSERT INTO ${tableName} (id, b) VALUES`, [
-        { id: 1, b: "custom_b" },
-      ])) {
-      }
+      await client.insert(`INSERT INTO ${tableName} (id, b) VALUES`, [{ id: 1, b: "custom_b" }]);
 
       const allRows = await collectRows(client, `SELECT * FROM ${tableName}`);
       assert.strictEqual(allRows.length, 1);
@@ -325,8 +306,7 @@ describe("TCP Client Integration", () => {
         ],
       );
 
-      for await (const _ of client.insert(`INSERT INTO ${tableName} VALUES`, batch)) {
-      }
+      await client.insert(`INSERT INTO ${tableName} VALUES`, batch);
 
       const allRows = await collectRows(client, `SELECT * FROM ${tableName} ORDER BY id`);
       assert.strictEqual(allRows.length, 2);
@@ -377,12 +357,11 @@ describe("TCP Client Integration", () => {
         `CREATE TABLE ${tableName} (id UInt32, arr Array(UInt32)) ENGINE = Memory`,
       );
 
-      for await (const _ of client.insert(`INSERT INTO ${tableName} VALUES`, [
+      await client.insert(`INSERT INTO ${tableName} VALUES`, [
         { id: 1, arr: [10, 20, 30] },
         { id: 2, arr: [100] },
         { id: 3, arr: [] },
-      ])) {
-      }
+      ]);
 
       const allRows = await collectRows(client, `SELECT * FROM ${tableName} ORDER BY id`);
       assert.strictEqual(allRows.length, 3);
@@ -400,12 +379,11 @@ describe("TCP Client Integration", () => {
         `CREATE TABLE ${tableName} (id UInt32, tags Array(String)) ENGINE = Memory`,
       );
 
-      for await (const _ of client.insert(`INSERT INTO ${tableName} VALUES`, [
+      await client.insert(`INSERT INTO ${tableName} VALUES`, [
         { id: 1, tags: ["foo", "bar", "baz"] },
         { id: 2, tags: ["single"] },
         { id: 3, tags: [] },
-      ])) {
-      }
+      ]);
 
       const allRows = await collectRows(client, `SELECT * FROM ${tableName} ORDER BY id`);
       assert.strictEqual(allRows.length, 3);
@@ -423,7 +401,7 @@ describe("TCP Client Integration", () => {
         `CREATE TABLE ${tableName} (id UInt32, matrix Array(Array(UInt32))) ENGINE = Memory`,
       );
 
-      for await (const _ of client.insert(`INSERT INTO ${tableName} VALUES`, [
+      await client.insert(`INSERT INTO ${tableName} VALUES`, [
         {
           id: 1,
           matrix: [
@@ -433,8 +411,7 @@ describe("TCP Client Integration", () => {
         },
         { id: 2, matrix: [[100]] },
         { id: 3, matrix: [] },
-      ])) {
-      }
+      ]);
 
       const allRows = await collectRows(client, `SELECT * FROM ${tableName} ORDER BY id`);
       assert.strictEqual(allRows.length, 3);
@@ -454,12 +431,11 @@ describe("TCP Client Integration", () => {
         `CREATE TABLE ${tableName} (id UInt32, arr Array(Nullable(UInt32))) ENGINE = Memory`,
       );
 
-      for await (const _ of client.insert(`INSERT INTO ${tableName} VALUES`, [
+      await client.insert(`INSERT INTO ${tableName} VALUES`, [
         { id: 1, arr: [1, null, 3] },
         { id: 2, arr: [null, null] },
         { id: 3, arr: [] },
-      ])) {
-      }
+      ]);
 
       const allRows = await collectRows(client, `SELECT * FROM ${tableName} ORDER BY id`);
       assert.strictEqual(allRows.length, 3);

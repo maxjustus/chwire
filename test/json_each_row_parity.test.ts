@@ -119,8 +119,7 @@ describe("JSONEachRow parity (row-object insert)", { timeout: 120000 }, () => {
       const tcpClient = new TcpClient(tcp);
       await tcpClient.connect();
       try {
-        for await (const _ of tcpClient.insert(`INSERT INTO ${tableNative} VALUES`, rows)) {
-        }
+        await tcpClient.insert(`INSERT INTO ${tableNative} VALUES`, rows);
       } finally {
         tcpClient.close();
       }

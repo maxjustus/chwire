@@ -4,7 +4,7 @@
  */
 
 import { describe, it } from "node:test";
-import { type ColumnDef, encodeNative, RecordBatch } from "../native/index.ts";
+import { type ColumnDef, RecordBatch } from "../native/index.ts";
 import { TcpClient } from "../tcp_client/client.ts";
 import { startClickHouse, stopClickHouse } from "../test/setup.ts";
 import { type Compression, config, logConfig, logFuzzError, getIterationIndex } from "./config.ts";
@@ -45,7 +45,7 @@ describe("Native TCP Integration Fuzz Tests", { timeout: 600000 }, () => {
             user: ch.username,
             password: ch.password,
             compression: compression,
-            queryTimeout: 120000, // 2 minutes for large fuzz tests
+            queryTimeout: 300000, // non-compressed random schemas can exceed 2m under parallel fuzz load
             debug: !!process.env.FUZZ_DEBUG,
           });
           await client.connect();
@@ -86,8 +86,7 @@ describe("Native TCP Integration Fuzz Tests", { timeout: 600000 }, () => {
 
             // Insert batches to dest
             for (const batch of batches) {
-              for await (const _ of client.insert(`INSERT INTO ${dstTable} VALUES`, batch)) {
-              }
+              await client.insert(`INSERT INTO ${dstTable} VALUES`, batch);
             }
 
             // Verify with cityHash64
@@ -236,8 +235,7 @@ describe("Native TCP Integration Fuzz Tests", { timeout: 600000 }, () => {
 
             // Insert batches to dest
             for (const batch of batches) {
-              for await (const _ of client.insert(`INSERT INTO ${dstTable} VALUES`, batch)) {
-              }
+              await client.insert(`INSERT INTO ${dstTable} VALUES`, batch);
             }
 
             // Verify row counts
