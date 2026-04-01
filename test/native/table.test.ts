@@ -1,6 +1,8 @@
 import assert from "node:assert";
 import { describe, it } from "node:test";
 import {
+  BufferUnderflowError,
+  BufferWriter,
   batchFromCols,
   batchFromRows,
   type ColumnDef,
@@ -11,6 +13,15 @@ import {
   streamEncodeNative,
 } from "../../native/index.ts";
 import { collect, decodeBatch, encodeNativeRows, toArrayRows, toAsync } from "../test_utils.ts";
+
+function encodeInvalidNativeBlock(type = "NotAType"): Uint8Array {
+  const writer = new BufferWriter();
+  writer.writeVarint(1);
+  writer.writeVarint(0);
+  writer.writeString("bad");
+  writer.writeString(type);
+  return writer.finish();
+}
 
 describe("streamEncodeNative", () => {
   it("streams tables", async () => {
@@ -69,6 +80,37 @@ describe("streamDecodeNative", () => {
     assert.strictEqual(results.length, 1);
     assert.ok(results[0] instanceof RecordBatch);
     assert.deepStrictEqual(toArrayRows(results[0]), [[1], [2], [3]]);
+  });
+
+  it("throws on invalid trailing block at EOF instead of swallowing it", async () => {
+    const columns: ColumnDef[] = [{ name: "id", type: "Int32" }];
+    const validBlock = encodeNativeRows(columns, [[1], [2]]);
+    const writer = new BufferWriter();
+    writer.write(validBlock);
+    writer.write(encodeInvalidNativeBlock());
+
+    const iter = streamDecodeNative(toAsync([writer.finish()]))[Symbol.asyncIterator]();
+    const first = await iter.next();
+
+    assert.strictEqual(first.done, false);
+    assert.deepStrictEqual(toArrayRows(first.value), [[1], [2]]);
+    await assert.rejects(iter.next(), /Unknown type: NotAType/);
+  });
+
+  it("throws BufferUnderflowError on truncated final block at EOF", async () => {
+    const columns: ColumnDef[] = [{ name: "id", type: "Int32" }];
+    const block1 = encodeNativeRows(columns, [[1], [2]]);
+    const block2 = encodeNativeRows(columns, [[3], [4]]);
+    const writer = new BufferWriter();
+    writer.write(block1);
+    writer.write(block2.subarray(0, block2.length - 1));
+
+    const iter = streamDecodeNative(toAsync([writer.finish()]))[Symbol.asyncIterator]();
+    const first = await iter.next();
+
+    assert.strictEqual(first.done, false);
+    assert.deepStrictEqual(toArrayRows(first.value), [[1], [2]]);
+    await assert.rejects(iter.next(), BufferUnderflowError);
   });
 
   it("RecordBatch iteration yields stable row objects that can be collected", async () => {
@@ -134,6 +176,50 @@ describe("RecordBatch static methods", () => {
     const encoded = encodeNative(table);
     const decoded = await decodeBatch(encoded);
     assert.deepStrictEqual(toArrayRows(decoded), rows);
+  });
+
+  it("fromCols accepts an empty column map", () => {
+    const table = batchFromCols({});
+
+    assert.strictEqual(table.rowCount, 0);
+    assert.strictEqual(table.length, 0);
+    assert.strictEqual(table.numCols, 0);
+    assert.deepStrictEqual(table.columnNames, []);
+  });
+
+  it("fromCols throws when a later column is shorter than the first", () => {
+    assert.throws(
+      () =>
+        batchFromCols({
+          id: getCodec("UInt32").fromValues([1, 2]),
+          name: getCodec("String").fromValues(["alice"]),
+        }),
+      /Column length mismatch: expected 2 rows, column name has 1/,
+    );
+  });
+
+  it("fromCols throws when a later column is longer than the first", () => {
+    assert.throws(
+      () =>
+        batchFromCols({
+          id: getCodec("UInt32").fromValues([1]),
+          name: getCodec("String").fromValues(["alice", "bob"]),
+        }),
+      /Column length mismatch: expected 1 rows, column name has 2/,
+    );
+  });
+
+  it("encodeNative rejects malformed RecordBatches with inconsistent row counts", () => {
+    const batch = RecordBatch.from({
+      columns: [{ name: "id", type: "UInt32" }],
+      columnData: [getCodec("UInt32").fromValues([1])],
+      rowCount: 2,
+    });
+
+    assert.throws(
+      () => encodeNative(batch),
+      /Column length mismatch: expected 2 rows, column id has 1/,
+    );
   });
 
   it("fromRows creates table from row arrays", async () => {

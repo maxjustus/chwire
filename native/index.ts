@@ -25,6 +25,7 @@ import {
   type MaterializeOptions,
   RecordBatch,
   type Row,
+  validateColumnLengths,
 } from "./table.ts";
 import { type ColumnDef, type DecodeOptions } from "./types.ts";
 
@@ -226,6 +227,11 @@ export function decodeNativeBlock(
  */
 export function encodeNative(batch: RecordBatch): Uint8Array {
   const { columns, columnData, rowCount } = batch;
+  validateColumnLengths(
+    columnData,
+    columns.map((column) => column.name),
+    rowCount,
+  );
 
   // Estimate total size for pre-allocation
   let totalEstimate = 10; // header varints
@@ -337,23 +343,19 @@ export async function* streamDecodeNative(
   // Final cleanup: decode whatever is left
   let buffer = streamBuffer.view;
   while (buffer.length > 0) {
-    try {
-      // Use slice() to ensure stable columns even in the final blocks
-      const block = decodeNativeBlock(buffer.slice(), 0, options);
-      streamBuffer.consume(block.bytesConsumed);
-      buffer = streamBuffer.view;
+    // Use slice() to ensure stable columns even in the final blocks
+    const block = decodeNativeBlock(buffer.slice(), 0, options);
+    streamBuffer.consume(block.bytesConsumed);
+    buffer = streamBuffer.view;
 
-      if (block.isEndMarker) continue;
-      if (columns.length === 0) columns = block.columns;
-      blocksDecoded++;
-      yield RecordBatch.from({
-        columns,
-        columnData: block.columnData,
-        rowCount: block.rowCount,
-      });
-    } catch {
-      break;
-    }
+    if (block.isEndMarker) continue;
+    if (columns.length === 0) columns = block.columns;
+    blocksDecoded++;
+    yield RecordBatch.from({
+      columns,
+      columnData: block.columnData,
+      rowCount: block.rowCount,
+    });
   }
 
   if (options?.debug) {

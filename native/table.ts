@@ -341,6 +341,23 @@ export function batchFromRows(
   return builder.finish();
 }
 
+export function validateColumnLengths(
+  columnData: readonly Column[],
+  columnNames?: readonly string[],
+  expectedRowCount?: number,
+): number {
+  const rowCount = expectedRowCount ?? columnData[0]?.length ?? 0;
+  for (let i = 0; i < columnData.length; i++) {
+    if (columnData[i].length !== rowCount) {
+      const name = columnNames?.[i] ?? `#${i}`;
+      throw new Error(
+        `Column length mismatch: expected ${rowCount} rows, column ${name} has ${columnData[i].length}`,
+      );
+    }
+  }
+  return rowCount;
+}
+
 /**
  * Create a RecordBatch from pre-built Column objects.
  * Schema is inferred from the columns.
@@ -355,7 +372,7 @@ export function batchFromCols(columns: Record<string, Column>): RecordBatch {
   const names = Object.keys(columns);
   const schema = names.map((name) => ({ name, type: columns[name].type }));
   const columnData = names.map((name) => columns[name]);
-  const rowCount = columnData[0]?.length ?? 0;
+  const rowCount = validateColumnLengths(columnData, names);
   return new RecordBatch({ columns: schema, columnData, rowCount });
 }
 

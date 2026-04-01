@@ -12,81 +12,44 @@
  *   FUZZ_COMPRESSION - single compression to test (for CI matrix jobs)
  */
 
-import { cpus } from "node:os";
+import {
+  getLevelDefaults,
+  parseCompression,
+  parseFuzzLevel,
+  type Compression,
+} from "./defaults.ts";
 
-export type FuzzLevel = "quick" | "standard" | "thorough";
-export type Compression = false | "lz4" | "zstd";
+export type { Compression, FuzzLevel } from "./defaults.ts";
 
-export const FUZZ_LEVEL = (process.env.FUZZ_LEVEL as FuzzLevel) || "standard";
+function readIntEnv(name: string, fallback: number): number {
+  const value = process.env[name];
+  if (value === undefined) return fallback;
 
-interface FuzzConfig {
-  unitIterations: number;
-  integrationIterations: number;
-  tcpIterations: number;
-  rows: number;
-  maxConcurrentProcesses: number;
-  httpCompressions: Compression[];
-  tcpCompressions: Compression[];
+  const parsed = parseInt(value, 10);
+  if (Number.isNaN(parsed)) return fallback;
+  return parsed;
 }
 
-const FUZZ_CONFIGS: Record<FuzzLevel, FuzzConfig> = {
-  quick: {
-    unitIterations: 10,
-    integrationIterations: 3,
-    tcpIterations: 3,
-    rows: 1000,
-    maxConcurrentProcesses: Math.max(2, Math.floor(cpus().length / 2)),
-    httpCompressions: [false],
-    tcpCompressions: [false],
-  },
-  standard: {
-    unitIterations: 50,
-    integrationIterations: 25,
-    tcpIterations: 25,
-    rows: 20000,
-    maxConcurrentProcesses: cpus().length,
-    httpCompressions: [false, "lz4"],
-    tcpCompressions: [false, "lz4"],
-  },
-  thorough: {
-    unitIterations: 100,
-    integrationIterations: 50,
-    tcpIterations: 50,
-    rows: 50000,
-    maxConcurrentProcesses: cpus().length,
-    httpCompressions: [false, "lz4", "zstd"],
-    tcpCompressions: [false, "lz4", "zstd"],
-  },
-};
+export const FUZZ_LEVEL = parseFuzzLevel(process.env.FUZZ_LEVEL);
 
-const baseConfig = FUZZ_CONFIGS[FUZZ_LEVEL];
+const defaults = getLevelDefaults(FUZZ_LEVEL);
+const compressionOverride = parseCompression(process.env.FUZZ_COMPRESSION);
 
-// Parse single compression override for CI matrix jobs
-function parseCompression(val: string | undefined): Compression | undefined {
-  if (!val) return undefined;
-  if (val === "false" || val === "none") return false;
-  if (val === "lz4" || val === "zstd") return val;
-  return undefined;
+let httpCompressions = defaults.httpCompressions;
+let tcpCompressions = defaults.tcpCompressions;
+if (compressionOverride !== undefined) {
+  httpCompressions = [compressionOverride];
+  tcpCompressions = [compressionOverride];
 }
-
-const singleCompression = parseCompression(process.env.FUZZ_COMPRESSION);
 
 export const config = {
-  unitIterations: parseInt(process.env.FUZZ_ITERATIONS ?? String(baseConfig.unitIterations), 10),
-  integrationIterations: parseInt(
-    process.env.FUZZ_ITERATIONS ?? String(baseConfig.integrationIterations),
-    10,
-  ),
-  tcpIterations: parseInt(process.env.FUZZ_ITERATIONS ?? String(baseConfig.tcpIterations), 10),
-  rows: parseInt(process.env.FUZZ_ROWS ?? String(baseConfig.rows), 10),
-  maxConcurrentProcesses: parseInt(
-    process.env.FUZZ_MAX_CONCURRENT ?? String(baseConfig.maxConcurrentProcesses),
-    10,
-  ),
-  httpCompressions:
-    singleCompression !== undefined ? [singleCompression] : baseConfig.httpCompressions,
-  tcpCompressions:
-    singleCompression !== undefined ? [singleCompression] : baseConfig.tcpCompressions,
+  unitIterations: readIntEnv("FUZZ_ITERATIONS", defaults.unitIterations),
+  integrationIterations: readIntEnv("FUZZ_ITERATIONS", defaults.integrationIterations),
+  tcpIterations: readIntEnv("FUZZ_ITERATIONS", defaults.tcpIterations),
+  rows: readIntEnv("FUZZ_ROWS", defaults.rows),
+  maxConcurrentProcesses: readIntEnv("FUZZ_MAX_CONCURRENT", defaults.maxConcurrentProcesses),
+  httpCompressions,
+  tcpCompressions,
 };
 
 /**
@@ -98,7 +61,7 @@ export function getIterationIndex(): number | null {
   if (!envVal) return null;
 
   const parsed = parseInt(envVal, 10);
-  if (isNaN(parsed) || parsed < 0) {
+  if (Number.isNaN(parsed) || parsed < 0) {
     throw new Error(`Invalid FUZZ_ITERATION_INDEX: ${envVal}`);
   }
   return parsed;
@@ -117,6 +80,11 @@ export interface FuzzErrorContext {
 }
 
 export function logFuzzError(ctx: FuzzErrorContext, err: unknown): void {
+  let compression = String(ctx.compression);
+  if (ctx.compression === false) {
+    compression = "none";
+  }
+
   const lines = [
     ``,
     `${"=".repeat(60)}`,
@@ -124,7 +92,7 @@ export function logFuzzError(ctx: FuzzErrorContext, err: unknown): void {
     `${"=".repeat(60)}`,
     `Test:        ${ctx.testType} fuzz`,
     `Iteration:   ${ctx.iteration + 1}/${ctx.totalIterations}`,
-    `Compression: ${ctx.compression === false ? "none" : ctx.compression}`,
+    `Compression: ${compression}`,
     `Rows:        ${ctx.rows.toLocaleString()}`,
   ];
 
@@ -158,22 +126,22 @@ export function logFuzzError(ctx: FuzzErrorContext, err: unknown): void {
 }
 
 export function logConfig(testType: "unit" | "http" | "tcp"): void {
-  const iterations =
-    testType === "unit"
-      ? config.unitIterations
-      : testType === "http"
-        ? config.integrationIterations
-        : config.tcpIterations;
-  const compressions =
-    testType === "unit"
-      ? ["n/a"]
-      : testType === "http"
-        ? config.httpCompressions
-        : config.tcpCompressions;
+  let iterations = config.unitIterations;
+  let compressions: Array<Compression | "n/a"> = ["n/a"];
 
+  if (testType === "http") {
+    iterations = config.integrationIterations;
+    compressions = config.httpCompressions;
+  } else if (testType === "tcp") {
+    iterations = config.tcpIterations;
+    compressions = config.tcpCompressions;
+  }
+
+  let mode = `iterations=${iterations}`;
   const iterIdx = getIterationIndex();
-  const mode =
-    iterIdx !== null ? `iteration=${iterIdx + 1}/${iterations}` : `iterations=${iterations}`;
+  if (iterIdx !== null) {
+    mode = `iteration=${iterIdx + 1}/${iterations}`;
+  }
 
   console.log(
     `[fuzz ${testType}] level=${FUZZ_LEVEL}, ${mode}, compressions=${JSON.stringify(compressions)}, rows=${config.rows}`,

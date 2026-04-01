@@ -320,8 +320,7 @@ function readSparse(
   state.sparseRuntime.set(node, [trailingDefaultCount, hasValueAfterTrailing]);
 
   const zero = codec.zeroValue();
-  const decodeFn = (r: BufferReader, n: number) =>
-    codec.decodeDense(r, n, defaultDeserializerState());
+  const decodeFn = (r: BufferReader, n: number) => codec.decodeDense(r, n, state);
 
   if (skippedValuesRows > 0) {
     decodeFn(reader, skippedValuesRows);

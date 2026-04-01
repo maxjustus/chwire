@@ -57,6 +57,31 @@ function buildSparseUInt64Block(
   });
 }
 
+function buildNestedSparseArrayBlock(): Uint8Array {
+  return buildTestBlock({
+    colName: "arr",
+    colType: "Array(UInt64)",
+    rows: 3,
+    customSerialization: (w) => {
+      w.writeU8(SerializationKind.Sparse);
+      w.writeU8(SerializationKind.Sparse);
+    },
+    data: (w) => {
+      // Row 1 is the only non-default array value.
+      w.writeVarint(1);
+      w.writeVarint(1n | Sparse.END_OF_GRANULE_FLAG);
+
+      // Dense Array payload for the single non-default row: one inner value total.
+      w.writeU64LE(1n);
+
+      // Inner UInt64 payload is itself sparse with one non-default value at index 0.
+      w.writeVarint(0);
+      w.writeVarint(Sparse.END_OF_GRANULE_FLAG);
+      w.writeU64LE(7n);
+    },
+  });
+}
+
 describe("sparse serialization unit tests", () => {
   it("decodes sparse column with single non-default value", () => {
     // 10 rows, only index 5 has value 42
@@ -156,5 +181,17 @@ describe("sparse serialization unit tests", () => {
     const col = result.columnData[0];
     assert.strictEqual(col.get(8), 0n);
     assert.strictEqual(col.get(9), 123n);
+  });
+
+  it("preserves nested sparse serialization when decoding sparse arrays", () => {
+    const data = buildNestedSparseArrayBlock();
+
+    const result = decodeNativeBlock(data, 0, { clientVersion: 54454 });
+
+    assert.strictEqual(result.rowCount, 3);
+    const col = result.columnData[0];
+    assert.deepStrictEqual(col.get(0), []);
+    assert.deepStrictEqual(col.get(1), [7n]);
+    assert.deepStrictEqual(col.get(2), []);
   });
 });

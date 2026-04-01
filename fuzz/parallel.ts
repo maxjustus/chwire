@@ -1,9 +1,9 @@
-#!/usr/bin/env node --experimental-strip-types
+#!/usr/bin/env tsx
 /**
  * Parallel fuzz test runner.
  *
  * Usage:
- *   node --experimental-strip-types fuzz/parallel.ts [options]
+ *   tsx fuzz/parallel.ts [options]
  *
  * Options:
  *   --level=quick|standard|thorough  Set fuzz level (default: standard)
@@ -15,13 +15,19 @@
  *   --verbose                        Stream test output in real-time
  *
  * Examples:
- *   node --experimental-strip-types fuzz/parallel.ts --level=thorough --all
- *   node --experimental-strip-types fuzz/parallel.ts --http --compression=lz4
- *   node --experimental-strip-types fuzz/parallel.ts --unit --verbose
+ *   tsx fuzz/parallel.ts --level=thorough --all
+ *   tsx fuzz/parallel.ts --http --compression=lz4
+ *   tsx fuzz/parallel.ts --unit --verbose
  */
 
 import { spawn } from "node:child_process";
-import { cpus } from "node:os";
+import {
+  getLevelDefaults,
+  parseCompression,
+  parseFuzzLevel,
+  type Compression,
+  type FuzzLevel,
+} from "./defaults.ts";
 
 interface Job {
   name: string;
@@ -38,20 +44,20 @@ interface JobResult {
 }
 
 function parseArgs(): {
-  level: string;
+  level: FuzzLevel;
   suites: ("unit" | "http" | "tcp")[];
-  compressions: string[] | null;
+  compressions: Compression[] | null;
   verbose: boolean;
 } {
   const args = process.argv.slice(2);
-  let level = "standard";
+  let level: FuzzLevel = "standard";
   const suites: ("unit" | "http" | "tcp")[] = [];
-  let compressions: string[] | null = null;
+  let compressions: Compression[] | null = null;
   let verbose = false;
 
   for (const arg of args) {
     if (arg.startsWith("--level=")) {
-      level = arg.slice(8);
+      level = parseFuzzLevel(arg.slice(8));
     } else if (arg === "--unit") {
       suites.push("unit");
     } else if (arg === "--http") {
@@ -61,7 +67,14 @@ function parseArgs(): {
     } else if (arg === "--all") {
       suites.push("unit", "http", "tcp");
     } else if (arg.startsWith("--compression=")) {
-      compressions = arg.slice(14).split(",");
+      compressions = [];
+      for (const value of arg.slice(14).split(",")) {
+        const compression = parseCompression(value);
+        if (compression === undefined) {
+          throw new Error(`Invalid compression: ${value}`);
+        }
+        compressions.push(compression);
+      }
     } else if (arg === "--verbose" || arg === "-v") {
       verbose = true;
     }
@@ -74,34 +87,26 @@ function parseArgs(): {
   return { level, suites: [...new Set(suites)], compressions, verbose };
 }
 
-function getIterationCount(level: string, type: "unit" | "integration" | "tcp"): number {
-  const envOverride = process.env.FUZZ_ITERATIONS;
-  if (envOverride) return parseInt(envOverride, 10);
+function readIntEnv(name: string, fallback: number): number {
+  const value = process.env[name];
+  if (value === undefined) return fallback;
 
-  const defaults: Record<string, Record<string, number>> = {
-    quick: { unit: 10, integration: 3, tcp: 3 },
-    standard: { unit: 50, integration: 25, tcp: 25 },
-    thorough: { unit: 100, integration: 50, tcp: 50 },
-  };
-
-  return defaults[level]?.[type] ?? defaults.standard[type];
+  const parsed = parseInt(value, 10);
+  if (Number.isNaN(parsed)) return fallback;
+  return parsed;
 }
 
-function buildJobs(level: string, suites: string[], compressions: string[] | null): Job[] {
+function buildJobs(
+  level: FuzzLevel,
+  suites: Array<"unit" | "http" | "tcp">,
+  compressions: Compression[] | null,
+): Job[] {
   const jobs: Job[] = [];
-
-  // Default compressions per level
-  const defaultCompressions: Record<string, string[]> = {
-    quick: ["false"],
-    standard: ["false", "lz4"],
-    thorough: ["false", "lz4", "zstd"],
-  };
-
-  const effectiveCompressions = compressions ?? defaultCompressions[level] ?? ["false"];
+  const defaults = getLevelDefaults(level);
 
   for (const suite of suites) {
     if (suite === "unit") {
-      const iterations = getIterationCount(level, "unit");
+      const iterations = readIntEnv("FUZZ_ITERATIONS", defaults.unitIterations);
       for (let i = 0; i < iterations; i++) {
         jobs.push({
           name: `unit[${i}]`,
@@ -111,18 +116,32 @@ function buildJobs(level: string, suites: string[], compressions: string[] | nul
         });
       }
     } else {
-      const iterations =
-        suite === "http"
-          ? getIterationCount(level, "integration")
-          : getIterationCount(level, "tcp");
+      let iterations = readIntEnv("FUZZ_ITERATIONS", defaults.tcpIterations);
+      let suiteCompressions = defaults.tcpCompressions;
 
-      for (const comp of effectiveCompressions) {
+      if (suite === "http") {
+        iterations = readIntEnv("FUZZ_ITERATIONS", defaults.integrationIterations);
+        suiteCompressions = defaults.httpCompressions;
+      }
+      if (compressions !== null) {
+        suiteCompressions = compressions;
+      }
+
+      for (const comp of suiteCompressions) {
         for (let i = 0; i < iterations; i++) {
-          const compName = comp === "false" ? "none" : comp;
+          let compName = comp;
+          if (comp === false) {
+            compName = "none";
+          }
+
           jobs.push({
             name: `${suite}:${compName}[${i}]`,
             file: `fuzz/${suite}.ts`,
-            env: { FUZZ_LEVEL: level, FUZZ_COMPRESSION: comp, FUZZ_ITERATION_INDEX: String(i) },
+            env: {
+              FUZZ_LEVEL: level,
+              FUZZ_COMPRESSION: String(comp),
+              FUZZ_ITERATION_INDEX: String(i),
+            },
             iterationIndex: i,
           });
         }
@@ -138,7 +157,7 @@ async function runJob(job: Job, verbose: boolean): Promise<JobResult> {
   let output = "";
 
   return new Promise((resolve) => {
-    const proc = spawn("node", ["--experimental-strip-types", "--test", job.file], {
+    const proc = spawn("tsx", ["--test", job.file], {
       env: { ...process.env, ...job.env },
       cwd: process.cwd(),
       stdio: ["ignore", "pipe", "pipe"],
@@ -229,20 +248,8 @@ async function runParallel(
   return results;
 }
 
-function getMaxConcurrency(level: string): number {
-  const envOverride = process.env.FUZZ_MAX_CONCURRENT;
-  if (envOverride) {
-    const parsed = parseInt(envOverride, 10);
-    if (!isNaN(parsed) && parsed > 0) return parsed;
-  }
-
-  const defaults: Record<string, number> = {
-    quick: Math.max(2, Math.floor(cpus().length / 2)),
-    standard: cpus().length,
-    thorough: cpus().length,
-  };
-
-  return defaults[level] ?? defaults.standard;
+function getMaxConcurrency(level: FuzzLevel): number {
+  return readIntEnv("FUZZ_MAX_CONCURRENT", getLevelDefaults(level).maxConcurrentProcesses);
 }
 
 async function main() {
