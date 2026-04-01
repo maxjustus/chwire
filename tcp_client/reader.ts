@@ -31,6 +31,9 @@ function createErrorPropagatingIterator(socket: net.Socket): AsyncIterator<Uint8
       if (socketError) {
         throw socketError;
       }
+      if (pendingReject) {
+        throw new Error("Concurrent read on socket iterator");
+      }
 
       // Race the base iterator with error handling
       return new Promise((resolve, reject) => {
@@ -55,6 +58,7 @@ function createErrorPropagatingIterator(socket: net.Socket): AsyncIterator<Uint8
  * Optimized to avoid O(N^2) copies during buffering.
  */
 export class StreamingReader {
+  private static MAX_COMPRESSED_BLOCK_SIZE = 128 * 1024 * 1024; // 128 MiB
   private source: AsyncIterator<Uint8Array>;
   private buffer: Uint8Array = new Uint8Array(0);
   private offset: number = 0;
@@ -247,7 +251,11 @@ export class StreamingReader {
       header.byteOffset + 1,
       4,
     ).getUint32(0, true);
-    return compressedSizeWithHeader - Compression.HEADER_SIZE;
+    const dataSize = compressedSizeWithHeader - Compression.HEADER_SIZE;
+    if (dataSize < 0 || dataSize > StreamingReader.MAX_COMPRESSED_BLOCK_SIZE) {
+      throw new Error(`Invalid compressed block size: ${compressedSizeWithHeader}`);
+    }
+    return dataSize;
   }
 
   private assembleAndDecodeBlock(

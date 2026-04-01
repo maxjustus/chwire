@@ -138,7 +138,29 @@ export class TcpClient {
   /** Write with backpressure - waits for drain if socket buffer is full */
   private async writeWithBackpressure(data: Uint8Array): Promise<void> {
     if (!this.socket!.write(data)) {
-      await new Promise<void>((resolve) => this.socket!.once("drain", resolve));
+      await new Promise<void>((resolve, reject) => {
+        const socket = this.socket!;
+        const cleanup = () => {
+          socket.removeListener("drain", onDrain);
+          socket.removeListener("error", onError);
+          socket.removeListener("close", onClose);
+        };
+        const onDrain = () => {
+          cleanup();
+          resolve();
+        };
+        const onError = (err: Error) => {
+          cleanup();
+          reject(err);
+        };
+        const onClose = () => {
+          cleanup();
+          reject(new Error("Socket closed while waiting for drain"));
+        };
+        socket.once("drain", onDrain);
+        socket.once("error", onError);
+        socket.once("close", onClose);
+      });
     }
   }
 
@@ -152,6 +174,9 @@ export class TcpClient {
     reader: StreamingReader;
     serverHello: ServerHello;
   } {
+    if (this.busy && this.socket?.destroyed) {
+      this.busy = false;
+    }
     if (!this.socket || !this.reader || !this._serverHello) throw new Error("Not connected");
     return { socket: this.socket, reader: this.reader, serverHello: this._serverHello };
   }
@@ -182,9 +207,12 @@ export class TcpClient {
     let timeoutId: ReturnType<typeof setTimeout> | null = null;
     let settled = false;
 
+    let abortRejectFn: (() => void) | null = null;
+
     const cleanup = () => {
       settled = true;
       if (timeoutId) clearTimeout(timeoutId);
+      if (signal && abortRejectFn) signal.removeEventListener("abort", abortRejectFn);
       signal?.removeEventListener("abort", abortHandler);
     };
 
@@ -237,9 +265,8 @@ export class TcpClient {
 
     const abortPromise = new Promise<void>((_, reject) => {
       if (signal) {
-        signal.addEventListener("abort", () => reject(new Error("Connect aborted")), {
-          once: true,
-        });
+        abortRejectFn = () => reject(new Error("Connect aborted"));
+        signal.addEventListener("abort", abortRejectFn, { once: true });
       }
     });
 
@@ -984,8 +1011,6 @@ export class TcpClient {
 
     try {
       try {
-        startTimeout();
-
         // The compression flag in the query packet enables bidirectional compression:
         // - When 1: client sends compressed Data blocks, server sends compressed Data blocks
         // - When 0: both sides send uncompressed
@@ -1025,6 +1050,7 @@ export class TcpClient {
           `[query] sending delimiter (${delimiter.length} bytes, compressed=${useCompression})`,
         );
         this.socket!.write(delimiter);
+        startTimeout();
 
         this.currentSchema = null;
         this.log(`[query] waiting for response...`);
@@ -1187,42 +1213,49 @@ export class TcpClient {
   /** Drain remaining packets until EndOfStream or Exception. Used when query is abandoned early. */
   private async drainPackets(useCompression: boolean): Promise<void> {
     if (!this.reader) return;
-    while (true) {
-      const packetId = Number(await this.reader.readVarInt());
-      switch (packetId) {
-        case ServerPacketId.Data:
-          await this.readBlock(useCompression);
-          break;
-        case ServerPacketId.Progress:
-          await this.readProgress();
-          break;
-        case ServerPacketId.ProfileInfo:
-          await this.readProfileInfo();
-          break;
-        case ServerPacketId.ProfileEvents:
-          await this.readBlock(false);
-          break;
-        case ServerPacketId.Totals:
-        case ServerPacketId.Extremes:
-          await this.readBlock(useCompression);
-          break;
-        case ServerPacketId.Log:
-          await this.readBlock(false);
-          break;
-        case ServerPacketId.TimezoneUpdate:
-          await this.reader.readString();
-          break;
-        case ServerPacketId.EndOfStream:
-          return;
-        case ServerPacketId.Exception: {
-          const ex = await this.reader.readException();
-          this.log(`Exception during drain: ${ex.message}`);
-          return;
+    const timer = setTimeout(() => {
+      this.socket?.destroy(new Error("Drain timeout"));
+    }, 5000);
+    try {
+      while (true) {
+        const packetId = Number(await this.reader.readVarInt());
+        switch (packetId) {
+          case ServerPacketId.Data:
+            await this.readBlock(useCompression);
+            break;
+          case ServerPacketId.Progress:
+            await this.readProgress();
+            break;
+          case ServerPacketId.ProfileInfo:
+            await this.readProfileInfo();
+            break;
+          case ServerPacketId.ProfileEvents:
+            await this.readBlock(false);
+            break;
+          case ServerPacketId.Totals:
+          case ServerPacketId.Extremes:
+            await this.readBlock(useCompression);
+            break;
+          case ServerPacketId.Log:
+            await this.readBlock(false);
+            break;
+          case ServerPacketId.TimezoneUpdate:
+            await this.reader.readString();
+            break;
+          case ServerPacketId.EndOfStream:
+            return;
+          case ServerPacketId.Exception: {
+            const ex = await this.reader.readException();
+            this.log(`Exception during drain: ${ex.message}`);
+            return;
+          }
+          default:
+            // Unknown packet - can't continue safely
+            return;
         }
-        default:
-          // Unknown packet - can't continue safely
-          return;
       }
+    } finally {
+      clearTimeout(timer);
     }
   }
 
