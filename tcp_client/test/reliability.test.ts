@@ -159,11 +159,24 @@ describe("TCP Client Reliability", () => {
       setTimeout(() => controller.abort(), 50);
 
       try {
-        for await (const _ of client.query("SELECT sleep(10)", { signal: controller.signal })) {
+        for await (const _ of client.query(
+          "SELECT number FROM numbers(1000) WHERE sleepEachRow(0.02) = 0 SETTINGS max_block_size = 1",
+          { signal: controller.signal },
+        )) {
         }
-      } catch (_err: any) {
-        assert.ok(true, "Query was cancelled or errored as expected");
+        assert.fail("Should have thrown an abort error");
+      } catch (err: any) {
+        assert.strictEqual(err.name, "AbortError", `Expected AbortError, got: ${err.name}`);
+        assert.ok(err.message.includes("aborted"), "Should mention aborted");
       }
+
+      let result: number | null = null;
+      for await (const packet of client.query("SELECT 7 as value")) {
+        if (packet.type === "Data" && packet.batch.rowCount > 0) {
+          result = Number(packet.batch.getAt(0, 0));
+        }
+      }
+      assert.strictEqual(result, 7, "Client should still be usable after aborted query");
     }));
 
   test("should reject query if already aborted", () =>
@@ -176,6 +189,7 @@ describe("TCP Client Reliability", () => {
         }
         assert.fail("Should have thrown an error");
       } catch (err: any) {
+        assert.strictEqual(err.name, "AbortError", `Expected AbortError, got: ${err.name}`);
         assert.ok(err.message.includes("aborted"), "Should mention aborted");
       }
 
@@ -234,14 +248,19 @@ describe("TCP Client Reliability", () => {
       await client.insert("INSERT INTO test_abort_insert FORMAT Native", slowTables(), {
         signal: controller.signal,
       });
-      // Insert may complete or be cancelled
+      assert.fail("Should have thrown an abort error");
     } catch (err: any) {
-      assert.ok(
-        err.message.includes("cancelled") || err.message.includes("aborted"),
-        `Should be cancel/abort error, got: ${err.message}`,
-      );
+      assert.strictEqual(err.name, "AbortError", `Expected AbortError, got: ${err.name}`);
+      assert.ok(err.message.includes("aborted"), "Should mention aborted");
+
+      let result: number | null = null;
+      for await (const packet of client.query("SELECT 11 as value")) {
+        if (packet.type === "Data" && packet.batch.rowCount > 0) {
+          result = Number(packet.batch.getAt(0, 0));
+        }
+      }
+      assert.strictEqual(result, 11, "Client should still be usable after aborted insert");
     } finally {
-      // Clean up - use a fresh client since connection may be in bad state
       const cleanupClient = new TcpClient(toClientOptions(options));
       await cleanupClient.connect();
       await cleanupClient.query("DROP TABLE IF EXISTS test_abort_insert");
@@ -264,6 +283,7 @@ describe("TCP Client Reliability", () => {
         });
         assert.fail("Should have thrown an error");
       } catch (err: any) {
+        assert.strictEqual(err.name, "AbortError", `Expected AbortError, got: ${err.name}`);
         assert.ok(err.message.includes("aborted"), "Should mention aborted");
       }
 

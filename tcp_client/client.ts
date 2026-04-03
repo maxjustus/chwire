@@ -99,6 +99,12 @@ export interface QueryOptions {
   queryId?: string;
 }
 
+function createAbortError(message: string): Error {
+  const err = new Error(message);
+  err.name = "AbortError";
+  return err;
+}
+
 /** Validates that expected schema matches server schema exactly. */
 function validateSchema(expected: ColumnDef[], actual: ColumnSchema[]): void {
   if (expected.length !== actual.length) {
@@ -200,7 +206,7 @@ export class TcpClient {
 
   async connect(options: { signal?: AbortSignal } = {}): Promise<void> {
     const signal = options.signal;
-    if (signal?.aborted) throw new Error("Connect aborted before start");
+    if (signal?.aborted) throw createAbortError("Connect aborted before start");
 
     await initCompression();
     const timeout = this.options.connectTimeout ?? 10000;
@@ -230,7 +236,7 @@ export class TcpClient {
       const onConnected = async () => {
         try {
           if (signal?.aborted) {
-            reject(new Error("Connect aborted"));
+            reject(createAbortError("Connect aborted"));
             return;
           }
           this.reader = new StreamingReader(this.socket!);
@@ -267,7 +273,7 @@ export class TcpClient {
 
     const abortPromise = new Promise<void>((_, reject) => {
       if (signal) {
-        abortRejectFn = () => reject(new Error("Connect aborted"));
+        abortRejectFn = () => reject(createAbortError("Connect aborted"));
         signal.addEventListener("abort", abortRejectFn, { once: true });
       }
     });
@@ -442,7 +448,7 @@ export class TcpClient {
     this.ensureConnected();
     const signal = options.signal;
     const batchSize = options.batchSize ?? 10000;
-    if (signal?.aborted) throw new Error("Insert aborted before start");
+    if (signal?.aborted) throw createAbortError("Insert aborted before start");
     if (this.busy)
       throw new Error("Connection busy - cannot run concurrent operations on the same TcpClient");
     this.busy = true;
@@ -458,7 +464,13 @@ export class TcpClient {
         this.socket!.write(this.writer.encodeCancel());
       }
     };
+    const throwIfAborted = () => {
+      if (signal?.aborted) {
+        throw createAbortError("Insert aborted");
+      }
+    };
     signal?.addEventListener("abort", abortHandler);
+    throwIfAborted();
 
     const useCompression = !!this.options.compression;
     const compressionMethod = toMethodCode(this.options.compression || "lz4");
@@ -475,6 +487,7 @@ export class TcpClient {
         () => cancelled,
         options.queryId,
       );
+      throwIfAborted();
 
       // Validate schema if provided
       if (options.schema) {
@@ -484,7 +497,8 @@ export class TcpClient {
       let totalInserted = 0;
 
       const sendBatch = async (batch: RecordBatch) => {
-        if (cancelled) throw new Error("Insert cancelled");
+        throwIfAborted();
+        if (cancelled) throw createAbortError("Insert aborted");
         const dataPacket = this.encodeBatchAsDataPacket(
           "",
           batch,
@@ -492,10 +506,12 @@ export class TcpClient {
           compressionMethod,
         );
         await this.writeWithBackpressure(dataPacket);
+        throwIfAborted();
         totalInserted += batch.rowCount;
       };
 
       const sendRowBatch = async (rows: Record<string, unknown>[]) => {
+        throwIfAborted();
         if (rows.length === 0) return;
         const numCols = serverSchema.length;
         const codecs = serverSchema.map((c) => getCodec(c.type));
@@ -526,6 +542,7 @@ export class TcpClient {
           compressionMethod,
         );
         await this.writeWithBackpressure(dataPacket);
+        throwIfAborted();
         totalInserted += rows.length;
       };
 
@@ -539,7 +556,9 @@ export class TcpClient {
           ? (data as AsyncIterable<any>)[Symbol.asyncIterator]()
           : (data as Iterable<any>)[Symbol.iterator]();
 
+        throwIfAborted();
         const firstResult = await Promise.resolve(iterator.next());
+        throwIfAborted();
         if (!firstResult.done) {
           const first = firstResult.value;
 
@@ -547,8 +566,10 @@ export class TcpClient {
             // RecordBatch mode
             await sendBatch(first);
             while (true) {
-              if (cancelled) throw new Error("Insert cancelled");
+              throwIfAborted();
+              if (cancelled) throw createAbortError("Insert aborted");
               const result = await Promise.resolve(iterator.next());
+              throwIfAborted();
               if (result.done) break;
               await sendBatch(result.value as RecordBatch);
             }
@@ -556,8 +577,10 @@ export class TcpClient {
             // Row object mode with batching
             let buffer: Record<string, unknown>[] = [first as Record<string, unknown>];
             while (true) {
-              if (cancelled) throw new Error("Insert cancelled");
+              throwIfAborted();
+              if (cancelled) throw createAbortError("Insert aborted");
               const result = await Promise.resolve(iterator.next());
+              throwIfAborted();
               if (result.done) break;
               buffer.push(result.value as Record<string, unknown>);
               if (buffer.length >= batchSize) {
@@ -582,18 +605,21 @@ export class TcpClient {
       );
       this.socket!.write(delimiter);
       sentDataDelimiter = true;
+      throwIfAborted();
 
       const { progress: progressAccumulated, profileEvents: profileEventsAccumulated } =
         this.createAccumulators();
 
       // Read response packets until EndOfStream
       while (true) {
+        throwIfAborted();
         const packetId = Number(await this.reader!.readVarInt());
 
         switch (packetId) {
           case ServerPacketId.Progress: {
             const progress = await this.readProgress();
             this.accumulateProgress(progress, progressAccumulated);
+            throwIfAborted();
             yield {
               type: "Progress",
               progress,
@@ -601,12 +627,15 @@ export class TcpClient {
             };
             break;
           }
-          case ServerPacketId.ProfileInfo:
+          case ServerPacketId.ProfileInfo: {
+            throwIfAborted();
             yield { type: "ProfileInfo", info: await this.readProfileInfo() };
             break;
+          }
           case ServerPacketId.ProfileEvents: {
             const batch = await this.readBlock(false);
             this.processProfileEventsBlock(batch, profileEventsAccumulated, progressAccumulated);
+            throwIfAborted();
             yield { type: "ProfileEvents", batch, accumulated: new Map(profileEventsAccumulated) };
             break;
           }
@@ -616,6 +645,7 @@ export class TcpClient {
           case ServerPacketId.Log: {
             const batch = await this.readBlock(false);
             if (batch.rowCount > 0) {
+              throwIfAborted();
               yield { type: "Log", entries: this.parseLogBlock(batch) };
             }
             break;
@@ -623,18 +653,24 @@ export class TcpClient {
           case ServerPacketId.EndOfStream:
             reachedEndOfStream = true;
             this.log(`Successfully inserted ${totalInserted} rows.`);
+            throwIfAborted();
             yield { type: "EndOfStream" };
             return;
-          case ServerPacketId.Exception:
+          case ServerPacketId.Exception: {
             receivedException = true;
-            throw await this.reader!.readException();
+            const exception = await this.reader!.readException();
+            if (signal?.aborted || cancelled) {
+              throw createAbortError("Insert aborted");
+            }
+            throw exception;
+          }
         }
       }
     } finally {
       // If generator was abandoned early, drain remaining packets
       // But only if we've sent the delimiter - otherwise server is waiting for data, not sending responses
       if (!reachedEndOfStream && !receivedException && this.socket && this.reader) {
-        if (sentDataDelimiter) {
+        if (sentDataDelimiter || cancelled) {
           try {
             if (!cancelled) {
               cancelled = true;
@@ -691,7 +727,9 @@ export class TcpClient {
     this.socket!.write(delimiter);
 
     while (true) {
-      if (isCancelled()) throw new Error("Insert cancelled");
+      if (isCancelled()) {
+        throw createAbortError("Insert aborted");
+      }
       const packetId = Number(await this.reader!.readVarInt());
 
       switch (packetId) {
@@ -965,7 +1003,7 @@ export class TcpClient {
   private async *queryImpl(sql: string, options: QueryOptions = {}): AsyncGenerator<Packet> {
     this.ensureConnected();
     const { settings = {}, signal } = options;
-    if (signal?.aborted) throw new Error("Query aborted before start");
+    if (signal?.aborted) throw createAbortError("Query aborted before start");
     if (this.busy)
       throw new Error("Connection busy - cannot run concurrent operations on the same TcpClient");
     this.busy = true;
@@ -1019,7 +1057,19 @@ export class TcpClient {
       }
     };
 
+    const throwIfAborted = () => {
+      if (signal?.aborted) {
+        throw createAbortError("Query aborted");
+      }
+    };
+    const throwIfTimedOut = () => {
+      if (timedOut) {
+        throw new Error(`Query timeout after ${queryTimeout}ms`);
+      }
+    };
+
     signal?.addEventListener("abort", abortHandler);
+    throwIfAborted();
 
     try {
       // The compression flag in the query packet enables bidirectional compression:
@@ -1042,11 +1092,13 @@ export class TcpClient {
         `[query] sending query packet (${queryPacket.length} bytes), compression=${useCompression}`,
       );
       this.socket!.write(queryPacket);
+      throwIfAborted();
 
       // Send external tables if provided
       if (options.externalTables) {
         await this.sendExternalTables(options.externalTables, useCompression, compressionMethod);
       }
+      throwIfAborted();
 
       // Send delimiter (compressed if compression is enabled)
       const delimiter = this.writer.encodeData(
@@ -1062,6 +1114,7 @@ export class TcpClient {
       );
       this.socket!.write(delimiter);
       startTimeout();
+      throwIfAborted();
 
       this.currentSchema = null;
       this.log(`[query] waiting for response...`);
@@ -1070,9 +1123,10 @@ export class TcpClient {
         this.createAccumulators();
 
       while (true) {
+        throwIfAborted();
+        throwIfTimedOut();
         this.log(`[query] reading packet id...`);
         const packetId = Number(await this.reader!.readVarInt());
-        if (timedOut) throw new Error(`Query timeout after ${queryTimeout}ms`);
         this.log(`[query] packetId=${packetId}, useCompression=${useCompression}`);
 
         switch (packetId) {
@@ -1084,7 +1138,11 @@ export class TcpClient {
             if (this.currentSchema === null) {
               this.currentSchema = batch.columns.map((c) => ({ name: c.name, type: c.type }));
             }
-            if (batch.rowCount > 0) yield { type: "Data", batch };
+            if (batch.rowCount > 0) {
+              throwIfAborted();
+              throwIfTimedOut();
+              yield { type: "Data", batch };
+            }
             break;
           }
           case ServerPacketId.Progress: {
@@ -1099,6 +1157,8 @@ export class TcpClient {
               progressDenom > 0n
                 ? Number((progressAccumulated.readRows * 100n) / progressDenom)
                 : 0;
+            throwIfAborted();
+            throwIfTimedOut();
             yield {
               type: "Progress",
               progress,
@@ -1106,12 +1166,18 @@ export class TcpClient {
             };
             break;
           }
-          case ServerPacketId.ProfileInfo:
-            yield { type: "ProfileInfo", info: await this.readProfileInfo() };
+          case ServerPacketId.ProfileInfo: {
+            const info = await this.readProfileInfo();
+            throwIfAborted();
+            throwIfTimedOut();
+            yield { type: "ProfileInfo", info };
             break;
+          }
           case ServerPacketId.ProfileEvents: {
             const batch = await this.readBlock(false);
             this.processProfileEventsBlock(batch, profileEventsAccumulated, progressAccumulated);
+            throwIfAborted();
+            throwIfTimedOut();
             yield {
               type: "ProfileEvents",
               batch,
@@ -1119,16 +1185,26 @@ export class TcpClient {
             };
             break;
           }
-          case ServerPacketId.Totals:
-            yield { type: "Totals", batch: await this.readBlock(useCompression) };
+          case ServerPacketId.Totals: {
+            const batch = await this.readBlock(useCompression);
+            throwIfAborted();
+            throwIfTimedOut();
+            yield { type: "Totals", batch };
             break;
-          case ServerPacketId.Extremes:
-            yield { type: "Extremes", batch: await this.readBlock(useCompression) };
+          }
+          case ServerPacketId.Extremes: {
+            const batch = await this.readBlock(useCompression);
+            throwIfAborted();
+            throwIfTimedOut();
+            yield { type: "Extremes", batch };
             break;
+          }
           case ServerPacketId.Log: {
             // Log blocks are always uncompressed (diagnostic metadata)
             const batch = await this.readBlock(false);
             if (batch.rowCount > 0) {
+              throwIfAborted();
+              throwIfTimedOut();
               yield { type: "Log", entries: this.parseLogBlock(batch) };
             }
             break;
@@ -1139,16 +1215,27 @@ export class TcpClient {
             break;
           case ServerPacketId.EndOfStream:
             reachedEndOfStream = true;
+            throwIfAborted();
+            throwIfTimedOut();
             yield { type: "EndOfStream" };
             return;
-          case ServerPacketId.Exception:
+          case ServerPacketId.Exception: {
             receivedException = true;
-            throw await this.reader!.readException();
+            const exception = await this.reader!.readException();
+            if (signal?.aborted || cancelled) {
+              throw createAbortError("Query aborted");
+            }
+            throwIfTimedOut();
+            throw exception;
+          }
           default:
             throw new Error(`Unknown packet ID: ${packetId}. Cannot proceed.`);
         }
       }
     } catch (err: any) {
+      if (err?.name === "AbortError") {
+        throw err;
+      }
       if (
         timedOut &&
         (err.message === "Premature close" || err.code === "ERR_STREAM_PREMATURE_CLOSE")

@@ -44,8 +44,10 @@ describe("TCP Client Stress Tests", () => {
               signal: controller.signal,
             })) {
             }
-          } catch {
-            // Expected cancellation
+            assert.fail("Should have thrown an abort error");
+          } catch (err: any) {
+            assert.strictEqual(err.name, "AbortError", `Expected AbortError, got: ${err.name}`);
+            assert.ok(err.message.includes("aborted"), "Should mention aborted");
           }
 
           // 2. Immediately do an INSERT
@@ -134,8 +136,9 @@ describe("TCP Client Stress Tests", () => {
               }
             }
           }
-        } catch {
-          // Expected cancellation
+        } catch (err: any) {
+          assert.strictEqual(err.name, "AbortError", `Expected AbortError, got: ${err.name}`);
+          assert.ok(err.message.includes("aborted"), "Should mention aborted");
         }
 
         assert.ok(
@@ -185,8 +188,10 @@ describe("TCP Client Stress Tests", () => {
           await client.insert(`INSERT INTO ${tableName} VALUES`, generateBlocks(), {
             signal: controller.signal,
           });
-        } catch {
-          // Expected cancellation
+          assert.fail("Should have thrown an abort error");
+        } catch (err: any) {
+          assert.strictEqual(err.name, "AbortError", `Expected AbortError, got: ${err.name}`);
+          assert.ok(err.message.includes("aborted"), "Should mention aborted");
         }
 
         assert.ok(blocksYielded >= 5, "Should have yielded at least 5 blocks before cancel");
