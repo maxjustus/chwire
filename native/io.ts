@@ -363,6 +363,7 @@ export class BufferReader {
    * Replace the underlying buffer while preserving read offset.
    * Used for progressive decoding: when more data arrives, swap in
    * the larger buffer and continue reading from where we left off.
+   * The idea being that we keep decoding from where we left off.
    */
   replaceBuffer(newBuffer: Uint8Array): void {
     this.buffer = newBuffer;

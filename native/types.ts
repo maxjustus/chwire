@@ -48,10 +48,12 @@ function isControlASCII(code: number): boolean {
   return code < 0x20 || code === 0x7f;
 }
 
+// A "nibble" is half a byte (4 bits), represented by one hex digit (0–f).
+// Converts an ASCII char code to its hex value (0–15), or -1 if not a hex char.
 function hexNibble(code: number): number {
-  if (code >= 48 && code <= 57) return code - 48; // '0'-'9'
-  if (code >= 65 && code <= 70) return code - 65 + 10; // 'A'-'F'
-  if (code >= 97 && code <= 102) return code - 97 + 10; // 'a'-'f'
+  if (code >= 48 && code <= 57) return code - 48; // '0'(48)–'9'(57) → 0–9
+  if (code >= 65 && code <= 70) return code - 65 + 10; // 'A'(65)–'F'(70) → 10–15
+  if (code >= 97 && code <= 102) return code - 97 + 10; // 'a'(97)–'f'(102) → 10–15
   return -1;
 }
 
@@ -89,17 +91,19 @@ function shouldPreserveBackslash(esc: string): boolean {
 }
 
 /*
- * Parse a single-quoted string with ClickHouse escape sequences. Returns [value, newIndex] or null.
- * Used for parsing enum type definition names.
+ * Parse a single-quoted string with ClickHouse escape sequences.
+ * Grammar: ' <char | \<escape>>* '
+ * Used for parsing enum type definition names, e.g. the 'hello' in Enum8('hello' = 1).
+ * Returns [parsed_value, index_after_closing_quote] or null on malformed input.
  */
 function parseQuotedString(s: string, start: number): [string, number] | null {
   if (s[start] !== "'") return null;
 
-  let i = start + 1;
+  let i = start + 1; // cursor — always points to the next unprocessed character
   let result = "";
 
   while (i < s.length) {
-    const ch = s[i++];
+    const ch = s[i++]; // read and advance in one step (post-increment)
 
     if (ch === "'") return [result, i];
 
@@ -116,8 +120,8 @@ function parseQuotedString(s: string, start: number): [string, number] | null {
     // \xHH — two hex digits encoding a single byte (e.g. \x4A → 'J')
     if (esc === "x") {
       if (i + 1 >= s.length) return null; // need two hex digits remaining
-      const hi = hexNibble(s.charCodeAt(i)); // high nibble (bits 7-4)
-      const lo = hexNibble(s.charCodeAt(i + 1)); // low nibble  (bits 3-0)
+      const hi = hexNibble(s.charCodeAt(i)); // first hex digit  → upper 4 bits of the byte
+      const lo = hexNibble(s.charCodeAt(i + 1)); // second hex digit → lower 4 bits of the byte
       if (hi < 0 || lo < 0) return null; // invalid hex digit
       // Combine nibbles into a byte: e.g. hi=4, lo=10 → 0x4A → 74 → 'J'
       result += String.fromCharCode((hi << 4) | lo);
@@ -140,6 +144,13 @@ function parseQuotedString(s: string, start: number): [string, number] | null {
   return null;
 }
 
+/**
+ * Parse a ClickHouse Enum type definition string into bidirectional name↔value maps.
+ * Grammar: Enum8('name1' = val1, 'name2' = val2, ...)
+ *          Enum16('name1' = val1, 'name2' = val2, ...)
+ * Enum8 values are Int8 (-128..127), Enum16 values are Int16 (-32768..32767).
+ * Names and values must each be unique — duplicates cause a null return.
+ */
 export function parseEnumDefinition(type: string): EnumMapping | null {
   const is8 = type.startsWith("Enum8(");
   const is16 = type.startsWith("Enum16(");
@@ -148,10 +159,10 @@ export function parseEnumDefinition(type: string): EnumMapping | null {
 
   const nameToValue = new Map<string, number>();
   const valueToName = new Map<number, string>();
-  const content = type.slice(is8 ? 6 : 7, -1);
+  const content = type.slice(is8 ? 6 : 7, -1); // strip "Enum8(" / "Enum16(" and trailing ")"
   if (content.length === 0) return null;
-  const min = is8 ? -128 : -32768;
-  const max = is8 ? 127 : 32767;
+  const min = is8 ? -128 : -32768; // Int8 / Int16 lower bound
+  const max = is8 ? 127 : 32767; // Int8 / Int16 upper bound
 
   let i = 0;
   const len = content.length;
@@ -184,11 +195,14 @@ export function parseEnumDefinition(type: string): EnumMapping | null {
     } else if (content[i] === "+") {
       i++;
     }
+    // Hand-rolled decimal integer parse — we're already positioned at the first digit,
+    // so this avoids a substring allocation that parseInt would need.
     let value = 0;
     let digits = 0;
     while (i < len) {
       const code = content.charCodeAt(i);
       if (code >= 48 && code <= 57) {
+        // '0'–'9'
         value = value * 10 + (code - 48);
         digits++;
         i++;
@@ -196,10 +210,11 @@ export function parseEnumDefinition(type: string): EnumMapping | null {
         break;
       }
     }
-    if (digits === 0) return null;
+    if (digits === 0) return null; // no digits found after '='
     value *= sign;
-    if (value < min || value > max) return null;
+    if (value < min || value > max) return null; // out of Int8/Int16 range
 
+    // Reject duplicate names or values — ClickHouse requires both to be unique
     if (nameToValue.has(name) || valueToName.has(value)) return null;
     nameToValue.set(name, value);
     valueToName.set(value, name);
@@ -215,9 +230,19 @@ export const TEXT_DECODER = new TextDecoder();
 /** JS Date range limit: ±8.64e15 milliseconds */
 const MAX_DATE_MS = 8640000000000000n;
 
+/**
+ * Wraps a ClickHouse DateTime64 value as raw ticks at a given precision.
+ * Precision N means the tick unit is 10^-N seconds:
+ *   0 = seconds, 3 = milliseconds, 6 = microseconds, 9 = nanoseconds.
+ * JS Date only supports millisecond resolution, so sub-ms values can't round-trip
+ * through Date without loss — use .ticks directly for those.
+ */
 export class ClickHouseDateTime64 {
   public ticks: bigint;
   public precision: number;
+  // Conversion factor between this precision and milliseconds (precision 3).
+  // e.g. precision=6 → pow=1000 (divide ticks by 1000 to get ms)
+  //      precision=0 → pow=1000 (multiply ticks by 1000 to get ms)
   private pow: bigint;
 
   constructor(ticks: bigint, precision: number) {
@@ -231,6 +256,7 @@ export class ClickHouseDateTime64 {
    * Throws if value overflows JS Date range or precision is lost (sub-millisecond components).
    */
   toDate(): Date {
+    // precision >= 3 (ms or finer): divide to get ms. precision < 3 (sec or coarser): multiply.
     const ms = this.precision >= 3 ? this.ticks / this.pow : this.ticks * this.pow;
     if (ms > MAX_DATE_MS || ms < -MAX_DATE_MS) {
       throw new RangeError(
@@ -247,6 +273,7 @@ export class ClickHouseDateTime64 {
 
   /**
    * Convert to native Date object, truncating sub-millisecond precision and clamping to JS Date range.
+   * Unlike toDate(), this never throws — useful for display/logging where lossiness is acceptable.
    */
   toClosestDate(): Date {
     let ms = this.precision >= 3 ? this.ticks / this.pow : this.ticks * this.pow;

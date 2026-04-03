@@ -1022,142 +1022,140 @@ export class TcpClient {
     signal?.addEventListener("abort", abortHandler);
 
     try {
-      try {
-        // The compression flag in the query packet enables bidirectional compression:
-        // - When 1: client sends compressed Data blocks, server sends compressed Data blocks
-        // - When 0: both sides send uncompressed
-        // Settings merge order: hardcoded < client defaults < per-call overrides
-        const baseSettings: ClickHouseSettings = {
-          ...this.defaultSettings,
-          ...settings,
-        };
-        const queryPacket = this.writer.encodeQuery(
-          options.queryId ?? randomUUID(),
-          sql,
-          this.serverHello!.revision,
-          baseSettings,
-          useCompression,
-          options.params ?? {},
-        );
-        this.log(
-          `[query] sending query packet (${queryPacket.length} bytes), compression=${useCompression}`,
-        );
-        this.socket!.write(queryPacket);
+      // The compression flag in the query packet enables bidirectional compression:
+      // - When 1: client sends compressed Data blocks, server sends compressed Data blocks
+      // - When 0: both sides send uncompressed
+      // Settings merge order: hardcoded < client defaults < per-call overrides
+      const baseSettings: ClickHouseSettings = {
+        ...this.defaultSettings,
+        ...settings,
+      };
+      const queryPacket = this.writer.encodeQuery(
+        options.queryId ?? randomUUID(),
+        sql,
+        this.serverHello!.revision,
+        baseSettings,
+        useCompression,
+        options.params ?? {},
+      );
+      this.log(
+        `[query] sending query packet (${queryPacket.length} bytes), compression=${useCompression}`,
+      );
+      this.socket!.write(queryPacket);
 
-        // Send external tables if provided
-        if (options.externalTables) {
-          await this.sendExternalTables(options.externalTables, useCompression, compressionMethod);
-        }
-
-        // Send delimiter (compressed if compression is enabled)
-        const delimiter = this.writer.encodeData(
-          "",
-          0,
-          [],
-          this.serverHello!.revision,
-          useCompression,
-          compressionMethod,
-        );
-        this.log(
-          `[query] sending delimiter (${delimiter.length} bytes, compressed=${useCompression})`,
-        );
-        this.socket!.write(delimiter);
-        startTimeout();
-
-        this.currentSchema = null;
-        this.log(`[query] waiting for response...`);
-
-        const { progress: progressAccumulated, profileEvents: profileEventsAccumulated } =
-          this.createAccumulators();
-
-        while (true) {
-          this.log(`[query] reading packet id...`);
-          const packetId = Number(await this.reader!.readVarInt());
-          if (timedOut) throw new Error(`Query timeout after ${queryTimeout}ms`);
-          this.log(`[query] packetId=${packetId}, useCompression=${useCompression}`);
-
-          switch (packetId) {
-            case ServerPacketId.Data: {
-              // With compression=1, ALL Data blocks from server are compressed
-              this.log(`[query] reading Data block (compressed=${useCompression})...`);
-              const batch = await this.readBlock(useCompression);
-              this.log(`[query] got Data block with ${batch.rowCount} rows`);
-              if (this.currentSchema === null) {
-                this.currentSchema = batch.columns.map((c) => ({ name: c.name, type: c.type }));
-              }
-              if (batch.rowCount > 0) yield { type: "Data", batch };
-              break;
-            }
-            case ServerPacketId.Progress: {
-              const progress = await this.readProgress();
-              this.accumulateProgress(progress, progressAccumulated);
-              // Calculate percent for queries (based on read progress)
-              const progressDenom =
-                progressAccumulated.readRows > progressAccumulated.totalRowsToRead
-                  ? progressAccumulated.readRows
-                  : progressAccumulated.totalRowsToRead;
-              progressAccumulated.percent =
-                progressDenom > 0n
-                  ? Number((progressAccumulated.readRows * 100n) / progressDenom)
-                  : 0;
-              yield {
-                type: "Progress",
-                progress,
-                accumulated: this.snapshotProgress(progressAccumulated),
-              };
-              break;
-            }
-            case ServerPacketId.ProfileInfo:
-              yield { type: "ProfileInfo", info: await this.readProfileInfo() };
-              break;
-            case ServerPacketId.ProfileEvents: {
-              const batch = await this.readBlock(false);
-              this.processProfileEventsBlock(batch, profileEventsAccumulated, progressAccumulated);
-              yield {
-                type: "ProfileEvents",
-                batch,
-                accumulated: new Map(profileEventsAccumulated),
-              };
-              break;
-            }
-            case ServerPacketId.Totals:
-              yield { type: "Totals", batch: await this.readBlock(useCompression) };
-              break;
-            case ServerPacketId.Extremes:
-              yield { type: "Extremes", batch: await this.readBlock(useCompression) };
-              break;
-            case ServerPacketId.Log: {
-              // Log blocks are always uncompressed (diagnostic metadata)
-              const batch = await this.readBlock(false);
-              if (batch.rowCount > 0) {
-                yield { type: "Log", entries: this.parseLogBlock(batch) };
-              }
-              break;
-            }
-            case ServerPacketId.TimezoneUpdate:
-              this.sessionTimezone = await this.reader!.readString();
-              this.log(`[query] timezone updated to: ${this.sessionTimezone}`);
-              break;
-            case ServerPacketId.EndOfStream:
-              reachedEndOfStream = true;
-              yield { type: "EndOfStream" };
-              return;
-            case ServerPacketId.Exception:
-              receivedException = true;
-              throw await this.reader!.readException();
-            default:
-              throw new Error(`Unknown packet ID: ${packetId}. Cannot proceed.`);
-          }
-        }
-      } catch (err: any) {
-        if (
-          timedOut &&
-          (err.message === "Premature close" || err.code === "ERR_STREAM_PREMATURE_CLOSE")
-        ) {
-          throw new Error(`Query timeout after ${queryTimeout}ms`);
-        }
-        throw err;
+      // Send external tables if provided
+      if (options.externalTables) {
+        await this.sendExternalTables(options.externalTables, useCompression, compressionMethod);
       }
+
+      // Send delimiter (compressed if compression is enabled)
+      const delimiter = this.writer.encodeData(
+        "",
+        0,
+        [],
+        this.serverHello!.revision,
+        useCompression,
+        compressionMethod,
+      );
+      this.log(
+        `[query] sending delimiter (${delimiter.length} bytes, compressed=${useCompression})`,
+      );
+      this.socket!.write(delimiter);
+      startTimeout();
+
+      this.currentSchema = null;
+      this.log(`[query] waiting for response...`);
+
+      const { progress: progressAccumulated, profileEvents: profileEventsAccumulated } =
+        this.createAccumulators();
+
+      while (true) {
+        this.log(`[query] reading packet id...`);
+        const packetId = Number(await this.reader!.readVarInt());
+        if (timedOut) throw new Error(`Query timeout after ${queryTimeout}ms`);
+        this.log(`[query] packetId=${packetId}, useCompression=${useCompression}`);
+
+        switch (packetId) {
+          case ServerPacketId.Data: {
+            // With compression=1, ALL Data blocks from server are compressed
+            this.log(`[query] reading Data block (compressed=${useCompression})...`);
+            const batch = await this.readBlock(useCompression);
+            this.log(`[query] got Data block with ${batch.rowCount} rows`);
+            if (this.currentSchema === null) {
+              this.currentSchema = batch.columns.map((c) => ({ name: c.name, type: c.type }));
+            }
+            if (batch.rowCount > 0) yield { type: "Data", batch };
+            break;
+          }
+          case ServerPacketId.Progress: {
+            const progress = await this.readProgress();
+            this.accumulateProgress(progress, progressAccumulated);
+            // Calculate percent for queries (based on read progress)
+            const progressDenom =
+              progressAccumulated.readRows > progressAccumulated.totalRowsToRead
+                ? progressAccumulated.readRows
+                : progressAccumulated.totalRowsToRead;
+            progressAccumulated.percent =
+              progressDenom > 0n
+                ? Number((progressAccumulated.readRows * 100n) / progressDenom)
+                : 0;
+            yield {
+              type: "Progress",
+              progress,
+              accumulated: this.snapshotProgress(progressAccumulated),
+            };
+            break;
+          }
+          case ServerPacketId.ProfileInfo:
+            yield { type: "ProfileInfo", info: await this.readProfileInfo() };
+            break;
+          case ServerPacketId.ProfileEvents: {
+            const batch = await this.readBlock(false);
+            this.processProfileEventsBlock(batch, profileEventsAccumulated, progressAccumulated);
+            yield {
+              type: "ProfileEvents",
+              batch,
+              accumulated: new Map(profileEventsAccumulated),
+            };
+            break;
+          }
+          case ServerPacketId.Totals:
+            yield { type: "Totals", batch: await this.readBlock(useCompression) };
+            break;
+          case ServerPacketId.Extremes:
+            yield { type: "Extremes", batch: await this.readBlock(useCompression) };
+            break;
+          case ServerPacketId.Log: {
+            // Log blocks are always uncompressed (diagnostic metadata)
+            const batch = await this.readBlock(false);
+            if (batch.rowCount > 0) {
+              yield { type: "Log", entries: this.parseLogBlock(batch) };
+            }
+            break;
+          }
+          case ServerPacketId.TimezoneUpdate:
+            this.sessionTimezone = await this.reader!.readString();
+            this.log(`[query] timezone updated to: ${this.sessionTimezone}`);
+            break;
+          case ServerPacketId.EndOfStream:
+            reachedEndOfStream = true;
+            yield { type: "EndOfStream" };
+            return;
+          case ServerPacketId.Exception:
+            receivedException = true;
+            throw await this.reader!.readException();
+          default:
+            throw new Error(`Unknown packet ID: ${packetId}. Cannot proceed.`);
+        }
+      }
+    } catch (err: any) {
+      if (
+        timedOut &&
+        (err.message === "Premature close" || err.code === "ERR_STREAM_PREMATURE_CLOSE")
+      ) {
+        throw new Error(`Query timeout after ${queryTimeout}ms`);
+      }
+      throw err;
     } finally {
       // If generator was abandoned early (before EndOfStream), drain remaining packets
       // to keep the connection in a clean state for subsequent queries.
