@@ -1,8 +1,3 @@
-/**
- * Codec classes for Native format encoding/decoding.
- * Each codec handles a specific ClickHouse type.
- */
-
 import {
   ArrayColumn,
   type Column,
@@ -35,26 +30,12 @@ import {
   type SerializationNode,
 } from "./serialization.ts";
 import {
-  BYTE_TO_HEX,
-  bytesToIpv6,
   ClickHouseDateTime64,
-  decimalByteSize,
   type EnumMapping,
-  extractDecimalScale,
-  formatScaledBigInt,
-  HEX_LUT,
-  ipv6ToBytes,
-  parseDecimalToScaledBigInt,
   parseEnumDefinition,
-  parseTupleElements,
-  parseTypeList,
-  readBigInt128,
-  readBigInt256,
   TEXT_DECODER,
   TEXT_ENCODER,
   type TypedArray,
-  writeBigInt128,
-  writeBigInt256,
 } from "./types.ts";
 import {
   coerceToString,
@@ -89,6 +70,234 @@ import {
   UINT32_MAX,
   UINT256_MAX,
 } from "./coercion.ts";
+
+// ---------------------------------------------------------------------------
+// Codec-private helpers (not part of the public API)
+// ---------------------------------------------------------------------------
+
+// Hex lookup tables for UUID encode/decode (~11x/~60x speedup vs parseInt/toString)
+const HEX_LUT = new Uint8Array(256); // char code -> nibble value (255 = invalid)
+const BYTE_TO_HEX: string[] = []; // byte -> "00"-"ff"
+for (let i = 0; i < 256; i++) {
+  HEX_LUT[i] = 255;
+  BYTE_TO_HEX[i] = i.toString(16).padStart(2, "0");
+}
+for (let i = 0; i < 10; i++) HEX_LUT[48 + i] = i; // '0'-'9'
+for (let i = 0; i < 6; i++) {
+  HEX_LUT[65 + i] = 10 + i; // 'A'-'F'
+  HEX_LUT[97 + i] = 10 + i; // 'a'-'f'
+}
+
+function writeBigInt128(v: DataView, o: number, val: bigint, signed: boolean): void {
+  const low = val & 0xffffffffffffffffn;
+  const high = val >> 64n;
+  v.setBigUint64(o, low, true);
+  if (signed) v.setBigInt64(o + 8, high, true);
+  else v.setBigUint64(o + 8, high, true);
+}
+
+function readBigInt128(v: DataView, o: number, signed: boolean): bigint {
+  const low = v.getBigUint64(o, true);
+  const high = signed ? v.getBigInt64(o + 8, true) : v.getBigUint64(o + 8, true);
+  return (high << 64n) | low;
+}
+
+function writeBigInt256(v: DataView, o: number, val: bigint, signed: boolean): void {
+  for (let i = 0; i < 3; i++) {
+    v.setBigUint64(o + i * 8, val & 0xffffffffffffffffn, true);
+    val >>= 64n;
+  }
+  if (signed) v.setBigInt64(o + 24, val, true);
+  else v.setBigUint64(o + 24, val, true);
+}
+
+function readBigInt256(v: DataView, o: number, signed: boolean): bigint {
+  let val = signed ? v.getBigInt64(o + 24, true) : v.getBigUint64(o + 24, true);
+  for (let i = 2; i >= 0; i--) {
+    val = (val << 64n) | v.getBigUint64(o + i * 8, true);
+  }
+  return val;
+}
+
+function parseTypeList(inner: string): string[] {
+  const types: string[] = [];
+  let depth = 0;
+  let current = "";
+  for (const char of inner) {
+    if (char === "(") depth++;
+    if (char === ")") depth--;
+    if (char === "," && depth === 0) {
+      types.push(current.trim());
+      current = "";
+    } else {
+      current += char;
+    }
+  }
+  if (current.trim()) types.push(current.trim());
+  return types;
+}
+
+function parseTupleElements(inner: string): { name: string | null; type: string }[] {
+  const parts = parseTypeList(inner);
+  return parts.map((part) => {
+    const match = part.match(/^([a-z_][a-z0-9_]*)\s+(.+)$/i);
+    if (match) {
+      const name = match[1];
+      const type = match[2];
+      const typeKeywords = [
+        "Int",
+        "UInt",
+        "Float",
+        "String",
+        "Bool",
+        "Date",
+        "DateTime",
+        "Nullable",
+        "Array",
+        "Tuple",
+        "Map",
+        "Enum",
+        "UUID",
+        "IPv",
+        "Decimal",
+        "FixedString",
+        "Variant",
+        "JSON",
+        "Object",
+        "LowCardinality",
+        "Nested",
+        "Nothing",
+        "Dynamic",
+        "Point",
+        "Ring",
+        "Polygon",
+        "MultiPolygon",
+      ];
+      if (!typeKeywords.some((kw) => name.startsWith(kw))) {
+        return { name, type };
+      }
+    }
+    return { name: null, type: part };
+  });
+}
+
+function decimalByteSize(type: string): 4 | 8 | 16 | 32 {
+  if (type.startsWith("Decimal32")) return 4;
+  if (type.startsWith("Decimal64")) return 8;
+  if (type.startsWith("Decimal128")) return 16;
+  if (type.startsWith("Decimal256")) return 32;
+  const match = type.match(/Decimal\((\d+),/);
+  if (match) {
+    const p = parseInt(match[1], 10);
+    if (p <= 9) return 4;
+    if (p <= 18) return 8;
+    if (p <= 38) return 16;
+    return 32;
+  }
+  return 16;
+}
+
+function extractDecimalScale(type: string): number {
+  const match = type.match(/Decimal\d*\((?:\d+,\s*)?(\d+)\)/);
+  return match ? parseInt(match[1], 10) : 0;
+}
+
+function parseDecimalToScaledBigInt(str: string, scale: number): bigint {
+  const neg = str.startsWith("-");
+  if (neg) str = str.slice(1);
+  const dot = str.indexOf(".");
+  let intP: string, fracP: string;
+  if (dot === -1) {
+    intP = str;
+    fracP = "";
+  } else {
+    intP = str.slice(0, dot);
+    fracP = str.slice(dot + 1);
+  }
+
+  if (fracP.length < scale) fracP = fracP.padEnd(scale, "0");
+  else if (fracP.length > scale) fracP = fracP.slice(0, scale);
+
+  const val = BigInt(intP + fracP);
+  return neg ? -val : val;
+}
+
+function formatScaledBigInt(val: bigint, scale: number): string {
+  const neg = val < 0n;
+  if (neg) val = -val;
+  let str = val.toString();
+  if (scale === 0) return neg ? `-${str}` : str;
+  while (str.length <= scale) str = `0${str}`;
+  const intP = str.slice(0, -scale);
+  const fracP = str.slice(-scale);
+  const r = `${intP}.${fracP}`;
+  return neg ? `-${r}` : r;
+}
+
+function ipv6ToBytes(ip: string): Uint8Array {
+  if (ip.length === 0) {
+    throw new TypeError(`Invalid IPv6 address: "${ip}"`);
+  }
+
+  const parts = ip.split("::");
+  if (parts.length > 2) {
+    throw new TypeError(`Invalid IPv6 address: "${ip}"`);
+  }
+
+  let groups: string[];
+  if (parts.length === 2) {
+    const left = parts[0] === "" ? [] : parts[0].split(":");
+    const right = parts[1] === "" ? [] : parts[1].split(":");
+
+    for (const g of left) {
+      if (g.length === 0) throw new TypeError(`Invalid IPv6 address: "${ip}"`);
+    }
+    for (const g of right) {
+      if (g.length === 0) throw new TypeError(`Invalid IPv6 address: "${ip}"`);
+    }
+
+    const missing = 8 - (left.length + right.length);
+    // "::" must compress at least one group.
+    if (missing < 1) throw new TypeError(`Invalid IPv6 address: "${ip}"`);
+    groups = [...left, ...new Array(missing).fill("0"), ...right];
+  } else {
+    groups = ip.split(":");
+    if (groups.length !== 8) throw new TypeError(`Invalid IPv6 address: "${ip}"`);
+    for (const g of groups) {
+      if (g.length === 0) throw new TypeError(`Invalid IPv6 address: "${ip}"`);
+    }
+  }
+
+  if (groups.length !== 8) throw new TypeError(`Invalid IPv6 address: "${ip}"`);
+
+  const bytes = new Uint8Array(16);
+  for (let i = 0; i < 8; i++) {
+    const group = groups[i];
+    if (group.length < 1 || group.length > 4) {
+      throw new TypeError(`Invalid IPv6 address: "${ip}"`);
+    }
+    let val = 0;
+    for (let j = 0; j < group.length; j++) {
+      const nibble = HEX_LUT[group.charCodeAt(j)];
+      if (nibble === 255) throw new TypeError(`Invalid IPv6 address: "${ip}"`);
+      val = (val << 4) | nibble;
+    }
+    bytes[i * 2] = (val >> 8) & 0xff;
+    bytes[i * 2 + 1] = val & 0xff;
+  }
+  return bytes;
+}
+
+function bytesToIpv6(bytes: Uint8Array): string {
+  const parts: string[] = [];
+  for (let i = 0; i < 8; i++) {
+    const val = (bytes[i * 2] << 8) | bytes[i * 2 + 1];
+    parts.push(val.toString(16));
+  }
+  return parts.join(":");
+}
+
+// ---------------------------------------------------------------------------
 
 /**
  * Sentinel value representing SQL NULL in toLiteral serialization.

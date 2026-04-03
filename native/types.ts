@@ -43,6 +43,7 @@ function isAsciiWhitespace(code: number): boolean {
   return code === 9 || code === 10 || code === 13 || code === 32;
 }
 
+// a control character is any ASCII character with code < 0x20 or 0x7f (DEL)
 function isControlASCII(code: number): boolean {
   return code < 0x20 || code === 0x7f;
 }
@@ -54,88 +55,89 @@ function hexNibble(code: number): number {
   return -1;
 }
 
-/** Parse a single-quoted string with ClickHouse escape sequences. Returns [value, newIndex] or null. */
+// ClickHouse backslash escape sequences (same as C-style, plus \N for empty string).
+// Maps the character after '\' to the resolved value.
+const SIMPLE_ESCAPES: { [k: string]: string } = {
+  "'": "'",
+  "\\": "\\",
+  n: "\n",
+  r: "\r",
+  t: "\t",
+  b: "\b",
+  f: "\f",
+  0: "\0",
+  v: "\v",
+  a: "\x07", // BEL
+  e: "\x1b", // ESC
+  N: "", // \N = empty string (ClickHouse-specific)
+};
+
+// ClickHouse preserves the literal backslash for unknown escape sequences,
+// EXCEPT for quote chars (\' \" \`), path separators (\/ \= \\), and
+// control characters — those drop the backslash silently.
+function shouldPreserveBackslash(esc: string): boolean {
+  const code = esc.charCodeAt(0);
+  return (
+    esc !== "\\" &&
+    esc !== "'" &&
+    esc !== '"' &&
+    esc !== "`" &&
+    esc !== "/" &&
+    esc !== "=" &&
+    !isControlASCII(code)
+  );
+}
+
+/*
+ * Parse a single-quoted string with ClickHouse escape sequences. Returns [value, newIndex] or null.
+ * Used for parsing enum type definition names.
+ */
 function parseQuotedString(s: string, start: number): [string, number] | null {
   if (s[start] !== "'") return null;
+
   let i = start + 1;
-  const len = s.length;
   let result = "";
 
-  while (i < len) {
-    const ch = s[i];
-    if (ch === "'") return [result, i + 1];
+  while (i < s.length) {
+    const ch = s[i++];
+
+    if (ch === "'") return [result, i];
+
     if (ch !== "\\") {
-      result += s[i++];
+      result += ch;
       continue;
     }
 
-    i++;
-    if (i >= len) return null;
+    // Backslash found — consume the next char and resolve the escape sequence.
+    // Priority: \xHH hex literal → SIMPLE_ESCAPES table → unknown (preserve or drop backslash)
+    if (i >= s.length) return null; // trailing backslash with no escape char
     const esc = s[i++];
-    switch (esc) {
-      case "'":
-        result += "'";
-        break;
-      case "\\":
-        result += "\\";
-        break;
-      case "n":
-        result += "\n";
-        break;
-      case "r":
-        result += "\r";
-        break;
-      case "t":
-        result += "\t";
-        break;
-      case "b":
-        result += "\b";
-        break;
-      case "f":
-        result += "\f";
-        break;
-      case "0":
-        result += "\0";
-        break;
-      case "v":
-        result += "\v";
-        break;
-      case "a":
-        result += "\x07";
-        break;
-      case "e":
-        result += "\x1B";
-        break;
-      case "N":
-        break; // \N = empty string
-      case "x": {
-        if (i + 2 > len) return null;
-        const hi = hexNibble(s.charCodeAt(i));
-        const lo = hexNibble(s.charCodeAt(i + 1));
-        if (hi < 0 || lo < 0) return null;
-        result += String.fromCharCode((hi << 4) | lo);
-        i += 2;
-        break;
-      }
-      default: {
-        // Preserve backslash for unknown escapes (e.g. \%), drop for special chars
-        const code = esc.charCodeAt(0);
-        if (
-          esc !== "\\" &&
-          esc !== "'" &&
-          esc !== '"' &&
-          esc !== "`" &&
-          esc !== "/" &&
-          esc !== "=" &&
-          !isControlASCII(code)
-        ) {
-          result += "\\";
-        }
-        result += esc;
-      }
+
+    // \xHH — two hex digits encoding a single byte (e.g. \x4A → 'J')
+    if (esc === "x") {
+      if (i + 1 >= s.length) return null; // need two hex digits remaining
+      const hi = hexNibble(s.charCodeAt(i)); // high nibble (bits 7-4)
+      const lo = hexNibble(s.charCodeAt(i + 1)); // low nibble  (bits 3-0)
+      if (hi < 0 || lo < 0) return null; // invalid hex digit
+      // Combine nibbles into a byte: e.g. hi=4, lo=10 → 0x4A → 74 → 'J'
+      result += String.fromCharCode((hi << 4) | lo);
+      i += 2;
+      continue;
     }
+
+    const mapped = SIMPLE_ESCAPES[esc];
+    if (mapped !== undefined) {
+      result += mapped;
+      continue;
+    }
+
+    // Unknown escape — keep the backslash for printable non-special chars (e.g. \% → \%),
+    // drop it for quotes/path chars/control chars (e.g. \' → ')
+    if (shouldPreserveBackslash(esc)) result += "\\";
+    result += esc;
   }
-  return null; // unclosed quote
+
+  return null;
 }
 
 export function parseEnumDefinition(type: string): EnumMapping | null {
@@ -210,19 +212,6 @@ export function parseEnumDefinition(type: string): EnumMapping | null {
 export const TEXT_ENCODER = new TextEncoder();
 export const TEXT_DECODER = new TextDecoder();
 
-// Hex lookup tables for UUID encode/decode (~11x/~60x speedup vs parseInt/toString)
-export const HEX_LUT = new Uint8Array(256); // char code -> nibble value (255 = invalid)
-export const BYTE_TO_HEX: string[] = []; // byte -> "00"-"ff"
-for (let i = 0; i < 256; i++) {
-  HEX_LUT[i] = 255;
-  BYTE_TO_HEX[i] = i.toString(16).padStart(2, "0");
-}
-for (let i = 0; i < 10; i++) HEX_LUT[48 + i] = i; // '0'-'9'
-for (let i = 0; i < 6; i++) {
-  HEX_LUT[65 + i] = 10 + i; // 'A'-'F'
-  HEX_LUT[97 + i] = 10 + i; // 'a'-'f'
-}
-
 /** JS Date range limit: ±8.64e15 milliseconds */
 const MAX_DATE_MS = 8640000000000000n;
 
@@ -273,213 +262,4 @@ export class ClickHouseDateTime64 {
   toString(): string {
     return this.toClosestDate().toString();
   }
-}
-
-export function writeBigInt128(v: DataView, o: number, val: bigint, signed: boolean): void {
-  const low = val & 0xffffffffffffffffn;
-  const high = val >> 64n;
-  v.setBigUint64(o, low, true);
-  if (signed) v.setBigInt64(o + 8, high, true);
-  else v.setBigUint64(o + 8, high, true);
-}
-
-export function readBigInt128(v: DataView, o: number, signed: boolean): bigint {
-  const low = v.getBigUint64(o, true);
-  const high = signed ? v.getBigInt64(o + 8, true) : v.getBigUint64(o + 8, true);
-  return (high << 64n) | low;
-}
-
-export function writeBigInt256(v: DataView, o: number, val: bigint, signed: boolean): void {
-  for (let i = 0; i < 3; i++) {
-    v.setBigUint64(o + i * 8, val & 0xffffffffffffffffn, true);
-    val >>= 64n;
-  }
-  if (signed) v.setBigInt64(o + 24, val, true);
-  else v.setBigUint64(o + 24, val, true);
-}
-
-export function readBigInt256(v: DataView, o: number, signed: boolean): bigint {
-  let val = signed ? v.getBigInt64(o + 24, true) : v.getBigUint64(o + 24, true);
-  for (let i = 2; i >= 0; i--) {
-    val = (val << 64n) | v.getBigUint64(o + i * 8, true);
-  }
-  return val;
-}
-
-export function parseTypeList(inner: string): string[] {
-  const types: string[] = [];
-  let depth = 0;
-  let current = "";
-  for (const char of inner) {
-    if (char === "(") depth++;
-    if (char === ")") depth--;
-    if (char === "," && depth === 0) {
-      types.push(current.trim());
-      current = "";
-    } else {
-      current += char;
-    }
-  }
-  if (current.trim()) types.push(current.trim());
-  return types;
-}
-
-export function parseTupleElements(inner: string): { name: string | null; type: string }[] {
-  const parts = parseTypeList(inner);
-  return parts.map((part) => {
-    const match = part.match(/^([a-z_][a-z0-9_]*)\s+(.+)$/i);
-    if (match) {
-      const name = match[1];
-      const type = match[2];
-      const typeKeywords = [
-        "Int",
-        "UInt",
-        "Float",
-        "String",
-        "Bool",
-        "Date",
-        "DateTime",
-        "Nullable",
-        "Array",
-        "Tuple",
-        "Map",
-        "Enum",
-        "UUID",
-        "IPv",
-        "Decimal",
-        "FixedString",
-        "Variant",
-        "JSON",
-        "Object",
-        "LowCardinality",
-        "Nested",
-        "Nothing",
-        "Dynamic",
-        "Point",
-        "Ring",
-        "Polygon",
-        "MultiPolygon",
-      ];
-      if (!typeKeywords.some((kw) => name.startsWith(kw))) {
-        return { name, type };
-      }
-    }
-    return { name: null, type: part };
-  });
-}
-
-export function decimalByteSize(type: string): 4 | 8 | 16 | 32 {
-  if (type.startsWith("Decimal32")) return 4;
-  if (type.startsWith("Decimal64")) return 8;
-  if (type.startsWith("Decimal128")) return 16;
-  if (type.startsWith("Decimal256")) return 32;
-  const match = type.match(/Decimal\((\d+),/);
-  if (match) {
-    const p = parseInt(match[1], 10);
-    if (p <= 9) return 4;
-    if (p <= 18) return 8;
-    if (p <= 38) return 16;
-    return 32;
-  }
-  return 16;
-}
-
-export function extractDecimalScale(type: string): number {
-  const match = type.match(/Decimal\d*\((?:\d+,\s*)?(\d+)\)/);
-  return match ? parseInt(match[1], 10) : 0;
-}
-
-export function parseDecimalToScaledBigInt(str: string, scale: number): bigint {
-  const neg = str.startsWith("-");
-  if (neg) str = str.slice(1);
-  const dot = str.indexOf(".");
-  let intP: string, fracP: string;
-  if (dot === -1) {
-    intP = str;
-    fracP = "";
-  } else {
-    intP = str.slice(0, dot);
-    fracP = str.slice(dot + 1);
-  }
-
-  if (fracP.length < scale) fracP = fracP.padEnd(scale, "0");
-  else if (fracP.length > scale) fracP = fracP.slice(0, scale);
-
-  const val = BigInt(intP + fracP);
-  return neg ? -val : val;
-}
-
-export function formatScaledBigInt(val: bigint, scale: number): string {
-  const neg = val < 0n;
-  if (neg) val = -val;
-  let str = val.toString();
-  if (scale === 0) return neg ? `-${str}` : str;
-  while (str.length <= scale) str = `0${str}`;
-  const intP = str.slice(0, -scale);
-  const fracP = str.slice(-scale);
-  const r = `${intP}.${fracP}`;
-  return neg ? `-${r}` : r;
-}
-
-export function ipv6ToBytes(ip: string): Uint8Array {
-  if (ip.length === 0) {
-    throw new TypeError(`Invalid IPv6 address: "${ip}"`);
-  }
-
-  const parts = ip.split("::");
-  if (parts.length > 2) {
-    throw new TypeError(`Invalid IPv6 address: "${ip}"`);
-  }
-
-  let groups: string[];
-  if (parts.length === 2) {
-    const left = parts[0] === "" ? [] : parts[0].split(":");
-    const right = parts[1] === "" ? [] : parts[1].split(":");
-
-    for (const g of left) {
-      if (g.length === 0) throw new TypeError(`Invalid IPv6 address: "${ip}"`);
-    }
-    for (const g of right) {
-      if (g.length === 0) throw new TypeError(`Invalid IPv6 address: "${ip}"`);
-    }
-
-    const missing = 8 - (left.length + right.length);
-    // "::" must compress at least one group.
-    if (missing < 1) throw new TypeError(`Invalid IPv6 address: "${ip}"`);
-    groups = [...left, ...new Array(missing).fill("0"), ...right];
-  } else {
-    groups = ip.split(":");
-    if (groups.length !== 8) throw new TypeError(`Invalid IPv6 address: "${ip}"`);
-    for (const g of groups) {
-      if (g.length === 0) throw new TypeError(`Invalid IPv6 address: "${ip}"`);
-    }
-  }
-
-  if (groups.length !== 8) throw new TypeError(`Invalid IPv6 address: "${ip}"`);
-
-  const bytes = new Uint8Array(16);
-  for (let i = 0; i < 8; i++) {
-    const group = groups[i];
-    if (group.length < 1 || group.length > 4) {
-      throw new TypeError(`Invalid IPv6 address: "${ip}"`);
-    }
-    let val = 0;
-    for (let j = 0; j < group.length; j++) {
-      const nibble = HEX_LUT[group.charCodeAt(j)];
-      if (nibble === 255) throw new TypeError(`Invalid IPv6 address: "${ip}"`);
-      val = (val << 4) | nibble;
-    }
-    bytes[i * 2] = (val >> 8) & 0xff;
-    bytes[i * 2 + 1] = val & 0xff;
-  }
-  return bytes;
-}
-
-export function bytesToIpv6(bytes: Uint8Array): string {
-  const parts: string[] = [];
-  for (let i = 0; i < 8; i++) {
-    const val = (bytes[i * 2] << 8) | bytes[i * 2 + 1];
-    parts.push(val.toString(16));
-  }
-  return parts.join(":");
 }
