@@ -11,6 +11,7 @@ import {
   zstdCompressRaw,
 } from "./compression.ts";
 import type { ClickHouseSettings } from "./settings.ts";
+import { ClickHouseException } from "./errors.ts";
 
 export {
   ClickHouseDateTime64,
@@ -36,16 +37,38 @@ import type { QueryParams } from "./types.ts";
 
 export type { Compression };
 
-// AbortSignal.any() added in Node 20+, ES2024
-const AbortSignalAny = AbortSignal as typeof AbortSignal & {
-  any(signals: AbortSignal[]): AbortSignal;
-};
-
-function createSignal(signal?: AbortSignal, timeout?: number): AbortSignal | undefined {
+function createSignal(
+  signal?: AbortSignal,
+  timeout?: number,
+  abortSignalAny:
+    | ((signals: AbortSignal[]) => AbortSignal)
+    | undefined = typeof (AbortSignal as any).any === "function"
+    ? (AbortSignal as any).any.bind(AbortSignal)
+    : undefined,
+): AbortSignal | undefined {
   if (!signal && !timeout) return undefined;
+  if (signal?.aborted) return signal;
   if (signal && !timeout) return signal;
   if (!signal && timeout) return AbortSignal.timeout(timeout);
-  return AbortSignalAny.any([signal!, AbortSignal.timeout(timeout!)]);
+  if (abortSignalAny) {
+    return abortSignalAny([signal!, AbortSignal.timeout(timeout!)]);
+  }
+
+  const timeoutSignal = AbortSignal.timeout(timeout!);
+  if (timeoutSignal.aborted) return timeoutSignal;
+
+  const controller = new AbortController();
+  const onSignalAbort = () => {
+    timeoutSignal.removeEventListener("abort", onTimeoutAbort);
+    controller.abort(signal!.reason);
+  };
+  const onTimeoutAbort = () => {
+    signal!.removeEventListener("abort", onSignalAbort);
+    controller.abort(timeoutSignal.reason);
+  };
+  signal!.addEventListener("abort", onSignalAbort, { once: true });
+  timeoutSignal.addEventListener("abort", onTimeoutAbort, { once: true });
+  return controller.signal;
 }
 
 const encoder = new TextEncoder();
@@ -261,6 +284,113 @@ function parseProgress(header: string): HttpProgress {
   }
 }
 
+const EXCEPTION_MARKER_BYTES = new TextEncoder().encode("__exception__");
+const EXCEPTION_CODE_BYTES = new TextEncoder().encode("Code:");
+const EXCEPTION_SCAN_TAIL_BYTES = 64;
+
+/** Parse ClickHouse error text: "Code: N. DB::Exception: message (ERROR_TAG)" */
+function parseErrorText(text: string): { code: number; name: string; message: string } {
+  const match = text.match(/Code:\s*(\d+)\.\s*(\S+):\s+(.*)/s);
+  if (match) {
+    return { code: parseInt(match[1], 10), name: match[2].trim(), message: match[3].trim() };
+  }
+  return { code: 0, name: "Unknown", message: text.trim() };
+}
+
+function exceptionFromText(text: string, codeOverride?: number): ClickHouseException {
+  const parsed = parseErrorText(text);
+  return new ClickHouseException(codeOverride ?? parsed.code, parsed.name, parsed.message, "", false);
+}
+
+/** Build ClickHouseException from HTTP error response */
+function parseHttpError(response: Response, body: string): ClickHouseException {
+  const headerCode = response.headers.get("X-ClickHouse-Exception-Code");
+  return exceptionFromText(body, headerCode ? parseInt(headerCode, 10) : undefined);
+}
+
+function extractResponseFormat(sql: string, options: QueryOptions): string {
+  const matches = [...sql.matchAll(/\bFORMAT\s+([A-Za-z][A-Za-z0-9_]*)\b/gi)];
+  const settingFormat = options.settings?.default_format;
+  return (
+    matches.at(-1)?.[1] ??
+    (typeof settingFormat === "string" ? settingFormat : undefined) ??
+    "JSONEachRowWithProgress"
+  );
+}
+
+function isTextFormat(format: string): boolean {
+  const normalized = format.toLowerCase();
+  return (
+    normalized.includes("json") ||
+    normalized.includes("csv") ||
+    normalized.includes("tsv") ||
+    normalized.includes("tabseparated") ||
+    normalized.includes("pretty") ||
+    normalized.includes("vertical") ||
+    normalized.includes("xml") ||
+    normalized.includes("markdown") ||
+    normalized.includes("template") ||
+    normalized.includes("customseparated") ||
+    normalized === "values"
+  );
+}
+
+function isFramedExceptionAt(buf: Uint8Array, offset: number): boolean {
+  if (offset + EXCEPTION_MARKER_BYTES.length > buf.length) return false;
+
+  for (let i = 0; i < EXCEPTION_MARKER_BYTES.length; i++) {
+    if (buf[offset + i] !== EXCEPTION_MARKER_BYTES[i]) return false;
+  }
+
+  let codeOffset = offset + EXCEPTION_MARKER_BYTES.length;
+  if (codeOffset >= buf.length) return false;
+  if (buf[codeOffset] === 10) {
+    codeOffset += 1;
+  } else if (buf[codeOffset] === 13 && codeOffset + 1 < buf.length && buf[codeOffset + 1] === 10) {
+    codeOffset += 2;
+  } else {
+    return false;
+  }
+
+  if (codeOffset + EXCEPTION_CODE_BYTES.length > buf.length) return false;
+  for (let i = 0; i < EXCEPTION_CODE_BYTES.length; i++) {
+    if (buf[codeOffset + i] !== EXCEPTION_CODE_BYTES[i]) return false;
+  }
+  return true;
+}
+
+/** Find a framed __exception__ block in a text buffer, return offset or -1 */
+function findExceptionMarker(buf: Uint8Array): number {
+  const first = EXCEPTION_MARKER_BYTES[0]; // '_'
+  const len = EXCEPTION_MARKER_BYTES.length;
+  for (let i = 0; i <= buf.length - len; i++) {
+    if (i > 0 && buf[i - 1] !== 10) continue;
+    if (buf[i] !== first) continue;
+    if (!isFramedExceptionAt(buf, i)) continue;
+    return i;
+  }
+  return -1;
+}
+
+/** Parse a mid-stream __exception__ block from bytes into a ClickHouseException */
+function parseStreamException(buf: Uint8Array): ClickHouseException {
+  const text = new TextDecoder().decode(buf);
+  // Strip "__exception__\r\n" prefix
+  const body = text.replace(/^__exception__\r?\n/, "");
+  return exceptionFromText(body);
+}
+
+function splitStreamException(
+  buf: Uint8Array,
+): { prefix: Uint8Array; error: ClickHouseException } | null {
+  const pos = findExceptionMarker(buf);
+  if (pos < 0) return null;
+  return {
+    prefix: buf.subarray(0, pos),
+    error: parseStreamException(buf.subarray(pos)),
+  };
+}
+
 export interface InsertOptions {
   baseUrl?: string;
   /** Compression method: "lz4" (default), "zstd", or false */
@@ -406,7 +536,7 @@ async function insert(
 
   if (!response.ok) {
     const body = await response.text();
-    throw new Error(`Insert failed: ${response.status} - ${body}`);
+    throw parseHttpError(response, body);
   }
 
   return {
@@ -585,7 +715,7 @@ function buildMultipartBody(tables: Record<string, HttpExternalTable>): {
 function query(
   sql: string,
   sessionId: string,
-  options: QueryOptions & Record<string, any> = {},
+  options: QueryOptions = {},
 ): CollectableAsyncGenerator<QueryPacket> {
   return collectable(queryImpl(sql, sessionId, options));
 }
@@ -593,7 +723,7 @@ function query(
 async function* queryImpl(
   sql: string,
   sessionId: string,
-  options: QueryOptions & Record<string, any> = {},
+  options: QueryOptions = {},
 ): AsyncGenerator<QueryPacket> {
   await init();
   const baseUrl = options.baseUrl || "http://localhost:8123/";
@@ -620,27 +750,8 @@ async function* queryImpl(
     params.query_id = options.queryId;
   }
 
-  // Include any other settings/params passed in options
-  const reserved = [
-    "baseUrl",
-    "auth",
-    "compression",
-    "compressQuery",
-    "signal",
-    "timeout",
-    "clientVersion",
-    "settings",
-    "params",
-    "externalTables",
-    "queryId",
-  ];
   mergeParams(params, options.settings);
   mergeQueryParams(params, sql, options.params);
-  for (const [key, value] of Object.entries(options)) {
-    if (!reserved.includes(key) && value !== undefined) {
-      params[key] = String(value);
-    }
-  }
 
   // Handle external tables: normalize inputs, query goes in URL, body is multipart
   const hasExternalTables =
@@ -712,7 +823,7 @@ async function* queryImpl(
     } else {
       body = await response.text();
     }
-    throw new Error(`Query failed: ${response.status} - ${body}`);
+    throw parseHttpError(response, body);
   }
 
   if (!response.body) {
@@ -722,14 +833,46 @@ async function* queryImpl(
   const summary = parseSummary(response);
   const queryId = response.headers.get("X-ClickHouse-Query-Id") || "";
   const reader = response.body.getReader();
+  const detectStreamExceptions = isTextFormat(extractResponseFormat(sql, options));
 
   async function* createStream(): AsyncGenerator<Uint8Array, void, unknown> {
     if (!compressed) {
-      // For non-compressed, stream data directly
+      if (!detectStreamExceptions) {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          yield value;
+        }
+        return;
+      }
+
+      // Keep a small tail so a framed exception preamble split across reads
+      // is validated before we emit those bytes to the caller.
+      let pending = new Uint8Array(0);
+
       while (true) {
         const { done, value } = await reader.read();
-        if (done) break;
-        yield value;
+        const chunk = value ?? new Uint8Array(0);
+        const combined = pending.length === 0 ? chunk : concat([pending, chunk]);
+        const match = splitStreamException(combined);
+
+        if (match) {
+          pending = new Uint8Array(0);
+          if (match.prefix.length > 0) {
+            yield match.prefix;
+          }
+          throw match.error;
+        }
+
+        if (done) {
+          if (combined.length > 0) yield combined;
+          break;
+        }
+
+        const keep = Math.min(combined.length, EXCEPTION_SCAN_TAIL_BYTES);
+        const emitLen = combined.length - keep;
+        if (emitLen > 0) yield combined.subarray(0, emitLen);
+        pending = combined.subarray(emitLen);
       }
     } else {
       const streamBuffer = new StreamBuffer(64 * 1024);
@@ -743,6 +886,12 @@ async function* queryImpl(
         while (streamBuffer.available >= 25) {
           const bufferView = streamBuffer.view;
 
+          // Check for raw __exception__ in the buffer (uncompressed injection)
+          const rawMatch = detectStreamExceptions ? splitStreamException(bufferView) : null;
+          if (rawMatch && rawMatch.prefix.length === 0) {
+            throw rawMatch.error;
+          }
+
           const compressedSize = readUInt32LE(bufferView, 17);
           const blockSize = 16 + compressedSize;
 
@@ -752,17 +901,38 @@ async function* queryImpl(
 
           try {
             const decompressed = decodeBlock(block);
+            const decompressedMatch = detectStreamExceptions
+              ? splitStreamException(decompressed)
+              : null;
+            streamBuffer.consume(blockSize);
+
+            if (decompressedMatch) {
+              if (decompressedMatch.prefix.length > 0) {
+                yield decompressedMatch.prefix;
+              }
+              throw decompressedMatch.error;
+            }
+
             yield decompressed;
           } catch (err: unknown) {
+            if (err instanceof ClickHouseException) throw err;
+            const fallbackMatch = detectStreamExceptions
+              ? splitStreamException(streamBuffer.view)
+              : null;
+            if (fallbackMatch && fallbackMatch.prefix.length === 0) {
+              throw fallbackMatch.error;
+            }
             const message = err instanceof Error ? err.message : String(err);
             throw new Error(`Block decompression failed: ${message}`);
           }
-
-          streamBuffer.consume(blockSize);
         }
 
         if (done) {
           if (streamBuffer.available > 0) {
+            const rawMatch = detectStreamExceptions ? splitStreamException(streamBuffer.view) : null;
+            if (rawMatch && rawMatch.prefix.length === 0) {
+              throw rawMatch.error;
+            }
             throw new Error("Incomplete block");
           }
 
@@ -909,6 +1079,7 @@ async function collectJsonEachRow<T = unknown>(input: QueryInput): Promise<T[]> 
   return result;
 }
 
+export { ClickHouseException } from "./errors.ts";
 export {
   init,
   insert,
@@ -922,4 +1093,9 @@ export {
   collectText,
   collectJsonEachRow,
   dataChunks,
+  // Exported for testing
+  createSignal as _createSignal,
+  findExceptionMarker as _findExceptionMarker,
+  parseErrorText as _parseErrorText,
+  parseStreamException as _parseStreamException,
 };

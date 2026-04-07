@@ -519,8 +519,9 @@ await client.insert("INSERT INTO t", rows, {
 #### Insert Progress Tracking
 
 Both `query()` and `insert()` return a `CollectableAsyncGenerator<Packet>`:
-- `await` collects all packets into an array
+- `await gen` collects all packets into an array
 - `for await` streams packets one at a time
+- the same generator instance is single-consumer and does not replay once drained
 
 ```ts
 // Collect all packets

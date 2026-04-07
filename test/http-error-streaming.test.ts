@@ -1,0 +1,273 @@
+/**
+ * Test HTTP error handling:
+ * - Unit tests for pure error parsing functions
+ * - Case 1: Error before HTTP headers sent (clean HTTP 4xx/5xx)
+ * - Case 2: Error after headers sent (__exception__ marker in chunked body)
+ */
+
+import assert from "node:assert/strict";
+import { after, before, describe, it } from "node:test";
+import {
+  ClickHouseException,
+  _createSignal as createSignal,
+  collectText,
+  init,
+  query,
+  _findExceptionMarker as findExceptionMarker,
+  _parseErrorText as parseErrorText,
+  _parseStreamException as parseStreamException,
+} from "../client.ts";
+import { startClickHouse, stopClickHouse } from "./setup.ts";
+import { generateSessionId } from "./test_utils.ts";
+
+const encode = (s: string) => new TextEncoder().encode(s);
+
+describe("parseErrorText", () => {
+  it("should parse standard ClickHouse error format", () => {
+    const result = parseErrorText(
+      "Code: 60. DB::Exception: Table default.foo doesn't exist. (UNKNOWN_TABLE)",
+    );
+    assert.strictEqual(result.code, 60);
+    assert.strictEqual(result.name, "DB::Exception");
+    assert.ok(result.message.includes("UNKNOWN_TABLE"));
+  });
+
+  it("should parse error with nested colons in message", () => {
+    const result = parseErrorText(
+      "Code: 395. DB::Exception: some error: while executing 'FUNCTION throwIf'",
+    );
+    assert.strictEqual(result.code, 395);
+    assert.strictEqual(result.name, "DB::Exception");
+    assert.ok(result.message.includes("while executing"));
+  });
+
+  it("should handle text without Code: prefix", () => {
+    const result = parseErrorText("Something went wrong");
+    assert.strictEqual(result.code, 0);
+    assert.strictEqual(result.name, "Unknown");
+    assert.strictEqual(result.message, "Something went wrong");
+  });
+
+  it("should handle empty string", () => {
+    const result = parseErrorText("");
+    assert.strictEqual(result.code, 0);
+    assert.strictEqual(result.name, "Unknown");
+    assert.strictEqual(result.message, "");
+  });
+});
+
+describe("findExceptionMarker", () => {
+  it("should find marker at start of buffer", () => {
+    const buf = encode("__exception__\r\nCode: 395. DB::Exception: error\r\n");
+    assert.strictEqual(findExceptionMarker(buf), 0);
+  });
+
+  it("should find marker mid-buffer", () => {
+    const buf = encode("some data\n__exception__\r\nCode: 1\r\n");
+    assert.strictEqual(findExceptionMarker(buf), 10);
+  });
+
+  it("should return -1 when marker absent", () => {
+    const buf = encode("normal data without any markers");
+    assert.strictEqual(findExceptionMarker(buf), -1);
+  });
+
+  it("should return -1 for partial marker", () => {
+    const buf = encode("__exceptio");
+    assert.strictEqual(findExceptionMarker(buf), -1);
+  });
+
+  it("should return -1 for inline payload text", () => {
+    const buf = encode('{"message":"hello __exception__\\r\\nCode: 395"}');
+    assert.strictEqual(findExceptionMarker(buf), -1);
+  });
+
+  it("should return -1 without a ClickHouse error preamble", () => {
+    const buf = encode("__exception__\r\nnot actually an exception\r\n");
+    assert.strictEqual(findExceptionMarker(buf), -1);
+  });
+
+  it("should return -1 for empty buffer", () => {
+    assert.strictEqual(findExceptionMarker(new Uint8Array(0)), -1);
+  });
+
+  it("should find a line-start marker after preceding data", () => {
+    const buf = encode("prefix\n__exception__\r\nCode: 1. DB::Exception: boom\r\n");
+    assert.strictEqual(findExceptionMarker(buf), 7);
+  });
+});
+
+describe("parseStreamException", () => {
+  it("should parse __exception__ with CRLF", () => {
+    const buf = encode("__exception__\r\nCode: 395. DB::Exception: test error\r\n");
+    const err = parseStreamException(buf);
+    assert.ok(err instanceof ClickHouseException);
+    assert.strictEqual(err.code, 395);
+    assert.strictEqual(err.exceptionName, "DB::Exception");
+    assert.ok(err.message.includes("test error"));
+  });
+
+  it("should parse __exception__ with LF", () => {
+    const buf = encode("__exception__\nCode: 60. DB::Exception: not found\n");
+    const err = parseStreamException(buf);
+    assert.strictEqual(err.code, 60);
+  });
+
+  it("should handle malformed body", () => {
+    const buf = encode("__exception__\r\ngarbage text\r\n");
+    const err = parseStreamException(buf);
+    assert.strictEqual(err.code, 0);
+    assert.strictEqual(err.exceptionName, "Unknown");
+    assert.ok(err.message.includes("garbage text"));
+  });
+});
+
+describe("createSignal", () => {
+  it("returns an already-aborted source signal immediately", () => {
+    const controller = new AbortController();
+    const reason = new Error("already aborted");
+    controller.abort(reason);
+
+    const combined = createSignal(controller.signal, 1_000, undefined);
+
+    assert.strictEqual(combined, controller.signal);
+    assert.ok(combined?.aborted);
+    assert.strictEqual(combined?.reason, reason);
+  });
+});
+
+describe("HTTP error handling (integration)", { timeout: 60000 }, () => {
+  let clickhouse: Awaited<ReturnType<typeof startClickHouse>>;
+  let baseUrl: string;
+  let auth: { username: string; password: string };
+  const sessionId = generateSessionId("error-handling");
+
+  before(async () => {
+    await init();
+    clickhouse = await startClickHouse();
+    baseUrl = `${clickhouse.url}/`;
+    auth = { username: clickhouse.username, password: clickhouse.password };
+  });
+
+  after(async () => {
+    await stopClickHouse();
+  });
+
+  describe("Case 1: error before headers sent", () => {
+    it("should throw ClickHouseException with parsed code (no compression)", async () => {
+      let thrownError: unknown = null;
+      try {
+        await collectText(
+          query("SELECT * FROM nonexistent_table_xyz", sessionId, {
+            baseUrl,
+            auth,
+            compression: false,
+          }),
+        );
+      } catch (err) {
+        thrownError = err;
+      }
+      assert.ok(thrownError, "Should have thrown an error");
+      assert.ok(thrownError instanceof ClickHouseException);
+      assert.ok(thrownError.code > 0, `Expected numeric error code, got ${thrownError.code}`);
+      assert.ok(thrownError.exceptionName.includes("DB::Exception"));
+      assert.ok(
+        thrownError.message.includes("UNKNOWN_TABLE") ||
+          thrownError.message.includes("nonexistent_table_xyz"),
+      );
+    });
+
+    it("should throw ClickHouseException with parsed code (lz4 compression)", async () => {
+      let thrownError: unknown = null;
+      try {
+        await collectText(
+          query("SELECT * FROM nonexistent_table_xyz", sessionId, {
+            baseUrl,
+            auth,
+            compression: "lz4",
+          }),
+        );
+      } catch (err) {
+        thrownError = err;
+      }
+      assert.ok(thrownError, "Should have thrown an error");
+      assert.ok(thrownError instanceof ClickHouseException);
+      assert.ok(thrownError.code > 0);
+    });
+  });
+
+  describe("Case 2: mid-stream exception (__exception__ marker)", () => {
+    it("should detect __exception__ and throw ClickHouseException (non-compressed)", async () => {
+      // throwIf triggers at row 200. With max_block_size=10 and ~5KB/row,
+      // ~1MB flushes before the error — forcing headers to be committed first.
+      const sql = `
+        SELECT number, randomPrintableASCII(5000) as padding,
+               throwIf(number >= 200, 'mid_stream_test_error') as t
+        FROM numbers(300)
+        SETTINGS max_block_size = 10
+      `;
+
+      let dataChunksReceived = 0;
+      let thrownError: unknown = null;
+
+      try {
+        for await (const packet of query(sql, sessionId, {
+          baseUrl,
+          auth,
+          compression: false,
+          settings: { default_format: "TSV" },
+        })) {
+          if (packet.type === "Data") dataChunksReceived++;
+        }
+      } catch (err) {
+        thrownError = err;
+      }
+
+      assert.ok(thrownError, `Should have thrown (received ${dataChunksReceived} chunks)`);
+      assert.ok(
+        thrownError instanceof ClickHouseException,
+        `Expected ClickHouseException, got ${(thrownError as Error).constructor.name}: ${(thrownError as Error).message?.substring(0, 200)}`,
+      );
+      assert.ok(thrownError.code > 0);
+      assert.ok(thrownError.message.includes("mid_stream_test_error"));
+      assert.ok(dataChunksReceived > 0, `Expected data before error, got ${dataChunksReceived}`);
+    });
+
+    it("should throw ClickHouseException for compressed query error (Case 1 or Case 2)", async () => {
+      // With compression, ClickHouse may buffer enough to return HTTP 500 (Case 1)
+      // or may stream compressed blocks before hitting the error (Case 2).
+      // This test verifies both paths produce ClickHouseException.
+      const sql = `
+        SELECT number, randomPrintableASCII(10000) as padding,
+               throwIf(number >= 500, 'compressed_error_test') as t
+        FROM numbers(600)
+        SETTINGS max_block_size = 10
+      `;
+
+      let thrownError: unknown = null;
+      try {
+        // eslint-disable-next-line @typescript-eslint/no-unused-vars
+        for await (const _packet of query(sql, sessionId, {
+          baseUrl,
+          auth,
+          compression: "lz4",
+          settings: { default_format: "TSV" },
+        })) {
+          // consume
+        }
+      } catch (err) {
+        thrownError = err;
+      }
+
+      assert.ok(thrownError, "Should have thrown");
+      assert.ok(
+        thrownError instanceof ClickHouseException,
+        `Expected ClickHouseException, got ${(thrownError as Error).constructor.name}: ${(thrownError as Error).message?.substring(0, 200)}`,
+      );
+      assert.ok(
+        (thrownError as ClickHouseException).message.includes("compressed_error_test") ||
+          (thrownError as ClickHouseException).message.includes("FUNCTION_THROW_IF"),
+      );
+    });
+  });
+});
