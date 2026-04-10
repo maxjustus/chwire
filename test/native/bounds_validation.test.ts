@@ -11,6 +11,7 @@ import { describe, it } from "node:test";
 import { decodeNativeBlock } from "../../native/index.ts";
 import { toValidIPv4, toValidIPv6 } from "../../native/coercion.ts";
 import { LowCardinality as LC } from "../../native/constants.ts";
+import { DecimalCodec } from "../../native/codecs/scalar.ts";
 import { buildTestBlock } from "../test_utils.ts";
 
 describe("bounds validation", () => {
@@ -126,5 +127,12 @@ describe("bounds validation", () => {
         assert.throws(() => toValidIPv6(12345), /no colons/);
       });
     });
+  });
+});
+
+describe("DecimalCodec construction", () => {
+  it("throws on unrecognized Decimal type string", () => {
+    // decimalByteSize previously had a silent return 16 fallback; this should throw
+    assert.throws(() => new DecimalCodec("DecimalXYZ(5)"), TypeError);
   });
 });

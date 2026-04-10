@@ -91,7 +91,7 @@ function decimalByteSize(type: string): 4 | 8 | 16 | 32 {
     if (p <= 38) return 16;
     return 32;
   }
-  return 16;
+  throw new TypeError(`Unknown Decimal type: "${type}"`);
 }
 
 function extractDecimalScale(type: string): number {
