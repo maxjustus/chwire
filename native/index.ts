@@ -274,41 +274,6 @@ export async function* streamEncodeNative(
   }
 }
 
-interface DecodeStats {
-  underruns: number;
-  tooSmall: number;
-}
-
-/**
- * Helper to decode a block from a StreamBuffer with a stable slice.
- * Returns null if not enough data is available (BufferUnderflowError).
- */
-function decodeFromStream(
-  streamBuffer: StreamBuffer,
-  options?: DecodeOptions,
-  stats?: DecodeStats,
-): BlockResult | null {
-  const buffer = streamBuffer.view;
-  if (buffer.length < 8) {
-    if (stats) stats.tooSmall++;
-    return null; // minimum: 2 varints for numCols/numRows
-  }
-
-  // Use a stable copy so zero-copy typed arrays survive StreamBuffer compaction
-  const stableSlice = buffer.slice();
-  try {
-    const block = decodeNativeBlock(stableSlice, 0, options);
-    streamBuffer.consume(block.bytesConsumed);
-    return block;
-  } catch (e) {
-    if (e instanceof BufferUnderflowError) {
-      if (stats) stats.underruns++;
-      return null;
-    }
-    throw e;
-  }
-}
-
 export async function* streamDecodeNative(
   chunks: AsyncIterable<Uint8Array>,
   options?: DecodeOptions & { debug?: boolean; minBufferSize?: number },
@@ -318,35 +283,58 @@ export async function* streamDecodeNative(
   let columns: ColumnDef[] = [];
   let totalBytesReceived = 0;
   let blocksDecoded = 0;
-  const stats: DecodeStats = { underruns: 0, tooSmall: 0 };
+  let underruns = 0;
+
+  // Persistent partial state for resumable decoding across chunks.
+  // When a block spans multiple chunks, BlockUnderflowError captures
+  // completed columns so the retry resumes from the last column boundary
+  // instead of re-parsing everything from scratch.
+  let partial: PartialBlockState | undefined;
 
   for await (const chunk of chunks) {
     streamBuffer.append(chunk);
     totalBytesReceived += chunk.length;
 
-    while (true) {
-      const block = decodeFromStream(streamBuffer, options, stats);
-      if (!block) break;
+    while (streamBuffer.available >= 2) {
+      // Stable copy so zero-copy typed arrays survive StreamBuffer compaction
+      const stableSlice = streamBuffer.view.slice();
+      const reader = new BufferReader(stableSlice, 0, options);
 
-      if (block.isEndMarker) continue;
+      try {
+        const block = decodeNativeBlockWithReader(reader, options, partial);
+        streamBuffer.consume(block.bytesConsumed);
+        partial = undefined;
 
-      if (columns.length === 0) columns = block.columns;
-      blocksDecoded++;
-      yield RecordBatch.from({
-        columns,
-        columnData: block.columnData,
-        rowCount: block.rowCount,
-      });
+        if (block.isEndMarker) continue;
+        if (columns.length === 0) columns = block.columns;
+        blocksDecoded++;
+        yield RecordBatch.from({
+          columns,
+          columnData: block.columnData,
+          rowCount: block.rowCount,
+        });
+      } catch (e) {
+        if (e instanceof BlockUnderflowError) {
+          partial = e.partial;
+          underruns++;
+          break; // need more data
+        }
+        if (e instanceof BufferUnderflowError) {
+          underruns++;
+          break; // need more data (header underflow, no partial yet)
+        }
+        throw e;
+      }
     }
   }
 
-  // Final cleanup: decode whatever is left
-  let buffer = streamBuffer.view;
-  while (buffer.length > 0) {
-    // Use slice() to ensure stable columns even in the final blocks
-    const block = decodeNativeBlock(buffer.slice(), 0, options);
+  // Final: decode remaining data (no more chunks coming)
+  while (streamBuffer.available > 0) {
+    const stableSlice = streamBuffer.view.slice();
+    const reader = new BufferReader(stableSlice, 0, options);
+    const block = decodeNativeBlockWithReader(reader, options, partial);
     streamBuffer.consume(block.bytesConsumed);
-    buffer = streamBuffer.view;
+    partial = undefined;
 
     if (block.isEndMarker) continue;
     if (columns.length === 0) columns = block.columns;
@@ -360,7 +348,7 @@ export async function* streamDecodeNative(
 
   if (options?.debug) {
     console.log(
-      `[streamDecodeNative] ${blocksDecoded} blocks, ${totalBytesReceived} bytes, ${stats.underruns} underruns, ${stats.tooSmall} too-small`,
+      `[streamDecodeNative] ${blocksDecoded} blocks, ${totalBytesReceived} bytes, ${underruns} underruns`,
     );
   }
 }
