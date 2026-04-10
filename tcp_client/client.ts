@@ -298,7 +298,7 @@ export class TcpClient {
     );
     this.socket.write(hello);
 
-    const packetId = Number(await this.reader.readVarInt());
+    const packetId = Number(await this.reader.readVarint());
     if (packetId === ServerPacketId.Exception) {
       throw await this.reader.readException();
     }
@@ -308,9 +308,9 @@ export class TcpClient {
     }
 
     const serverName = await this.reader.readString();
-    const major = await this.reader.readVarInt();
-    const minor = await this.reader.readVarInt();
-    const revision = await this.reader.readVarInt();
+    const major = await this.reader.readVarint();
+    const minor = await this.reader.readVarint();
+    const revision = await this.reader.readVarint();
 
     // Use minimum of our supported version and server version
     const effectiveRevision =
@@ -320,7 +320,7 @@ export class TcpClient {
       effectiveRevision >= REVISIONS.DBMS_MIN_REVISION_WITH_VERSIONED_PARALLEL_REPLICAS_PROTOCOL
     ) {
       // Server-side parallel replicas protocol version
-      await this.reader.readVarInt();
+      await this.reader.readVarint();
     }
 
     const timezone =
@@ -333,7 +333,7 @@ export class TcpClient {
         : "";
     const patch =
       effectiveRevision >= REVISIONS.DBMS_MIN_REVISION_WITH_VERSION_PATCH
-        ? await this.reader.readVarInt()
+        ? await this.reader.readVarint()
         : effectiveRevision;
 
     if (effectiveRevision >= REVISIONS.DBMS_MIN_PROTOCOL_VERSION_WITH_CHUNKED_PACKETS) {
@@ -345,7 +345,7 @@ export class TcpClient {
 
     if (effectiveRevision >= REVISIONS.DBMS_MIN_REVISION_WITH_EXOTIC_STUFF) {
       // Read rules for parameters or similar exotic metadata
-      const rulesSize = Number(await this.reader.readVarInt());
+      const rulesSize = Number(await this.reader.readVarint());
       for (let i = 0; i < rulesSize; i++) {
         await this.reader.readString();
         await this.reader.readString();
@@ -362,18 +362,18 @@ export class TcpClient {
       while (true) {
         const name = await this.reader.readString();
         if (name === "") break;
-        await this.reader.readVarInt(); // value type
+        await this.reader.readVarint(); // value type
         await this.reader.readString(); // value
       }
     }
 
     if (effectiveRevision >= REVISIONS.DBMS_MIN_REVISION_WITH_TCP_PROTOCOL_VERSION) {
       // Server reports its native TCP protocol version
-      await this.reader.readVarInt();
+      await this.reader.readVarint();
     }
     if (effectiveRevision >= REVISIONS.DBMS_MIN_REVISION_WITH_PARALLEL_REPLICAS_CUSTOM_KEY) {
       // Additional parallel replicas metadata
-      await this.reader.readVarInt();
+      await this.reader.readVarint();
     }
 
     this._serverHello = {
@@ -613,7 +613,7 @@ export class TcpClient {
       // Read response packets until EndOfStream
       while (true) {
         throwIfAborted();
-        const packetId = Number(await this.reader!.readVarInt());
+        const packetId = Number(await this.reader!.readVarint());
 
         switch (packetId) {
           case ServerPacketId.Progress: {
@@ -730,7 +730,7 @@ export class TcpClient {
       if (isCancelled()) {
         throw createAbortError("Insert aborted");
       }
-      const packetId = Number(await this.reader!.readVarInt());
+      const packetId = Number(await this.reader!.readVarint());
 
       switch (packetId) {
         case ServerPacketId.Data: {
@@ -759,40 +759,40 @@ export class TcpClient {
   private async readProgress(): Promise<Progress> {
     const rev = this.serverHello!.revision;
     const progress: Progress = {
-      readRows: await this.reader!.readVarInt(),
-      readBytes: await this.reader!.readVarInt(),
+      readRows: await this.reader!.readVarint(),
+      readBytes: await this.reader!.readVarint(),
       totalRowsToRead:
-        rev >= REVISIONS.DBMS_MIN_REVISION_WITH_SERVER_LOGS ? await this.reader!.readVarInt() : 0n,
+        rev >= REVISIONS.DBMS_MIN_REVISION_WITH_SERVER_LOGS ? await this.reader!.readVarint() : 0n,
     };
     if (rev >= REVISIONS.DBMS_MIN_REVISION_WITH_TOTAL_BYTES_TO_READ) {
-      progress.totalBytesToRead = await this.reader!.readVarInt();
+      progress.totalBytesToRead = await this.reader!.readVarint();
     }
     // writtenRows/writtenBytes added between DBMS_MIN_REVISION_WITH_SERVER_LOGS and DBMS_MIN_REVISION_WITH_TOTAL_BYTES_TO_READ
     // The exact revision is 54420, which isn't in our named constants (falls in the 54401-54441 gap)
     if (rev >= 54420n) {
-      progress.writtenRows = await this.reader!.readVarInt();
-      progress.writtenBytes = await this.reader!.readVarInt();
+      progress.writtenRows = await this.reader!.readVarint();
+      progress.writtenBytes = await this.reader!.readVarint();
     }
     if (rev >= REVISIONS.DBMS_MIN_PROTOCOL_VERSION_WITH_ELAPSED_NS_IN_PROGRESS) {
-      progress.elapsedNs = await this.reader!.readVarInt();
+      progress.elapsedNs = await this.reader!.readVarint();
     }
     return progress;
   }
 
   private async readProfileInfo(): Promise<ProfileInfo> {
     const info: ProfileInfo = {
-      rows: await this.reader!.readVarInt(),
-      blocks: await this.reader!.readVarInt(),
-      bytes: await this.reader!.readVarInt(),
+      rows: await this.reader!.readVarint(),
+      blocks: await this.reader!.readVarint(),
+      bytes: await this.reader!.readVarint(),
       appliedLimit: (await this.reader!.readU8()) !== 0,
-      rowsBeforeLimit: await this.reader!.readVarInt(),
+      rowsBeforeLimit: await this.reader!.readVarint(),
       calculatedRowsBeforeLimit: (await this.reader!.readU8()) !== 0,
       appliedAggregation: false,
       rowsBeforeAggregation: 0n,
     };
     if (this.serverHello!.revision >= REVISIONS.DBMS_MIN_REVISION_WITH_APPLIED_AGGREGATION) {
       info.appliedAggregation = (await this.reader!.readU8()) !== 0;
-      info.rowsBeforeAggregation = await this.reader!.readVarInt();
+      info.rowsBeforeAggregation = await this.reader!.readVarint();
     }
     return info;
   }
@@ -1126,7 +1126,7 @@ export class TcpClient {
         throwIfAborted();
         throwIfTimedOut();
         this.log(`[query] reading packet id...`);
-        const packetId = Number(await this.reader!.readVarInt());
+        const packetId = Number(await this.reader!.readVarint());
         this.log(`[query] packetId=${packetId}, useCompression=${useCompression}`);
 
         switch (packetId) {
@@ -1327,7 +1327,7 @@ export class TcpClient {
     }, 5000);
     try {
       while (true) {
-        const packetId = Number(await this.reader.readVarInt());
+        const packetId = Number(await this.reader.readVarint());
         switch (packetId) {
           case ServerPacketId.Data:
             await this.readBlock(useCompression);
@@ -1380,7 +1380,7 @@ export class TcpClient {
     this.busy = true;
     try {
       await this.writeWithBackpressure(this.writer.encodePing());
-      const packetId = Number(await this.reader!.readVarInt());
+      const packetId = Number(await this.reader!.readVarint());
       if (packetId !== ServerPacketId.Pong) {
         throw new Error(`Expected Pong (4), got packet ${packetId}`);
       }

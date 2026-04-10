@@ -161,7 +161,7 @@ export class StreamingReader {
     return true;
   }
 
-  async readVarInt(): Promise<bigint> {
+  async readVarint(): Promise<bigint> {
     // Reuse shared logic by providing a cursor-like object
     while (true) {
       const cursor = { offset: this.offset };
@@ -184,7 +184,7 @@ export class StreamingReader {
   }
 
   async readString(): Promise<string> {
-    const len = Number(await this.readVarInt());
+    const len = Number(await this.readVarint());
     if (len === 0) return "";
     await this.ensure(len);
     const str = TEXT_DECODER.decode(this.buffer.subarray(this.offset, this.offset + len));
