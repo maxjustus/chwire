@@ -564,6 +564,12 @@ describe("additional scalar types", () => {
     assert.throws(() => encodeNativeRows(columns, [["12.34.56"]]), /Invalid Decimal/);
   });
 
+  it("throws when Decimal value has more fractional digits than scale", () => {
+    // Previously silently truncated "1.123456" to "1.12" for Decimal64(2)
+    const columns: ColumnDef[] = [{ name: "d", type: "Decimal64(2)" }];
+    assert.throws(() => encodeNativeRows(columns, [["1.123"]]), /precision/i);
+  });
+
   it("encodes Enum8 and supports both decode modes", async () => {
     const columns: ColumnDef[] = [{ name: "e", type: "Enum8('a' = 1, 'b' = 2)" }];
     const rows = [[1], [2], [1]];

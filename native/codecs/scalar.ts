@@ -113,7 +113,10 @@ function parseDecimalToScaledBigInt(str: string, scale: number): bigint {
   }
 
   if (fracP.length < scale) fracP = fracP.padEnd(scale, "0");
-  else if (fracP.length > scale) fracP = fracP.slice(0, scale);
+  else if (fracP.length > scale)
+    throw new TypeError(
+      `Decimal precision loss: "${str}" has ${fracP.length} fractional digits but scale is ${scale}`,
+    );
 
   const val = BigInt(intP + fracP);
   return neg ? -val : val;
