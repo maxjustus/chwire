@@ -40,9 +40,9 @@ export type { Compression };
 function createSignal(
   signal?: AbortSignal,
   timeout?: number,
-  abortSignalAny:
-    | ((signals: AbortSignal[]) => AbortSignal)
-    | undefined = typeof (AbortSignal as any).any === "function"
+  abortSignalAny: ((signals: AbortSignal[]) => AbortSignal) | undefined = typeof (
+    AbortSignal as any
+  ).any === "function"
     ? (AbortSignal as any).any.bind(AbortSignal)
     : undefined,
 ): AbortSignal | undefined {
@@ -299,7 +299,13 @@ function parseErrorText(text: string): { code: number; name: string; message: st
 
 function exceptionFromText(text: string, codeOverride?: number): ClickHouseException {
   const parsed = parseErrorText(text);
-  return new ClickHouseException(codeOverride ?? parsed.code, parsed.name, parsed.message, "", false);
+  return new ClickHouseException(
+    codeOverride ?? parsed.code,
+    parsed.name,
+    parsed.message,
+    "",
+    false,
+  );
 }
 
 /** Build ClickHouseException from HTTP error response */
@@ -929,7 +935,9 @@ async function* queryImpl(
 
         if (done) {
           if (streamBuffer.available > 0) {
-            const rawMatch = detectStreamExceptions ? splitStreamException(streamBuffer.view) : null;
+            const rawMatch = detectStreamExceptions
+              ? splitStreamException(streamBuffer.view)
+              : null;
             if (rawMatch && rawMatch.prefix.length === 0) {
               throw rawMatch.error;
             }
