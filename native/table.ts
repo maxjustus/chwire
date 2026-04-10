@@ -1,5 +1,6 @@
+import { getCodec } from "./codecs.ts";
+import { type Column, DataColumn } from "./columns.ts";
 import {
-  getCodec,
   toInt8,
   toInt16,
   toInt32,
@@ -9,8 +10,7 @@ import {
   toUInt16,
   toUInt32,
   toUInt64,
-} from "./codecs.ts";
-import { type Column, DataColumn } from "./columns.ts";
+} from "./coercion.ts";
 import type { Block } from "./index.ts";
 import type { TypedArrayConstructor } from "./io.ts";
 import type { ColumnDef, TypedArray } from "./types.ts";
@@ -108,7 +108,8 @@ export class RecordBatch implements Iterable<Row> {
   readonly rowCount: number;
   readonly decodeTimeMs?: number;
 
-  private nameToIndex: Map<string, number>;
+  /** @internal */ nameToIndex: Map<string, number>;
+  private _columnNames: string[];
 
   constructor(block: Block) {
     this.columns = block.columns;
@@ -116,6 +117,7 @@ export class RecordBatch implements Iterable<Row> {
     this.rowCount = block.rowCount;
     this.decodeTimeMs = block.decodeTimeMs;
     this.nameToIndex = new Map(this.columns.map((c, i) => [c.name, i]));
+    this._columnNames = this.columns.map((c) => c.name);
   }
 
   static from(block: Block): RecordBatch {
@@ -132,7 +134,7 @@ export class RecordBatch implements Iterable<Row> {
     return this.columns;
   }
   get columnNames(): string[] {
-    return this.columns.map((c) => c.name);
+    return this._columnNames;
   }
 
   /** Get column by name. */
@@ -193,6 +195,7 @@ export class RecordBatch implements Iterable<Row> {
  */
 function createRowProxy(batch: RecordBatch, rowIndex: number, options?: MaterializeOptions): Row {
   const names = batch.columnNames;
+  const nameToIndex = batch.nameToIndex;
   const materialize = (opts?: MaterializeOptions) => {
     const o = opts ?? options;
     const obj: Record<string, unknown> = {};
@@ -217,8 +220,8 @@ function createRowProxy(batch: RecordBatch, rowIndex: number, options?: Material
         };
       }
       if (typeof prop === "string") {
-        const col = batch.getColumn(prop);
-        if (col) return maybeStringify(col.get(rowIndex), options);
+        const idx = nameToIndex.get(prop);
+        if (idx !== undefined) return maybeStringify(batch.columnData[idx].get(rowIndex), options);
       }
       return undefined;
     },
@@ -226,7 +229,7 @@ function createRowProxy(batch: RecordBatch, rowIndex: number, options?: Material
       return names;
     },
     getOwnPropertyDescriptor(_, prop) {
-      if (typeof prop === "string" && names.includes(prop)) {
+      if (typeof prop === "string" && nameToIndex.has(prop)) {
         const col = batch.getColumn(prop);
         return {
           enumerable: true,
@@ -237,7 +240,7 @@ function createRowProxy(batch: RecordBatch, rowIndex: number, options?: Material
       return undefined;
     },
     has(_, prop) {
-      return typeof prop === "string" && names.includes(prop);
+      return typeof prop === "string" && nameToIndex.has(prop);
     },
   });
 }

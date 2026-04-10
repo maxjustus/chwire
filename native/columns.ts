@@ -29,8 +29,9 @@ export function countAndIndexDiscriminators(
   for (let i = 0; i < discriminators.length; i++) {
     const d = discriminators[i];
     if (d !== nullValue) {
-      indices[i] = counts.get(d) || 0;
-      counts.set(d, (counts.get(d) || 0) + 1);
+      const n = counts.get(d) ?? 0;
+      indices[i] = n;
+      counts.set(d, n + 1);
     }
   }
   return { counts, indices };
