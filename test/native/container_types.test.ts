@@ -835,3 +835,33 @@ describe("ArrayCodec code paths", () => {
     assert.strictEqual(arr1[2], Infinity);
   });
 });
+
+describe("named Tuple field detection", () => {
+  // Regression: parseTupleElements was checking name.startsWith(typeKeyword), which
+  // caused fields like "IntValue", "BoolFlag", "StringId" to be silently treated as
+  // unnamed types because their names share a prefix with ClickHouse type names.
+  it("preserves field names that start with type keyword prefixes", async () => {
+    const columns: ColumnDef[] = [
+      { name: "t", type: "Tuple(IntValue Int32, BoolFlag Bool, StringId String)" },
+    ];
+    const rows = [[{ IntValue: 42, BoolFlag: true, StringId: "hello" }]];
+    const encoded = encodeNativeRows(columns, rows);
+    const decoded = await decodeBatch(encoded);
+
+    const row = decoded.get(0).t as Record<string, unknown>;
+    assert.strictEqual(row.IntValue, 42);
+    assert.strictEqual(row.BoolFlag, 1); // Bool decodes as UInt8 (0/1)
+    assert.strictEqual(row.StringId, "hello");
+  });
+
+  it("treats a field named exactly as a type keyword as a named field", async () => {
+    // "UUID" is both a type keyword and a valid field name
+    const columns: ColumnDef[] = [{ name: "t", type: "Tuple(UUID String)" }];
+    const rows = [[{ UUID: "test-id" }]];
+    const encoded = encodeNativeRows(columns, rows);
+    const decoded = await decodeBatch(encoded);
+
+    const row = decoded.get(0).t as Record<string, unknown>;
+    assert.strictEqual(row.UUID, "test-id");
+  });
+});
