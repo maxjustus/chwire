@@ -4,6 +4,7 @@ import { batchFromCols, getCodec } from "@maxjustus/chttp/native";
 import { startClickHouse, stopClickHouse } from "../../test/setup.ts";
 import { toClientOptions, type TcpConfig } from "../../test/test_utils.ts";
 import { ClickHouseException, TcpClient } from "@maxjustus/chttp/tcp";
+import { ServerPacketId } from "../types.ts";
 
 describe("TCP Client Reliability", () => {
   let options: TcpConfig;
@@ -30,6 +31,33 @@ describe("TCP Client Reliability", () => {
       return await fn(client);
     } finally {
       client.close();
+    }
+  }
+
+  async function withAbortOnPacket<T>(
+    client: TcpClient,
+    controller: AbortController,
+    packetId: number,
+    fn: () => Promise<T>,
+  ): Promise<T> {
+    const reader = (client as any).reader;
+    assert.ok(reader, "Reader should be initialized");
+
+    const originalReadVarint = reader.readVarint.bind(reader);
+    let aborted = false;
+    reader.readVarint = async () => {
+      const value = await originalReadVarint();
+      if (!aborted && Number(value) === packetId) {
+        aborted = true;
+        controller.abort();
+      }
+      return value;
+    };
+
+    try {
+      return await fn();
+    } finally {
+      reader.readVarint = originalReadVarint;
     }
   }
 
@@ -202,6 +230,51 @@ describe("TCP Client Reliability", () => {
       assert.strictEqual(result, 7, "Client should still be usable after pre-aborted query");
     }));
 
+  test("should complete query when abort fires after EndOfStream packet is observed", () =>
+    withClient(async (client) => {
+      const controller = new AbortController();
+
+      await withAbortOnPacket(client, controller, ServerPacketId.EndOfStream, async () => {
+        let result: number | null = null;
+        for await (const packet of client.query("SELECT 42 as value", { signal: controller.signal })) {
+          if (packet.type === "Data" && packet.batch.rowCount > 0) {
+            result = Number(packet.batch.getAt(0, 0));
+          }
+        }
+        assert.strictEqual(result, 42, "Query should still complete successfully");
+      });
+
+      assert.ok(controller.signal.aborted, "Abort should have been triggered");
+
+      let followUp: number | null = null;
+      for await (const packet of client.query("SELECT 8 as value")) {
+        if (packet.type === "Data" && packet.batch.rowCount > 0) {
+          followUp = Number(packet.batch.getAt(0, 0));
+        }
+      }
+      assert.strictEqual(followUp, 8, "Connection should remain reusable after late query abort");
+    }));
+
+  test("should prefer server exception over abort when Exception packet is observed", () =>
+    withClient(async (client) => {
+      const controller = new AbortController();
+
+      try {
+        await withAbortOnPacket(client, controller, ServerPacketId.Exception, async () => {
+          for await (const _ of client.query("SELECT * FROM nonexistent_table_late_abort", {
+            signal: controller.signal,
+          })) {
+          }
+        });
+        assert.fail("Should have thrown ClickHouseException");
+      } catch (err) {
+        assert.ok(err instanceof ClickHouseException, "Server exception should win the race");
+        assert.strictEqual(err.code, 60, "Expected UNKNOWN_TABLE");
+      }
+
+      assert.ok(controller.signal.aborted, "Abort should have been triggered");
+    }));
+
   test("should handle connection timeout", async () => {
     const client = new TcpClient({
       host: "192.0.2.1", // Non-routable IP (RFC 5737 TEST-NET-1)
@@ -295,6 +368,44 @@ describe("TCP Client Reliability", () => {
       }
       assert.strictEqual(result, 9, "Client should still be usable after pre-aborted insert");
     }));
+
+  test("should complete insert when abort fires after EndOfStream packet is observed", async () => {
+    const client = new TcpClient(toClientOptions(options));
+    await client.connect();
+
+    const tableName = `test_insert_end_of_stream_abort_${Date.now()}`;
+    const controller = new AbortController();
+
+    try {
+      await client.query(`CREATE TABLE ${tableName} (x UInt64) ENGINE = Memory`);
+
+      const table = batchFromCols({
+        x: getCodec("UInt64").fromValues(BigInt64Array.from([123n])),
+      });
+
+      await withAbortOnPacket(client, controller, ServerPacketId.EndOfStream, async () => {
+        await client.insert(`INSERT INTO ${tableName} VALUES`, table, {
+          signal: controller.signal,
+        });
+      });
+
+      assert.ok(controller.signal.aborted, "Abort should have been triggered");
+
+      let count = 0n;
+      for await (const packet of client.query(`SELECT count() as cnt FROM ${tableName}`)) {
+        if (packet.type === "Data" && packet.batch.rowCount > 0) {
+          count = packet.batch.getAt(0, 0) as bigint;
+        }
+      }
+      assert.strictEqual(count, 1n, "Insert should remain committed after late abort");
+    } finally {
+      const cleanupClient = new TcpClient(toClientOptions(options));
+      await cleanupClient.connect();
+      await cleanupClient.query(`DROP TABLE IF EXISTS ${tableName}`);
+      cleanupClient.close();
+      client.close();
+    }
+  });
 
   test("should reject ping during an active query", () =>
     withClient(async (client) => {

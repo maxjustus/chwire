@@ -316,9 +316,11 @@ function parseHttpError(response: Response, body: string): ClickHouseException {
 
 function extractResponseFormat(sql: string, options: QueryOptions): string {
   const matches = [...sql.matchAll(/\bFORMAT\s+([A-Za-z][A-Za-z0-9_]*)\b/gi)];
+  const rawFormat = options.default_format;
   const settingFormat = options.settings?.default_format;
   return (
     matches.at(-1)?.[1] ??
+    (typeof rawFormat === "string" ? rawFormat : undefined) ??
     (typeof settingFormat === "string" ? settingFormat : undefined) ??
     "JSONEachRowWithProgress"
   );
@@ -593,7 +595,40 @@ export interface HttpExternalTable {
  */
 export type HttpExternalTableInput = ExternalTableData | HttpExternalTable;
 
+const HTTP_QUERY_OPTION_RESERVED = new Set([
+  "baseUrl",
+  "auth",
+  "compression",
+  "compressQuery",
+  "signal",
+  "timeout",
+  "clientVersion",
+  "settings",
+  "params",
+  "externalTables",
+  "queryId",
+]);
+
+function mergeRawHttpQueryOptions(target: Record<string, string>, options: QueryOptions): void {
+  for (const [key, value] of Object.entries(options)) {
+    if (HTTP_QUERY_OPTION_RESERVED.has(key) || value === undefined) continue;
+    target[key] = String(value);
+  }
+}
+
+/**
+ * HTTP query transport options.
+ *
+ * Unknown root-level keys are forwarded as raw ClickHouse URL params for compatibility
+ * and for unmodeled server options. Prefer `settings` for standard ClickHouse settings
+ * and `params` for typed `{name: Type}` query parameters.
+ *
+ * Reserved transport keys are not forwarded: `baseUrl`, `auth`, `compression`,
+ * `compressQuery`, `signal`, `timeout`, `clientVersion`, `settings`, `params`,
+ * `externalTables`, and `queryId`.
+ */
 export interface QueryOptions {
+  [key: string]: unknown;
   baseUrl?: string;
   auth?: AuthConfig;
   /** Compression method for response: "lz4" (default), "zstd", or false */
@@ -758,6 +793,7 @@ async function* queryImpl(
 
   mergeParams(params, options.settings);
   mergeQueryParams(params, sql, options.params);
+  mergeRawHttpQueryOptions(params, options);
 
   // Handle external tables: normalize inputs, query goes in URL, body is multipart
   const hasExternalTables =

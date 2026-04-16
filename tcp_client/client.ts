@@ -653,16 +653,11 @@ export class TcpClient {
           case ServerPacketId.EndOfStream:
             reachedEndOfStream = true;
             this.log(`Successfully inserted ${totalInserted} rows.`);
-            throwIfAborted();
             yield { type: "EndOfStream" };
             return;
           case ServerPacketId.Exception: {
             receivedException = true;
-            const exception = await this.reader!.readException();
-            if (signal?.aborted || cancelled) {
-              throw createAbortError("Insert aborted");
-            }
-            throw exception;
+            throw await this.reader!.readException();
           }
         }
       }
@@ -1215,18 +1210,11 @@ export class TcpClient {
             break;
           case ServerPacketId.EndOfStream:
             reachedEndOfStream = true;
-            throwIfAborted();
-            throwIfTimedOut();
             yield { type: "EndOfStream" };
             return;
           case ServerPacketId.Exception: {
             receivedException = true;
-            const exception = await this.reader!.readException();
-            if (signal?.aborted || cancelled) {
-              throw createAbortError("Query aborted");
-            }
-            throwIfTimedOut();
-            throw exception;
+            throw await this.reader!.readException();
           }
           default:
             throw new Error(`Unknown packet ID: ${packetId}. Cannot proceed.`);

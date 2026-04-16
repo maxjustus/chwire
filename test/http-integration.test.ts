@@ -526,6 +526,33 @@ describe("ClickHouse Integration Tests", { timeout: 60000 }, () => {
   });
 
   describe("Query parameters", () => {
+    it("should forward raw root-level HTTP params for unmodeled URL options", async () => {
+      const result = await collectText(
+        query("SELECT 42 as value", sessionId, {
+          baseUrl,
+          auth,
+          compression: false,
+          default_format: "TSV",
+        }),
+      );
+
+      assert.strictEqual(result.trim(), "42");
+    });
+
+    it("should let raw root-level HTTP params override settings for the same URL key", async () => {
+      const result = await collectText(
+        query("SELECT 7 as value", sessionId, {
+          baseUrl,
+          auth,
+          compression: false,
+          settings: { default_format: "JSONEachRow" },
+          default_format: "TSV",
+        }),
+      );
+
+      assert.strictEqual(result.trim(), "7");
+    });
+
     it("should use query parameters with UInt64", async () => {
       const result = await collectText(
         query("SELECT {value:UInt64} as v FORMAT JSON", sessionId, {

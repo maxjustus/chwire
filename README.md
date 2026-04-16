@@ -91,6 +91,22 @@ for await (const packet of client.query(
 
 Parameters are type-safe and prevent SQL injection. The type annotation (e.g., `{name: String}`) tells ClickHouse how to parse the value.
 
+For HTTP queries, unknown root-level option keys are also forwarded as raw ClickHouse URL params.
+Prefer `settings` for normal modeled settings, but raw passthrough remains available for
+unmodeled options and backward compatibility:
+
+```ts
+const result = await collectText(query("SELECT 42 as value", sessionId, {
+  ...config,
+  default_format: "TSV",
+  wait_end_of_query: 1,
+}));
+```
+
+The transport keys `baseUrl`, `auth`, `compression`, `compressQuery`, `signal`, `timeout`,
+`clientVersion`, `settings`, `params`, `externalTables`, and `queryId` are reserved and are not
+forwarded as raw URL params.
+
 ## Streaming Large Inserts
 
 The `insert` function accepts `Uint8Array`, `Uint8Array[]`, or `AsyncIterable<Uint8Array>`. Use `streamEncodeJsonEachRow` for JSON data:
