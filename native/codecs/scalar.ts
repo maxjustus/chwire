@@ -34,7 +34,7 @@ import {
 } from "../coercion.ts";
 import { asBytes, BaseCodec, escapeString, wrapQuoted } from "./base.ts";
 
-// Hex lookup tables for UUID encode/decode (~11x/~60x speedup vs parseInt/toString)
+// Hex lookup tables for optimized UUID encode/decode
 const HEX_LUT = new Uint8Array(256);
 const BYTE_TO_HEX: string[] = [];
 for (let i = 0; i < 256; i++) {

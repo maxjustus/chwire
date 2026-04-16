@@ -8,10 +8,6 @@ import {
 } from "../serialization.ts";
 import type { TypedArray } from "../types.ts";
 
-// ---------------------------------------------------------------------------
-// Codec-private helpers shared across modules
-// ---------------------------------------------------------------------------
-
 /**
  * Sentinel value representing SQL NULL in toLiteral serialization.
  * Used to distinguish actual NULL from the string "NULL".

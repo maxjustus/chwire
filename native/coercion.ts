@@ -1,12 +1,4 @@
-/**
- * Type coercion helpers for Native format encoding.
- * Validates and converts JavaScript values to ClickHouse-compatible types.
- * Throws TypeError/RangeError for values that cannot be safely coerced.
- */
-
 import { ClickHouseDateTime64, type TypedArray } from "./types.ts";
-
-// --- Core coercion functions ---
 
 /**
  * Coerce value to number. Handles boolean, bigint, null, and string.

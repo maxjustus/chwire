@@ -39,7 +39,7 @@ function decodeGroups(
 /**
  * VariantCodec handles Variant(T1, T2, ...) types.
  *
- * Does NOT extend BaseCodec because:
+ * Implements instead extending BaseCodec because:
  * - Variant has its own null representation (discriminator=255)
  * - Sparse serialization applies to children, not variant itself
  * - Discriminators are always dense-encoded
@@ -172,7 +172,7 @@ export class VariantCodec implements Codec {
 /**
  * DynamicCodec handles Dynamic type (runtime-typed values).
  *
- * Does NOT extend BaseCodec because:
+ * Implements instead extending BaseCodec because:
  * - Dynamic has its own null representation (discriminator=types.length)
  * - Sparse serialization applies to children, not dynamic itself
  * - Discriminators are always dense-encoded
