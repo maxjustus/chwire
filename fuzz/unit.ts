@@ -59,7 +59,7 @@ describe("Native Unit Fuzz Tests", { timeout: 60000 }, () => {
     ];
 
     const iterationIndex = getIterationIndex();
-    const streamIterations = Math.ceil(config.unitIterations / 2);
+    const streamIterations = Math.ceil(config.iterations / 2);
     const iterations = iterationIndex !== null ? 1 : streamIterations;
     const startIdx = iterationIndex ?? 0;
 
@@ -102,7 +102,7 @@ describe("Native Unit Fuzz Tests", { timeout: 60000 }, () => {
     ];
 
     const iterationIndex = getIterationIndex();
-    const iterations = iterationIndex !== null ? 1 : config.unitIterations;
+    const iterations = iterationIndex !== null ? 1 : config.iterations;
     const startIdx = iterationIndex ?? 0;
 
     for (let iter = startIdx; iter < startIdx + iterations; iter++) {
@@ -127,7 +127,7 @@ describe("Native Unit Fuzz Tests", { timeout: 60000 }, () => {
   // and generateRandomStructure does not emit JSON typed paths.
   it("fuzz JSON with typed paths", async () => {
     const iterationIndex = getIterationIndex();
-    const iterations = iterationIndex !== null ? 1 : config.unitIterations;
+    const iterations = iterationIndex !== null ? 1 : config.iterations;
     const startIdx = iterationIndex ?? 0;
 
     const randomFloat = () => (Math.random() - 0.5) * 1e10;

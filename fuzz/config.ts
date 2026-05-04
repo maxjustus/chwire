@@ -1,25 +1,16 @@
 /**
  * Shared configuration for fuzz tests.
  *
- * FUZZ_LEVEL controls test thoroughness:
- *   quick    - minimal iterations, no compression variants (CI/fast feedback)
- *   standard - normal iterations, one compression variant per transport
- *   thorough - more iterations, all compression variants
- *
- * Individual overrides:
- *   FUZZ_ITERATIONS - override iteration count for all test types
- *   FUZZ_ROWS - override row count for integration tests
- *   FUZZ_COMPRESSION - single compression to test (for CI matrix jobs)
+ * Environment variables:
+ *   FUZZ_ITERATIONS - number of iterations (default: 25)
+ *   FUZZ_ROWS - row count for integration tests (default: 10000)
  */
 
-import {
-  getLevelDefaults,
-  parseCompression,
-  parseFuzzLevel,
-  type Compression,
-} from "./defaults.ts";
+import { cpus } from "node:os";
 
-export type { Compression, FuzzLevel } from "./defaults.ts";
+export type Compression = false | "lz4" | "zstd";
+
+const CPU_COUNT = cpus().length;
 
 function readIntEnv(name: string, fallback: number): number {
   const value = process.env[name];
@@ -30,26 +21,19 @@ function readIntEnv(name: string, fallback: number): number {
   return parsed;
 }
 
-export const FUZZ_LEVEL = parseFuzzLevel(process.env.FUZZ_LEVEL);
-
-const defaults = getLevelDefaults(FUZZ_LEVEL);
-const compressionOverride = parseCompression(process.env.FUZZ_COMPRESSION);
-
-let httpCompressions = defaults.httpCompressions;
-let tcpCompressions = defaults.tcpCompressions;
-if (compressionOverride !== undefined) {
-  httpCompressions = [compressionOverride];
-  tcpCompressions = [compressionOverride];
+function parseCompression(): Compression[] {
+  const value = process.env.FUZZ_COMPRESSION;
+  if (value === undefined) return [false, "lz4", "zstd"];
+  if (value === "false") return [false];
+  if (value === "lz4" || value === "zstd") return [value];
+  return [false, "lz4", "zstd"];
 }
 
 export const config = {
-  unitIterations: readIntEnv("FUZZ_ITERATIONS", defaults.unitIterations),
-  integrationIterations: readIntEnv("FUZZ_ITERATIONS", defaults.integrationIterations),
-  tcpIterations: readIntEnv("FUZZ_ITERATIONS", defaults.tcpIterations),
-  rows: readIntEnv("FUZZ_ROWS", defaults.rows),
-  maxConcurrentProcesses: readIntEnv("FUZZ_MAX_CONCURRENT", defaults.maxConcurrentProcesses),
-  httpCompressions,
-  tcpCompressions,
+  iterations: readIntEnv("FUZZ_ITERATIONS", 25),
+  rows: readIntEnv("FUZZ_ROWS", 10000),
+  maxConcurrentProcesses: Math.max(4, Math.min(8, Math.floor(CPU_COUNT / 2))),
+  compressions: parseCompression(),
 };
 
 /**
@@ -126,24 +110,12 @@ export function logFuzzError(ctx: FuzzErrorContext, err: unknown): void {
 }
 
 export function logConfig(testType: "unit" | "http" | "tcp"): void {
-  let iterations = config.unitIterations;
-  let compressions: Array<Compression | "n/a"> = ["n/a"];
-
-  if (testType === "http") {
-    iterations = config.integrationIterations;
-    compressions = config.httpCompressions;
-  } else if (testType === "tcp") {
-    iterations = config.tcpIterations;
-    compressions = config.tcpCompressions;
-  }
-
-  let mode = `iterations=${iterations}`;
+  let mode = `iterations=${config.iterations}`;
   const iterIdx = getIterationIndex();
   if (iterIdx !== null) {
-    mode = `iteration=${iterIdx + 1}/${iterations}`;
+    mode = `iteration=${iterIdx + 1}/${config.iterations}`;
   }
 
-  console.log(
-    `[fuzz ${testType}] level=${FUZZ_LEVEL}, ${mode}, compressions=${JSON.stringify(compressions)}, rows=${config.rows}`,
-  );
+  const compressions = testType === "unit" ? "n/a" : JSON.stringify(config.compressions);
+  console.log(`[fuzz ${testType}] ${mode}, compressions=${compressions}, rows=${config.rows}`);
 }

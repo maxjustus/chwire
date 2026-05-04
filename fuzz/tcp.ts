@@ -24,11 +24,11 @@ async function queryScalar(client: TcpClient, sql: string): Promise<string> {
 }
 
 describe("Native TCP Integration Fuzz Tests", { timeout: 600000 }, () => {
-  for (const compression of config.tcpCompressions) {
+  for (const compression of config.compressions) {
     // Test 1: Random schemas via generateRandomStructure()
     it(`round-trips random data (compression=${compression})`, async () => {
       const iterationIndex = getIterationIndex();
-      const iterations = config.tcpIterations;
+      const iterations = config.iterations;
       const iterCount = iterationIndex !== null ? 1 : iterations;
       const startIdx = iterationIndex ?? 0;
 
@@ -158,7 +158,7 @@ describe("Native TCP Integration Fuzz Tests", { timeout: 600000 }, () => {
     // Test 2: JSON with random typed paths
     it(`round-trips JSON with random typed paths (compression=${compression})`, async () => {
       const iterationIndex = getIterationIndex();
-      const iterations = config.tcpIterations;
+      const iterations = config.iterations;
       const iterCount = iterationIndex !== null ? 1 : iterations;
       const startIdx = iterationIndex ?? 0;
 

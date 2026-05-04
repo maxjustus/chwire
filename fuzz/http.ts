@@ -19,7 +19,7 @@ async function consume(input: AsyncIterable<QueryPacket>) {
 }
 
 describe("Native HTTP Integration Fuzz Tests", { timeout: 600000 }, () => {
-  for (const compression of config.httpCompressions) {
+  for (const compression of config.compressions) {
     it(`round-trips random data (compression=${compression})`, async () => {
       await init();
       const clickhouse = await startClickHouse();
@@ -28,7 +28,7 @@ describe("Native HTTP Integration Fuzz Tests", { timeout: 600000 }, () => {
 
       try {
         const iterationIndex = getIterationIndex();
-        const N = config.integrationIterations;
+        const N = config.iterations;
         const iterations = iterationIndex !== null ? 1 : N;
         const startIdx = iterationIndex ?? 0;
 
@@ -197,7 +197,7 @@ describe("Native HTTP Integration Fuzz Tests", { timeout: 600000 }, () => {
 
       try {
         const iterationIndex = getIterationIndex();
-        const N = config.integrationIterations;
+        const N = config.iterations;
         const iterations = iterationIndex !== null ? 1 : N;
         const startIdx = iterationIndex ?? 0;
 

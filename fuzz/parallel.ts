@@ -6,34 +6,29 @@
  *   tsx fuzz/parallel.ts [options]
  *
  * Options:
- *   --level=quick|standard|thorough  Set fuzz level (default: standard)
- *   --unit                           Run unit tests
- *   --http                           Run HTTP integration tests
- *   --tcp                            Run TCP integration tests
- *   --all                            Run all tests (default if none specified)
- *   --compression=false,lz4,zstd     Specific compressions to test
- *   --verbose                        Stream test output in real-time
+ *   --unit      Run unit tests
+ *   --http      Run HTTP integration tests
+ *   --tcp       Run TCP integration tests
+ *   --all       Run all tests (default if none specified)
+ *   --verbose   Stream test output in real-time
+ *
+ * Environment:
+ *   FUZZ_ITERATIONS - number of iterations (default: 25)
+ *   FUZZ_ROWS - row count for integration tests (default: 10000)
  *
  * Examples:
- *   tsx fuzz/parallel.ts --level=thorough --all
- *   tsx fuzz/parallel.ts --http --compression=lz4
- *   tsx fuzz/parallel.ts --unit --verbose
+ *   tsx fuzz/parallel.ts --all
+ *   FUZZ_ITERATIONS=5 tsx fuzz/parallel.ts --http
+ *   tsx fuzz/parallel.ts --tcp --verbose
  */
 
 import { spawn } from "node:child_process";
-import {
-  getLevelDefaults,
-  parseCompression,
-  parseFuzzLevel,
-  type Compression,
-  type FuzzLevel,
-} from "./defaults.ts";
+import { config } from "./config.ts";
 
 interface Job {
   name: string;
   file: string;
   env: Record<string, string>;
-  iterationIndex?: number;
 }
 
 interface JobResult {
@@ -44,21 +39,15 @@ interface JobResult {
 }
 
 function parseArgs(): {
-  level: FuzzLevel;
   suites: ("unit" | "http" | "tcp")[];
-  compressions: Compression[] | null;
   verbose: boolean;
 } {
   const args = process.argv.slice(2);
-  let level: FuzzLevel = "standard";
   const suites: ("unit" | "http" | "tcp")[] = [];
-  let compressions: Compression[] | null = null;
   let verbose = false;
 
   for (const arg of args) {
-    if (arg.startsWith("--level=")) {
-      level = parseFuzzLevel(arg.slice(8));
-    } else if (arg === "--unit") {
+    if (arg === "--unit") {
       suites.push("unit");
     } else if (arg === "--http") {
       suites.push("http");
@@ -66,15 +55,6 @@ function parseArgs(): {
       suites.push("tcp");
     } else if (arg === "--all") {
       suites.push("unit", "http", "tcp");
-    } else if (arg.startsWith("--compression=")) {
-      compressions = [];
-      for (const value of arg.slice(14).split(",")) {
-        const compression = parseCompression(value);
-        if (compression === undefined) {
-          throw new Error(`Invalid compression: ${value}`);
-        }
-        compressions.push(compression);
-      }
     } else if (arg === "--verbose" || arg === "-v") {
       verbose = true;
     }
@@ -84,65 +64,32 @@ function parseArgs(): {
     suites.push("unit", "http", "tcp");
   }
 
-  return { level, suites: [...new Set(suites)], compressions, verbose };
+  return { suites: [...new Set(suites)], verbose };
 }
 
-function readIntEnv(name: string, fallback: number): number {
-  const value = process.env[name];
-  if (value === undefined) return fallback;
-
-  const parsed = parseInt(value, 10);
-  if (Number.isNaN(parsed)) return fallback;
-  return parsed;
-}
-
-function buildJobs(
-  level: FuzzLevel,
-  suites: Array<"unit" | "http" | "tcp">,
-  compressions: Compression[] | null,
-): Job[] {
+function buildJobs(suites: Array<"unit" | "http" | "tcp">): Job[] {
   const jobs: Job[] = [];
-  const defaults = getLevelDefaults(level);
 
   for (const suite of suites) {
     if (suite === "unit") {
-      const iterations = readIntEnv("FUZZ_ITERATIONS", defaults.unitIterations);
-      for (let i = 0; i < iterations; i++) {
+      for (let i = 0; i < config.iterations; i++) {
         jobs.push({
           name: `unit[${i}]`,
           file: "fuzz/unit.ts",
-          env: { FUZZ_LEVEL: level, FUZZ_ITERATION_INDEX: String(i) },
-          iterationIndex: i,
+          env: { FUZZ_ITERATION_INDEX: String(i) },
         });
       }
     } else {
-      let iterations = readIntEnv("FUZZ_ITERATIONS", defaults.tcpIterations);
-      let suiteCompressions = defaults.tcpCompressions;
-
-      if (suite === "http") {
-        iterations = readIntEnv("FUZZ_ITERATIONS", defaults.integrationIterations);
-        suiteCompressions = defaults.httpCompressions;
-      }
-      if (compressions !== null) {
-        suiteCompressions = compressions;
-      }
-
-      for (const comp of suiteCompressions) {
-        for (let i = 0; i < iterations; i++) {
-          let compName = comp;
-          if (comp === false) {
-            compName = "none";
-          }
-
+      for (const comp of config.compressions) {
+        for (let i = 0; i < config.iterations; i++) {
+          const compName = comp === false ? "none" : comp;
           jobs.push({
             name: `${suite}:${compName}[${i}]`,
             file: `fuzz/${suite}.ts`,
             env: {
-              FUZZ_LEVEL: level,
               FUZZ_COMPRESSION: String(comp),
               FUZZ_ITERATION_INDEX: String(i),
             },
-            iterationIndex: i,
           });
         }
       }
@@ -225,22 +172,18 @@ async function runParallel(
     console.log(`[${status}] ${job.name} (${duration}s)`);
 
     if (!result.success && !verbose) {
-      // Print failure output (unless already shown via verbose)
       console.log(`\n--- ${job.name} output ---\n${result.output}\n---\n`);
     }
 
-    // Start next job if available
     if (pending.length > 0) {
       running.push(startNext());
     }
   }
 
-  // Start initial batch
   for (let i = 0; i < Math.min(maxConcurrency, jobs.length); i++) {
     running.push(startNext());
   }
 
-  // Wait for all to complete
   while (running.length > 0) {
     await running.shift();
   }
@@ -248,27 +191,20 @@ async function runParallel(
   return results;
 }
 
-function getMaxConcurrency(level: FuzzLevel): number {
-  return readIntEnv("FUZZ_MAX_CONCURRENT", getLevelDefaults(level).maxConcurrentProcesses);
-}
-
 async function main() {
-  const { level, suites, compressions, verbose } = parseArgs();
-  const jobs = buildJobs(level, suites, compressions);
+  const { suites, verbose } = parseArgs();
+  const jobs = buildJobs(suites);
 
   console.log(`Fuzz test runner`);
-  console.log(`  Level: ${level}`);
   console.log(`  Suites: ${suites.join(", ")}`);
+  console.log(`  Iterations: ${config.iterations}`);
   console.log(`  Total jobs: ${jobs.length}`);
   console.log();
 
-  const maxConcurrency = getMaxConcurrency(level);
-
   const startTime = Date.now();
-  const results = await runParallel(jobs, maxConcurrency, verbose);
+  const results = await runParallel(jobs, config.maxConcurrentProcesses, verbose);
   const totalDuration = ((Date.now() - startTime) / 1000).toFixed(1);
 
-  // Summary
   console.log("\n=== Summary ===");
   const passed = results.filter((r) => r.success).length;
   const failed = results.filter((r) => !r.success).length;
