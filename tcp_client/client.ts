@@ -45,6 +45,8 @@ export interface TcpClientOptions {
   debug?: boolean;
   /** Compression: 'lz4', 'zstd', or false to disable */
   compression?: "lz4" | "zstd" | false;
+  /** ZSTD compression level (1-22, default: 3) */
+  zstdLevel?: number;
   /** Connection timeout in ms (default: 10000) */
   connectTimeout?: number;
   /** Query timeout in ms (default: 30000) */
@@ -74,6 +76,8 @@ export interface InsertOptions {
   settings?: ClickHouseSettings;
   /** Custom query ID for tracking in system.query_log and KILL QUERY */
   queryId?: string;
+  /** ZSTD compression level for this insert (overrides client default) */
+  zstdLevel?: number;
 }
 
 export type { ExternalTableData };
@@ -97,6 +101,8 @@ export interface QueryOptions {
   externalTables?: Record<string, ExternalTableData>;
   /** Custom query ID for tracking in system.query_log and KILL QUERY */
   queryId?: string;
+  /** ZSTD compression level for this query (overrides client default) */
+  zstdLevel?: number;
 }
 
 function createAbortError(message: string): Error {
@@ -474,6 +480,7 @@ export class TcpClient {
 
     const useCompression = !!this.options.compression;
     const compressionMethod = toMethodCode(this.options.compression || "lz4");
+    const zstdLevel = options.zstdLevel ?? this.options.zstdLevel;
 
     try {
       // Merge settings: client defaults < per-insert overrides
@@ -486,6 +493,7 @@ export class TcpClient {
         mergedSettings,
         () => cancelled,
         options.queryId,
+        zstdLevel,
       );
       throwIfAborted();
 
@@ -504,6 +512,7 @@ export class TcpClient {
           batch,
           useCompression,
           compressionMethod,
+          zstdLevel,
         );
         await this.writeWithBackpressure(dataPacket);
         throwIfAborted();
@@ -540,6 +549,7 @@ export class TcpClient {
           this.serverHello!.revision,
           useCompression,
           compressionMethod,
+          zstdLevel,
         );
         await this.writeWithBackpressure(dataPacket);
         throwIfAborted();
@@ -602,6 +612,7 @@ export class TcpClient {
         this.serverHello!.revision,
         useCompression,
         compressionMethod,
+        zstdLevel,
       );
       this.socket!.write(delimiter);
       sentDataDelimiter = true;
@@ -700,6 +711,7 @@ export class TcpClient {
     settings: Record<string, unknown>,
     isCancelled: () => boolean,
     queryId?: string,
+    zstdLevel?: number,
   ): Promise<ColumnSchema[]> {
     const queryPacket = this.writer.encodeQuery(
       queryId ?? randomUUID(),
@@ -718,6 +730,7 @@ export class TcpClient {
       this.serverHello!.revision,
       useCompression,
       compressionMethod,
+      zstdLevel,
     );
     this.socket!.write(delimiter);
 
@@ -1005,6 +1018,7 @@ export class TcpClient {
 
     const useCompression = !!this.options.compression;
     const compressionMethod = toMethodCode(this.options.compression || "lz4");
+    const zstdLevel = options.zstdLevel ?? this.options.zstdLevel;
     const queryTimeout = this.options.queryTimeout ?? 30000;
     const cancelGracePeriod = this.options.cancelGracePeriodMs ?? 2000;
     let timeoutId: ReturnType<typeof setTimeout> | null = null;
@@ -1091,7 +1105,12 @@ export class TcpClient {
 
       // Send external tables if provided
       if (options.externalTables) {
-        await this.sendExternalTables(options.externalTables, useCompression, compressionMethod);
+        await this.sendExternalTables(
+          options.externalTables,
+          useCompression,
+          compressionMethod,
+          zstdLevel,
+        );
       }
       throwIfAborted();
 
@@ -1103,6 +1122,7 @@ export class TcpClient {
         this.serverHello!.revision,
         useCompression,
         compressionMethod,
+        zstdLevel,
       );
       this.log(
         `[query] sending delimiter (${delimiter.length} bytes, compressed=${useCompression})`,
@@ -1262,6 +1282,7 @@ export class TcpClient {
     batch: RecordBatch,
     compress: boolean,
     method: MethodCode,
+    zstdLevel?: number,
   ): Uint8Array {
     const encodedColumns = [];
     for (let i = 0; i < batch.columns.length; i++) {
@@ -1280,6 +1301,7 @@ export class TcpClient {
       this.serverHello!.revision,
       compress,
       method,
+      zstdLevel,
     );
   }
 
@@ -1288,19 +1310,20 @@ export class TcpClient {
     tables: Record<string, ExternalTableData>,
     compress: boolean,
     method: MethodCode,
+    zstdLevel?: number,
   ): Promise<void> {
     for (const [name, data] of Object.entries(tables)) {
       if (data instanceof RecordBatch) {
-        const packet = this.encodeBatchAsDataPacket(name, data, compress, method);
+        const packet = this.encodeBatchAsDataPacket(name, data, compress, method, zstdLevel);
         await this.writeWithBackpressure(packet);
       } else if (Symbol.asyncIterator in data) {
         for await (const batch of data as AsyncIterable<RecordBatch>) {
-          const packet = this.encodeBatchAsDataPacket(name, batch, compress, method);
+          const packet = this.encodeBatchAsDataPacket(name, batch, compress, method, zstdLevel);
           await this.writeWithBackpressure(packet);
         }
       } else {
         for (const batch of data as Iterable<RecordBatch>) {
-          const packet = this.encodeBatchAsDataPacket(name, batch, compress, method);
+          const packet = this.encodeBatchAsDataPacket(name, batch, compress, method, zstdLevel);
           await this.writeWithBackpressure(packet);
         }
       }

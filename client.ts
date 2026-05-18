@@ -419,6 +419,8 @@ export interface InsertOptions {
   params?: QueryParams;
   /** Custom query ID for tracking in system.query_log and KILL QUERY */
   queryId?: string;
+  /** ZSTD compression level (1-22, default: 3) */
+  zstdLevel?: number;
 }
 
 type InsertData = Uint8Array | Uint8Array[] | AsyncIterable<Uint8Array> | Iterable<Uint8Array>;
@@ -436,6 +438,7 @@ async function insert(
     bufferSize = 1024 * 1024,
     threshold = bufferSize - 2048,
     onProgress = null,
+    zstdLevel,
   } = options;
   const method = toMethodCode(compression);
 
@@ -470,7 +473,7 @@ async function insert(
         let flushPromise: Promise<void> | null = null;
 
         const flush = async (buf: Uint8Array, len: number) => {
-          const compressed = encodeBlock(buf.subarray(0, len), method);
+          const compressed = encodeBlock(buf.subarray(0, len), method, zstdLevel);
           controller.enqueue(compressed);
           blocksSent++;
           totalCompressed += compressed.length;
@@ -607,6 +610,7 @@ const HTTP_QUERY_OPTION_RESERVED = new Set([
   "params",
   "externalTables",
   "queryId",
+  "zstdLevel",
 ]);
 
 function mergeRawHttpQueryOptions(target: Record<string, string>, options: QueryOptions): void {
@@ -625,7 +629,7 @@ function mergeRawHttpQueryOptions(target: Record<string, string>, options: Query
  *
  * Reserved transport keys are not forwarded: `baseUrl`, `auth`, `compression`,
  * `compressQuery`, `signal`, `timeout`, `clientVersion`, `settings`, `params`,
- * `externalTables`, and `queryId`.
+ * `externalTables`, `queryId`, and `zstdLevel`.
  */
 export interface QueryOptions {
   [key: string]: unknown;
@@ -640,6 +644,8 @@ export interface QueryOptions {
    * Requires server setting: enable_http_compression=1
    */
   compressQuery?: "zstd" | "lz4";
+  /** ZSTD compression level for zstd-compressed query bodies (1-22, default: 3) */
+  zstdLevel?: number;
   /** AbortSignal for manual cancellation */
   signal?: AbortSignal;
   /** Request timeout in milliseconds */
@@ -840,7 +846,7 @@ async function* queryImpl(
       body =
         options.compressQuery === "lz4"
           ? lz4CompressFrame(queryBytes)
-          : zstdCompressRaw(queryBytes);
+          : zstdCompressRaw(queryBytes, options.zstdLevel);
       headers["Content-Encoding"] = options.compressQuery;
     }
     response = await fetch(url.toString(), {

@@ -215,9 +215,14 @@ function zstdDecompress(compressed: Uint8Array): Uint8Array {
  * Encode a block with ClickHouse native compression format.
  * @param raw - Uncompressed data
  * @param mode - Compression method
+ * @param zstdLevel - ZSTD compression level (only used when mode is ZSTD)
  * @returns Compressed block with checksum header
  */
-export function encodeBlock(raw: Uint8Array, mode: MethodCode = Method.LZ4): Uint8Array {
+export function encodeBlock(
+  raw: Uint8Array,
+  mode: MethodCode = Method.LZ4,
+  zstdLevel?: number,
+): Uint8Array {
   let compressed: Uint8Array;
 
   switch (mode) {
@@ -225,7 +230,7 @@ export function encodeBlock(raw: Uint8Array, mode: MethodCode = Method.LZ4): Uin
       compressed = lz4CompressRaw(raw);
       break;
     case Method.ZSTD:
-      compressed = zstdCompressRaw(raw);
+      compressed = zstdCompressRaw(raw, zstdLevel);
       break;
     case Method.None:
       compressed = raw;

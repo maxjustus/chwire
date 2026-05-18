@@ -192,6 +192,7 @@ export class StreamingWriter {
     revision: bigint,
     compress: boolean = false,
     method: MethodCode = Method.LZ4,
+    zstdLevel?: number,
   ): Uint8Array {
     if (compress) {
       this.writeVarInt(ClientPacketId.Data);
@@ -199,7 +200,7 @@ export class StreamingWriter {
       const headerBytes = this.flush();
 
       const payload = this.encodeDataBlockContent(rowsCount, columns, revision);
-      const compressed = encodeBlock(payload, method);
+      const compressed = encodeBlock(payload, method, zstdLevel);
 
       const result = new Uint8Array(headerBytes.length + compressed.length);
       result.set(headerBytes, 0);

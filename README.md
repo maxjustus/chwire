@@ -104,8 +104,8 @@ const result = await collectText(query("SELECT 42 as value", sessionId, {
 ```
 
 The transport keys `baseUrl`, `auth`, `compression`, `compressQuery`, `signal`, `timeout`,
-`clientVersion`, `settings`, `params`, `externalTables`, and `queryId` are reserved and are not
-forwarded as raw URL params.
+`clientVersion`, `settings`, `params`, `externalTables`, `queryId`, and `zstdLevel` are reserved
+and are not forwarded as raw URL params.
 
 ## Streaming Large Inserts
 
@@ -125,6 +125,7 @@ await insert(
   "session123",
   {
     compression: "zstd",
+    zstdLevel: 6,
     onProgress: (p) => console.log(`${p.bytesUncompressed} bytes`),
   },
 );
@@ -424,6 +425,7 @@ const client = new TcpClient({
   user: "default",
   password: "",
   compression: "lz4", // 'lz4' | 'zstd' | false
+  zstdLevel: 6, // optional, only used with ZSTD request compression
   connectTimeout: 10000, // ms
   queryTimeout: 30000, // ms
   tls: true, // or tls.ConnectionOptions
@@ -690,13 +692,19 @@ Requires Node.js 20+, Bun, Deno, or modern browsers (Chrome 116+, Firefox 124+, 
 
 ### HTTP Client
 
-The HTTP client throws standard `Error` objects with the HTTP status and response body:
+The HTTP client throws `ClickHouseException` for server errors:
 
 ```ts
+import { ClickHouseException } from "@maxjustus/chttp";
+
 try {
   for await (const _ of query("SELECT * FROM nonexistent", session, config)) {}
 } catch (err) {
-  // err.message: "Query failed: 404 - Code: 60. DB::Exception: Table ... doesn't exist..."
+  if (err instanceof ClickHouseException) {
+    console.log(err.code);          // 60 (UNKNOWN_TABLE)
+    console.log(err.exceptionName); // "DB::Exception"
+    console.log(err.message);       // "Table ... doesn't exist"
+  }
 }
 ```
 
@@ -706,7 +714,10 @@ Insert errors follow the same pattern:
 try {
   await insert("INSERT INTO t FORMAT JSONEachRow", data, session, config);
 } catch (err) {
-  // err.message: "Insert failed: 400 - Code: 27. DB::Exception: Cannot parse..."
+  if (err instanceof ClickHouseException) {
+    console.log(err.code);
+    console.log(err.message);
+  }
 }
 ```
 
@@ -749,6 +760,8 @@ Set `compression` in options:
 - `"lz4"` - fast, uses native bindings when available with WASM fallback (default)
 - `"zstd"` - ~2x better compression, uses native bindings when available with WASM fallback
 - `false` - no compression
+
+Use `zstdLevel` to override the default ZSTD level for request compression.
 
 ZSTD and LZ4 use native bindings in Node.js/Bun when available, falling back to WASM in browsers and Deno.
 

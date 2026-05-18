@@ -203,7 +203,7 @@ describe("ClickHouse Integration Tests", { timeout: 60000 }, () => {
         "INSERT INTO test_single FORMAT JSONEachRow",
         streamEncodeJsonEachRow(generateSingle()),
         sessionId,
-        { baseUrl, auth, compression: "zstd" },
+        { baseUrl, auth, compression: "zstd", zstdLevel: 6 },
       );
 
       // Verify

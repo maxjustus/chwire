@@ -54,11 +54,15 @@ describe("TCP Client Protocol Features", () => {
     }));
 
   test("should use ZSTD compression", async () => {
-    const client = new TcpClient({ ...toClientOptions(options), compression: "zstd" });
+    const client = new TcpClient({
+      ...toClientOptions(options),
+      compression: "zstd",
+      zstdLevel: 6,
+    });
     await client.connect();
     try {
       let rows = 0;
-      for await (const packet of client.query("SELECT * FROM numbers(1000)")) {
+      for await (const packet of client.query("SELECT * FROM numbers(1000)", { zstdLevel: 4 })) {
         if (packet.type === "Data") rows += packet.batch.rowCount;
       }
       assert.strictEqual(rows, 1000, "Should receive all rows with ZSTD compression");
@@ -107,7 +111,11 @@ describe("TCP Client Protocol Features", () => {
   });
 
   test("should insert with ZSTD compression", async () => {
-    const client = new TcpClient({ ...toClientOptions(options), compression: "zstd" });
+    const client = new TcpClient({
+      ...toClientOptions(options),
+      compression: "zstd",
+      zstdLevel: 6,
+    });
     await client.connect();
     try {
       const tableName = `test_insert_zstd_${Date.now()}`;
@@ -117,7 +125,7 @@ describe("TCP Client Protocol Features", () => {
         id: getCodec("UInt32").fromValues(new Uint32Array([1, 2, 3])),
         val: getCodec("String").fromValues(["a", "b", "c"]),
       });
-      await client.insert(`INSERT INTO ${tableName} VALUES`, table);
+      await client.insert(`INSERT INTO ${tableName} VALUES`, table, { zstdLevel: 4 });
 
       let rows = 0;
       for await (const packet of client.query(`SELECT * FROM ${tableName} ORDER BY id`)) {

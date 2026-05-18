@@ -56,6 +56,14 @@ describe("Compression", () => {
       assert.strictEqual(decoder.decode(decompressed), decoder.decode(data));
     });
 
+    it("should accept an explicit compression level", () => {
+      const data = encoder.encode("zstd-level-test".repeat(1000));
+      const compressed = encodeBlock(data, Method.ZSTD, 6);
+      const decompressed = decodeBlock(compressed);
+
+      assert.strictEqual(decoder.decode(decompressed), decoder.decode(data));
+    });
+
     it("should achieve better compression than LZ4 for repetitive data", () => {
       const data = encoder.encode("ABCD".repeat(1000));
 

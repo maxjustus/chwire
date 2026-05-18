@@ -25,7 +25,10 @@ describe("HTTP query body compression", { timeout: 60000 }, () => {
     await stopClickHouse();
   });
 
-  const assertSuccessfulQuery = async (compressQuery: "lz4" | "zstd" | undefined) => {
+  const assertSuccessfulQuery = async (
+    compressQuery: "lz4" | "zstd" | undefined,
+    zstdLevel?: number,
+  ) => {
     // Large query with many values to make compression worthwhile
     const values = Array(500)
       .fill(0)
@@ -39,6 +42,7 @@ describe("HTTP query body compression", { timeout: 60000 }, () => {
         auth,
         compression: "zstd",
         compressQuery,
+        zstdLevel,
       }),
     );
 
@@ -47,8 +51,12 @@ describe("HTTP query body compression", { timeout: 60000 }, () => {
   };
 
   for (const compression of ["zstd", "lz4", undefined]) {
-    it(`sends uncompressed query body when compressQuery is set to '${compression}'`, async () => {
+    it(`runs query when compressQuery is set to '${compression}'`, async () => {
       await assertSuccessfulQuery(compression as any);
     });
   }
+
+  it("sends zstd-compressed query body with a custom compression level", async () => {
+    await assertSuccessfulQuery("zstd", 6);
+  });
 });

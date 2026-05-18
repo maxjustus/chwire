@@ -14,6 +14,7 @@ export {
 } from "@maxjustus/chttp/native";
 export {
   buildReqUrl,
+  ClickHouseException,
   type Compression,
   collectBytes,
   collectJsonEachRow,
