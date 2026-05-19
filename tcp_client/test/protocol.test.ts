@@ -1,25 +1,28 @@
 import assert from "node:assert";
 import { after, before, describe, test } from "node:test";
 import { batchFromCols, getCodec } from "@maxjustus/chttp/native";
+import { TcpClient } from "@maxjustus/chttp/tcp";
 import { startClickHouse, stopClickHouse } from "../../test/setup.ts";
 import {
-  toClientOptions,
   type TcpConfig,
+  toClientOptions,
   withClient as withClientBase,
 } from "../../test/test_utils.ts";
-import { TcpClient } from "@maxjustus/chttp/tcp";
 
 describe("TCP Client Protocol Features", () => {
   let options: TcpConfig;
+  let tcpSecurePort: number;
 
   before(async () => {
-    const ch = await startClickHouse();
+    const ch = await startClickHouse("25.8", { tls: true });
     options = {
       host: ch.host,
       tcpPort: ch.tcpPort,
       username: ch.username,
       password: ch.password,
     };
+    if (!ch.tcpSecurePort) throw new Error("TLS-enabled ClickHouse test container has no TLS port");
+    tcpSecurePort = ch.tcpSecurePort;
   });
 
   after(async () => {
@@ -223,11 +226,10 @@ describe("TCP Client Protocol Features", () => {
     }
   });
 
-  // TLS test skipped - requires container with TLS configured
-  test.skip("should connect with TLS when configured", async () => {
+  test("should connect with TLS when configured", async () => {
     const client = new TcpClient({
       ...toClientOptions(options),
-      port: 9440,
+      port: tcpSecurePort,
       tls: { rejectUnauthorized: false },
     });
     try {
