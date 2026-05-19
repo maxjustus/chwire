@@ -165,7 +165,7 @@ function getMethods(): CompressionMethod[] {
     {
       name: "LZ4 wasm",
       compress: async (d) => encodeBlock(d, Method.LZ4),
-      decompress: async (d) => decodeBlock(d, true),
+      decompress: async (d) => decodeBlock(d),
     },
     {
       name: "LZ4 native",
@@ -175,11 +175,11 @@ function getMethods(): CompressionMethod[] {
     {
       name: "ZSTD chttp",
       compress: async (d) => encodeBlock(d, Method.ZSTD),
-      decompress: async (d) => decodeBlock(d, true),
+      decompress: async (d) => decodeBlock(d),
     },
     {
       name: "ZSTD wasm",
-      compress: async (d) => bokuweb.compress(d, 3),
+      compress: async (d) => bokuweb.compress(d),
       decompress: async (d) => bokuweb.decompress(d),
     },
     {
@@ -189,7 +189,7 @@ function getMethods(): CompressionMethod[] {
     },
     {
       name: "ZSTD node",
-      compress: async (d) => new Uint8Array(zstdCompressSync(d, { level: 3 })),
+      compress: async (d) => new Uint8Array(zstdCompressSync(d)),
       decompress: async (d) => new Uint8Array(zstdDecompressSync(d)),
     },
     {

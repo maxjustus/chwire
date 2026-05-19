@@ -11,7 +11,7 @@
 import { getCodec } from "./codecs.ts";
 import { type Column, DataColumn, EnumColumn } from "./columns.ts";
 import { BlockInfoField } from "./constants.ts";
-import { BufferReader, BufferUnderflowError, BufferWriter, StreamBuffer } from "./io.ts";
+import { BufferReader, BufferUnderflowError, BufferWriter } from "./io.ts";
 import { collectRows, rows } from "./rows.ts";
 import {
   DEFAULT_DENSE_NODE,
@@ -27,7 +27,7 @@ import {
   type Row,
   validateColumnLengths,
 } from "./table.ts";
-import { type ColumnDef, type DecodeOptions } from "./types.ts";
+import type { ColumnDef, DecodeOptions } from "./types.ts";
 
 // Re-export types for public API
 export {
@@ -92,6 +92,57 @@ export class BlockUnderflowError extends BufferUnderflowError {
     super(message);
     this.name = "BlockUnderflowError";
     this.partial = partial;
+  }
+}
+
+class StableNativeBlockBuffer {
+  private buffer: Uint8Array;
+  private length = 0;
+  private initialSize: number;
+
+  constructor(initialSize: number) {
+    this.initialSize = initialSize;
+    this.buffer = new Uint8Array(initialSize);
+  }
+
+  get available(): number {
+    return this.length;
+  }
+
+  get view(): Uint8Array {
+    return this.buffer.subarray(0, this.length);
+  }
+
+  append(chunk: Uint8Array): void {
+    if (chunk.length === 0) return;
+    this.ensureCapacity(this.length + chunk.length);
+    this.buffer.set(chunk, this.length);
+    this.length += chunk.length;
+  }
+
+  startNextBlock(bytesConsumed: number): void {
+    if (bytesConsumed < 0 || bytesConsumed > this.length) {
+      throw new RangeError(`Invalid Native block consume length: ${bytesConsumed}`);
+    }
+    const trailingLength = this.length - bytesConsumed;
+    const nextCapacity = Math.max(this.initialSize, trailingLength);
+    const next = new Uint8Array(nextCapacity);
+    if (trailingLength > 0) {
+      next.set(this.buffer.subarray(bytesConsumed, this.length));
+    }
+    this.buffer = next;
+    this.length = trailingLength;
+  }
+
+  private ensureCapacity(minCapacity: number): void {
+    if (minCapacity <= this.buffer.length) return;
+    let nextCapacity = this.buffer.length;
+    while (nextCapacity < minCapacity) {
+      nextCapacity = Math.max(nextCapacity * 2, minCapacity);
+    }
+    const next = new Uint8Array(nextCapacity);
+    next.set(this.buffer.subarray(0, this.length));
+    this.buffer = next;
   }
 }
 
@@ -279,7 +330,7 @@ export async function* streamDecodeNative(
   options?: DecodeOptions & { debug?: boolean; minBufferSize?: number },
 ): AsyncGenerator<RecordBatch> {
   const minBuffer = options?.minBufferSize ?? 2 * 1024 * 1024;
-  const streamBuffer = new StreamBuffer(minBuffer);
+  const blockBuffer = new StableNativeBlockBuffer(minBuffer);
   let columns: ColumnDef[] = [];
   let totalBytesReceived = 0;
   let blocksDecoded = 0;
@@ -292,17 +343,15 @@ export async function* streamDecodeNative(
   let partial: PartialBlockState | undefined;
 
   for await (const chunk of chunks) {
-    streamBuffer.append(chunk);
+    blockBuffer.append(chunk);
     totalBytesReceived += chunk.length;
 
-    while (streamBuffer.available >= 2) {
-      // Stable copy so zero-copy typed arrays survive StreamBuffer compaction
-      const stableSlice = streamBuffer.view.slice();
-      const reader = new BufferReader(stableSlice, 0, options);
+    while (blockBuffer.available >= 2) {
+      const reader = new BufferReader(blockBuffer.view, 0, options);
 
       try {
         const block = decodeNativeBlockWithReader(reader, options, partial);
-        streamBuffer.consume(block.bytesConsumed);
+        blockBuffer.startNextBlock(block.bytesConsumed);
         partial = undefined;
 
         if (block.isEndMarker) continue;
@@ -329,11 +378,10 @@ export async function* streamDecodeNative(
   }
 
   // Final: decode remaining data (no more chunks coming)
-  while (streamBuffer.available > 0) {
-    const stableSlice = streamBuffer.view.slice();
-    const reader = new BufferReader(stableSlice, 0, options);
+  while (blockBuffer.available > 0) {
+    const reader = new BufferReader(blockBuffer.view, 0, options);
     const block = decodeNativeBlockWithReader(reader, options, partial);
-    streamBuffer.consume(block.bytesConsumed);
+    blockBuffer.startNextBlock(block.bytesConsumed);
     partial = undefined;
 
     if (block.isEndMarker) continue;

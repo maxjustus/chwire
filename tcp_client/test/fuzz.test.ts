@@ -1,14 +1,15 @@
 import assert from "node:assert";
 import { after, before, describe, test } from "node:test";
+import { TcpClient } from "@maxjustus/chttp/tcp";
 import type { ClickHouseSettings } from "../../settings.ts";
 import { startClickHouse, stopClickHouse } from "../../test/setup.ts";
-import { toClientOptions, type TcpConfig } from "../../test/test_utils.ts";
-import { TcpClient } from "@maxjustus/chttp/tcp";
+import { type TcpConfig, toClientOptions } from "../../test/test_utils.ts";
 
 // Settings for complex/experimental types
 const QUERY_SETTINGS = {
   use_variant_as_common_type: true,
   allow_experimental_variant_type: true,
+  allow_suspicious_variant_types: true,
   allow_experimental_dynamic_type: true,
   allow_experimental_json_type: true,
   output_format_native_use_flattened_dynamic_and_json_serialization: true,
@@ -50,6 +51,11 @@ describe("TCP Client Fuzz Tests", { timeout: 600000, concurrency: 1 }, () => {
       rowCount: parseInt(process.env.FUZZ_ROWS ?? String(defaults.rows ?? 10000), 10),
       verbose: !!process.env.VERBOSE,
     };
+  }
+
+  function replayStructure(): string | null {
+    const structure = process.env.FUZZ_STRUCTURE?.trim();
+    return structure && structure.length > 0 ? structure : null;
   }
 
   async function withClient<T>(fn: (client: TcpClient) => Promise<T>): Promise<T> {
@@ -164,7 +170,12 @@ describe("TCP Client Fuzz Tests", { timeout: 600000, concurrency: 1 }, () => {
     client: TcpClient,
     numColumns?: number,
     settings?: ClickHouseSettings,
+    allowReplay = false,
   ): Promise<string> {
+    if (allowReplay) {
+      const replay = replayStructure();
+      if (replay) return replay;
+    }
     const query = numColumns
       ? `SELECT generateRandomStructure(${numColumns}) AS s`
       : `SELECT generateRandomStructure() AS s`;
@@ -182,7 +193,11 @@ describe("TCP Client Fuzz Tests", { timeout: 600000, concurrency: 1 }, () => {
   // Quick read-only fuzz: just SELECT random data, no round-trip
   // Usage: FUZZ_ITERATIONS=50 FUZZ_ROWS=100000 make fuzz-tcp
   test("decode random structures", async () => {
-    const { iterations, rowCount } = fuzzConfig({ iterations: 10, rows: 20000 });
+    const stress = !!process.env.TCP_FUZZ_STRESS;
+    const { iterations, rowCount } = fuzzConfig(
+      stress ? { iterations: 10, rows: 20000 } : { iterations: 5, rows: 10000 },
+    );
+    const structureColumns = stress ? undefined : 8;
     let client = new TcpClient(clientOptions());
     await client.connect();
     let failures = 0;
@@ -191,7 +206,7 @@ describe("TCP Client Fuzz Tests", { timeout: 600000, concurrency: 1 }, () => {
     for (let i = 0; i < iterations; i++) {
       let structure = "";
       try {
-        structure = await getRandomStructure(client);
+        structure = await getRandomStructure(client, structureColumns, undefined, true);
         console.log(`[tcp fuzz ${i + 1}/${iterations}] ${structure.slice(0, 100)}...`);
 
         const escaped = structure.replace(/'/g, "''");
@@ -224,9 +239,15 @@ describe("TCP Client Fuzz Tests", { timeout: 600000, concurrency: 1 }, () => {
   });
 
   // Full round-trip fuzz: SELECT -> INSERT -> verify
-  // Skip with: SKIP_ROUNDTRIP=1 make fuzz-tcp
+  // Heavy stress profile: npm run test:tcp:stress
+  // Replay a failure with: FUZZ_STRUCTURE="..." npm run test:tcp
+  // Skip with: SKIP_ROUNDTRIP=1 npm run test:tcp
   test("round-trip random structures", { skip: !!process.env.SKIP_ROUNDTRIP }, async () => {
-    const { iterations, rowCount } = fuzzConfig({ iterations: 5, rows: 80000 });
+    const stress = !!process.env.TCP_FUZZ_STRESS;
+    const { iterations, rowCount } = fuzzConfig(
+      stress ? { iterations: 5, rows: 80000 } : { iterations: 2, rows: 20000 },
+    );
+    const structureColumns = stress ? undefined : 8;
     let readClient = new TcpClient(clientOptions());
     let writeClient = new TcpClient(clientOptions());
     await Promise.all([readClient.connect(), writeClient.connect()]);
@@ -237,9 +258,10 @@ describe("TCP Client Fuzz Tests", { timeout: 600000, concurrency: 1 }, () => {
       const srcTable = `tcp_fuzz_src_${i}_${Date.now()}`;
       const dstTable = `tcp_fuzz_dst_${i}_${Date.now()}`;
       let structure = "";
+      let failure: Error | null = null;
 
       try {
-        structure = await getRandomStructure(writeClient);
+        structure = await getRandomStructure(writeClient, structureColumns, undefined, true);
         console.log(`[tcp round-trip ${i + 1}/${iterations}] ${structure.slice(0, 80)}...`);
 
         const escaped = structure.replace(/'/g, "''");
@@ -267,22 +289,26 @@ describe("TCP Client Fuzz Tests", { timeout: 600000, concurrency: 1 }, () => {
 
         await verifyTableEquality(writeClient, srcTable, dstTable);
         console.log(`  verified OK`);
-        await writeClient.query(`DROP TABLE IF EXISTS ${srcTable}`);
-        await writeClient.query(`DROP TABLE IF EXISTS ${dstTable}`);
       } catch (err) {
-        const error = err as Error;
-        console.error(`\n[ROUND-TRIP FAILURE] ${structure || "(no structure)"}: ${error.message}`);
+        failure = err as Error;
+      } finally {
         try {
           await writeClient.query(`DROP TABLE IF EXISTS ${srcTable}`);
           await writeClient.query(`DROP TABLE IF EXISTS ${dstTable}`);
         } catch {
           /* ignore */
         }
+      }
+
+      if (failure) {
+        console.error(
+          `\n[ROUND-TRIP FAILURE] ${structure || "(no structure)"}: ${failure.message}`,
+        );
         failures++;
         if (failures >= maxFailures) {
           readClient.close();
           writeClient.close();
-          throw new Error(`Too many failures (${failures}), last error: ${error.message}`);
+          throw new Error(`Too many failures (${failures}), last error: ${failure.message}`);
         }
         console.error(`  Reconnecting... (failure ${failures}/${maxFailures})`);
         readClient.close();

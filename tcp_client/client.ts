@@ -7,7 +7,6 @@ import {
   BufferUnderflowError,
   BufferWriter,
   type ColumnDef,
-  decodeNativeBlock,
   decodeNativeBlockWithReader,
   type ExternalTableData,
   getCodec,
@@ -16,6 +15,7 @@ import {
 } from "@maxjustus/chttp/native";
 import { init as initCompression, type MethodCode, toMethodCode } from "../compression.ts";
 import type { ClickHouseSettings } from "../settings.ts";
+import type { QueryParamValue } from "../types.ts";
 import { type CollectableAsyncGenerator, collectable } from "../util.ts";
 import { StreamingReader } from "./reader.ts";
 import { transposeRowObjectsToColumns } from "./row_object_insert.ts";
@@ -31,10 +31,9 @@ import {
   ServerPacketId,
 } from "./types.ts";
 import { StreamingWriter } from "./writer.ts";
-import type { QueryParamValue } from "../types.ts";
 
-export type { CollectableAsyncGenerator } from "../util.ts";
 export type { QueryParamValue } from "../types.ts";
+export type { CollectableAsyncGenerator } from "../util.ts";
 
 export interface TcpClientOptions {
   host: string;
@@ -109,6 +108,41 @@ function createAbortError(message: string): Error {
   const err = new Error(message);
   err.name = "AbortError";
   return err;
+}
+
+class NativePayloadBuffer {
+  private buffer: Uint8Array;
+  private length = 0;
+
+  constructor(initialCapacity = 2 * 1024 * 1024) {
+    this.buffer = new Uint8Array(initialCapacity);
+  }
+
+  get available(): number {
+    return this.length;
+  }
+
+  get view(): Uint8Array {
+    return this.buffer.subarray(0, this.length);
+  }
+
+  append(chunk: Uint8Array): void {
+    if (chunk.length === 0) return;
+    this.ensureCapacity(this.length + chunk.length);
+    this.buffer.set(chunk, this.length);
+    this.length += chunk.length;
+  }
+
+  private ensureCapacity(minCapacity: number): void {
+    if (minCapacity <= this.buffer.length) return;
+    let nextCapacity = this.buffer.length;
+    while (nextCapacity < minCapacity) {
+      nextCapacity = Math.max(nextCapacity * 2, minCapacity);
+    }
+    const next = new Uint8Array(nextCapacity);
+    next.set(this.buffer.subarray(0, this.length));
+    this.buffer = next;
+  }
 }
 
 /** Validates that expected schema matches server schema exactly. */
@@ -910,97 +944,89 @@ export class TcpClient {
     }
   }
 
-  private async readBlock(compressed: boolean = false): Promise<RecordBatch> {
-    // Block name is always uncompressed, even when block data is compressed
-    await this.reader!.readString();
+  private async decodeNativePayload(
+    readNextChunk: () => Promise<Uint8Array | null>,
+    options: { clientVersion: number },
+    afterDecode?: (bytesConsumed: number) => void,
+  ): Promise<RecordBatch> {
+    const debug = this.options.debug;
+    const start = debug ? performance.now() : 0;
+    const buffer = new NativePayloadBuffer();
+    const reader = new BufferReader(buffer.view, 0, options);
+    let partial: PartialBlockState | undefined;
+    let chunksRead = 0;
+    let readTimeMs = 0;
+    let decodeTimeMs = 0;
+    let resumedFromCol = -1;
 
-    const options = { clientVersion: Number(this.serverHello!.revision) };
-
-    if (compressed) {
-      // Native format blocks can span multiple compressed chunks (~1MiB each).
-      // Uses column-level checkpointing: on underflow, saves completed columns
-      // so retry resumes from last column boundary instead of re-parsing everything.
-      const debug = this.options.debug;
-      const start = debug ? performance.now() : 0;
-      let chunksRead = 0;
-      let readTimeMs = 0;
-      let decodeTimeMs = 0;
-
-      // Start with 2MB buffer, grow as needed (chunks are ~1MB each)
-      let bufferCapacity = 2 * 1024 * 1024;
-      let buffer = new Uint8Array(bufferCapacity);
-      let bufferLen = 0;
-
-      // Persistent reader and partial decode state for resumable decoding
-      const reader = new BufferReader(buffer.subarray(0, 0), 0, options);
-      let partial: PartialBlockState | undefined;
-      let resumedFromCol = -1;
-
-      while (true) {
-        // Read first chunk or more data after underflow
-        const readStart = debug ? performance.now() : 0;
-        const chunk = await this.reader!.readCompressedBlock();
-        if (debug) readTimeMs += performance.now() - readStart;
-        chunksRead++;
-
-        // Grow buffer if needed (double capacity)
-        if (bufferLen + chunk.length > bufferCapacity) {
-          bufferCapacity = Math.max(bufferCapacity * 2, bufferLen + chunk.length);
-          const newBuffer = new Uint8Array(bufferCapacity);
-          newBuffer.set(buffer.subarray(0, bufferLen));
-          buffer = newBuffer;
-        }
-        buffer.set(chunk, bufferLen);
-        bufferLen += chunk.length;
-
-        // Update reader's buffer
-        reader.replaceBuffer(buffer.subarray(0, bufferLen));
-
-        const decodeStart = debug ? performance.now() : 0;
-        try {
-          const result = decodeNativeBlockWithReader(reader, options, partial);
-          if (debug) {
-            decodeTimeMs += performance.now() - decodeStart;
-            result.decodeTimeMs = performance.now() - start;
-            if (chunksRead > 1) {
-              const resumeInfo = resumedFromCol >= 0 ? ` resumed@col${resumedFromCol}` : "";
-              this.log(
-                `block: ${chunksRead} chunks, ${bufferLen} bytes, ` +
-                  `read=${readTimeMs.toFixed(1)}ms decode=${decodeTimeMs.toFixed(1)}ms${resumeInfo}`,
-              );
-            }
-          }
-          return RecordBatch.from(result);
-        } catch (err) {
-          if (debug) decodeTimeMs += performance.now() - decodeStart;
-          if (err instanceof BlockUnderflowError) {
-            partial = err.partial;
-            resumedFromCol = partial.nextColIndex;
-            continue;
-          }
-          throw err;
-        }
-      }
-    }
-
-    // For uncompressed, we need to handle streaming reads which might span multiple chunks.
     while (true) {
-      const currentBuffer = this.reader!.peekAll();
+      const readStart = debug ? performance.now() : 0;
+      const chunk = await readNextChunk();
+      if (!chunk) throw new Error("EOF while decoding Native block");
+      if (debug) readTimeMs += performance.now() - readStart;
+      chunksRead++;
+      buffer.append(chunk);
+      reader.replaceBuffer(buffer.view);
+      if (!partial) reader.offset = 0;
+
+      const decodeStart = debug ? performance.now() : 0;
       try {
-        const start = performance.now();
-        const result = decodeNativeBlock(currentBuffer, 0, options);
-        result.decodeTimeMs = performance.now() - start;
-        this.reader!.consume(result.bytesConsumed);
+        const result = decodeNativeBlockWithReader(reader, options, partial);
+        if (debug) {
+          decodeTimeMs += performance.now() - decodeStart;
+          result.decodeTimeMs = performance.now() - start;
+          if (chunksRead > 1) {
+            const resumeInfo = resumedFromCol >= 0 ? ` resumed@col${resumedFromCol}` : "";
+            this.log(
+              `block: ${chunksRead} chunks, ${buffer.available} bytes, ` +
+                `read=${readTimeMs.toFixed(1)}ms decode=${decodeTimeMs.toFixed(1)}ms${resumeInfo}`,
+            );
+          }
+        } else {
+          result.decodeTimeMs = performance.now() - decodeStart;
+        }
+        afterDecode?.(result.bytesConsumed);
         return RecordBatch.from(result);
       } catch (err) {
+        if (debug) decodeTimeMs += performance.now() - decodeStart;
+        if (err instanceof BlockUnderflowError) {
+          partial = err.partial;
+          resumedFromCol = partial.nextColIndex;
+          continue;
+        }
         if (err instanceof BufferUnderflowError) {
-          const more = await this.reader!.nextChunk();
-          if (!more) throw new Error("EOF while decoding block");
+          partial = undefined;
+          reader.offset = 0;
           continue;
         }
         throw err;
       }
     }
+  }
+
+  private async readBlock(compressed: boolean = false): Promise<RecordBatch> {
+    // Block name is always raw TCP framing; only the Native block payload may be compressed.
+    await this.reader!.readString();
+
+    const options = { clientVersion: Number(this.serverHello!.revision) };
+
+    if (compressed) {
+      return this.decodeNativePayload(() => this.reader!.readCompressedBlock(), options);
+    }
+
+    let firstRead = true;
+    return this.decodeNativePayload(
+      async () => {
+        if (firstRead) {
+          firstRead = false;
+          const buffered = this.reader!.peekAll();
+          if (buffered.length > 0) return buffered;
+        }
+        return this.reader!.nextChunk();
+      },
+      options,
+      (bytesConsumed) => this.reader!.consume(bytesConsumed),
+    );
   }
 
   // TODO: we should make the use flattened v3 setting automatically enabled until we support the other dynamic encodings

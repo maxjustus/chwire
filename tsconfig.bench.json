@@ -1,0 +1,7 @@
+{
+  "extends": "./tsconfig.json",
+  "include": ["bench/formats.ts", "bench/compression.ts", "bench/harness.ts"],
+  "compilerOptions": {
+    "noEmit": true
+  }
+}

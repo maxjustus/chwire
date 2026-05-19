@@ -54,7 +54,8 @@ function createErrorPropagatingIterator(socket: net.Socket): AsyncIterator<Uint8
 }
 
 /**
- * A streaming byte reader that handles async buffering and optional ClickHouse compression.
+ * A streaming byte reader for raw TCP packet framing.
+ * Data block payloads may be compressed, but those are read explicitly with readCompressedBlock().
  * Optimized to avoid O(N^2) copies during buffering.
  */
 export class StreamingReader {
@@ -63,14 +64,9 @@ export class StreamingReader {
   private buffer: Uint8Array = new Uint8Array(0);
   private offset: number = 0;
   private done: boolean = false;
-  private compressionEnabled: boolean = false;
 
   constructor(socket: net.Socket) {
     this.source = createErrorPropagatingIterator(socket);
-  }
-
-  setCompression(enabled: boolean) {
-    this.compressionEnabled = enabled;
   }
 
   private async ensure(n: number): Promise<void> {
@@ -80,11 +76,7 @@ export class StreamingReader {
           `Unexpected end of stream: needed ${n} bytes, only ${this.buffer.length - this.offset} available`,
         );
       }
-      if (this.compressionEnabled) {
-        await this.pullCompressedBlock();
-      } else {
-        await this.pullRawChunk();
-      }
+      await this.pullRawChunk();
     }
   }
 
@@ -95,24 +87,6 @@ export class StreamingReader {
       return;
     }
     this.feed(value);
-  }
-
-  private async pullCompressedBlock(): Promise<void> {
-    const checksum = await this.readRaw(Compression.CHECKSUM_SIZE);
-    const header = await this.readRaw(Compression.HEADER_SIZE);
-    const compressedData = await this.readRaw(this.compressedDataSize(header));
-    this.feed(this.assembleAndDecodeBlock(checksum, header, compressedData));
-  }
-
-  private async readRaw(n: number): Promise<Uint8Array> {
-    while (this.buffer.length - this.offset < n) {
-      const { value, done } = await this.source.next();
-      if (done) throw new Error("EOF while reading compressed block header");
-      this.feed(value);
-    }
-    const res = this.buffer.subarray(this.offset, this.offset + n);
-    this.offset += n;
-    return res;
   }
 
   private feed(chunk: Uint8Array) {
@@ -150,15 +124,15 @@ export class StreamingReader {
     return this.buffer.subarray(this.offset);
   }
 
-  async nextChunk(): Promise<boolean> {
-    if (this.done) return false;
+  async nextChunk(): Promise<Uint8Array | null> {
+    if (this.done) return null;
     const { value, done } = await this.source.next();
     if (done) {
       this.done = true;
-      return false;
+      return null;
     }
     this.feed(value);
-    return true;
+    return value;
   }
 
   async readVarint(): Promise<bigint> {
@@ -174,8 +148,7 @@ export class StreamingReader {
           if (this.done) {
             throw new Error("Connection closed unexpectedly while reading response");
           }
-          if (this.compressionEnabled) await this.pullCompressedBlock();
-          else await this.pullRawChunk();
+          await this.pullRawChunk();
           continue;
         }
         throw err;

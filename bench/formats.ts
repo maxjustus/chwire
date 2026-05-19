@@ -4,12 +4,13 @@
 
 import { promisify } from "node:util";
 import { gzip } from "node:zlib";
-import { collectBytes } from "../client.ts";
 import { encodeBlock, init, Method } from "../compression.ts";
 import {
+  batchFromCols,
   batchFromRows,
   type ColumnDef,
   encodeNative,
+  getCodec,
   RecordBatch,
   streamDecodeNative,
   streamEncodeNative,
@@ -30,6 +31,23 @@ function encodeNativeRows(columns: ColumnDef[], rows: unknown[][]): Uint8Array {
 
 async function* toAsync(data: Uint8Array[]): AsyncIterable<Uint8Array> {
   for (const chunk of data) yield chunk;
+}
+
+async function collectByteChunks(chunks: AsyncIterable<Uint8Array>): Promise<Uint8Array> {
+  const parts: Uint8Array[] = [];
+  let total = 0;
+  for await (const chunk of chunks) {
+    parts.push(chunk);
+    total += chunk.length;
+  }
+
+  const result = new Uint8Array(total);
+  let offset = 0;
+  for (const part of parts) {
+    result.set(part, offset);
+    offset += part.length;
+  }
+  return result;
 }
 
 async function decodeBatch(data: Uint8Array): Promise<RecordBatch> {
@@ -454,7 +472,7 @@ function generateColumnarNumericData(count: number) {
     rows.push([ids[i], xs[i], ys[i], zs[i]]);
   }
 
-  return { columns, rows, columnar: [ids, xs, ys, zs] as unknown[][] };
+  return { columns, rows, columnar: [ids, xs, ys, zs] };
 }
 
 // --- Main ---
@@ -606,7 +624,7 @@ async function main() {
   const streamEnc = await benchAsync(
     "Stream encode",
     async () => {
-      await collectBytes(streamEncodeNative(batchGenerator()));
+      await collectByteChunks(streamEncodeNative(batchGenerator()));
     },
     { ...benchOptions, iterations: ITERATIONS },
   );
@@ -639,7 +657,15 @@ async function main() {
   console.log(formatResult(nativeRowEnc, ROWS));
   const nativeColEnc = benchSync(
     "Native (TypedArray columnar)",
-    () => encodeNative(RecordBatch.fromColumnar(columnar.columns, columnar.columnar)),
+    () =>
+      encodeNative(
+        batchFromCols({
+          id: getCodec("UInt32").fromValues(columnar.columnar[0]),
+          x: getCodec("Float64").fromValues(columnar.columnar[1]),
+          y: getCodec("Float64").fromValues(columnar.columnar[2]),
+          z: getCodec("Float64").fromValues(columnar.columnar[3]),
+        }),
+      ),
     { ...benchOptions, iterations: ITERATIONS },
   );
   console.log(formatResult(nativeColEnc, ROWS));

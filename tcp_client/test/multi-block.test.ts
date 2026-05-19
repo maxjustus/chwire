@@ -1,9 +1,9 @@
 import assert from "node:assert";
 import { after, before, describe, test } from "node:test";
 import { batchFromRows } from "@maxjustus/chttp/native";
+import type { TcpClient } from "@maxjustus/chttp/tcp";
 import { startClickHouse, stopClickHouse } from "../../test/setup.ts";
 import { type TcpConfig, withClient as withClientBase } from "../../test/test_utils.ts";
-import { TcpClient } from "@maxjustus/chttp/tcp";
 
 describe("TCP Client Multi-block Integration", () => {
   let options: TcpConfig;
@@ -49,6 +49,30 @@ describe("TCP Client Multi-block Integration", () => {
       assert.ok(blockCount > 1, "Should have received multiple blocks");
 
       await client.query(`DROP TABLE ${tableName}`);
+    }));
+
+  test("should decode a large uncompressed block split across socket chunks", () =>
+    withClient(async (client) => {
+      const rowCount = 2048;
+      let totalRows = 0;
+      let firstPayloadLength: number | undefined;
+      let lastId = -1n;
+
+      for await (const packet of client.query(
+        `SELECT number AS id, repeat('x', 2048) AS payload FROM numbers(${rowCount}) ` +
+          `SETTINGS max_block_size=${rowCount}, preferred_block_size_bytes=100000000`,
+      )) {
+        if (packet.type !== "Data") continue;
+        totalRows += packet.batch.rowCount;
+        if (packet.batch.rowCount > 0) {
+          firstPayloadLength ??= (packet.batch.getAt(0, 1) as string).length;
+          lastId = packet.batch.getAt(packet.batch.rowCount - 1, 0) as bigint;
+        }
+      }
+
+      assert.strictEqual(totalRows, rowCount);
+      assert.strictEqual(firstPayloadLength, 2048);
+      assert.strictEqual(lastId, BigInt(rowCount - 1));
     }));
 
   test("should handle multi-block INSERT queries", () =>
