@@ -12,7 +12,7 @@ import type { TypedArray } from "../types.ts";
  * Sentinel value representing SQL NULL in toLiteral serialization.
  * Used to distinguish actual NULL from the string "NULL".
  */
-export const SQL_NULL = Symbol.for("chttp.SQL_NULL");
+export const SQL_NULL = Symbol.for("chwire.SQL_NULL");
 
 /** Convert SQL_NULL symbol to "NULL" string for nested literals */
 export function nullToLiteral(lit: string | typeof SQL_NULL): string {

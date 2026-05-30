@@ -1,9 +1,9 @@
 import assert from "node:assert";
 import { after, before, describe, test } from "node:test";
-import { batchFromCols, getCodec } from "@maxjustus/chttp/native";
+import { batchFromCols, getCodec } from "@maxjustus/chwire/native";
 import { startClickHouse, stopClickHouse } from "../../test/setup.ts";
 import { toClientOptions, type TcpConfig } from "../../test/test_utils.ts";
-import { ClickHouseException, TcpClient } from "@maxjustus/chttp/tcp";
+import { ClickHouseException, TcpClient } from "@maxjustus/chwire/tcp";
 import { ServerPacketId } from "../types.ts";
 
 describe("TCP Client Reliability", () => {
@@ -236,7 +236,9 @@ describe("TCP Client Reliability", () => {
 
       await withAbortOnPacket(client, controller, ServerPacketId.EndOfStream, async () => {
         let result: number | null = null;
-        for await (const packet of client.query("SELECT 42 as value", { signal: controller.signal })) {
+        for await (const packet of client.query("SELECT 42 as value", {
+          signal: controller.signal,
+        })) {
           if (packet.type === "Data" && packet.batch.rowCount > 0) {
             result = Number(packet.batch.getAt(0, 0));
           }

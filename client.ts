@@ -24,8 +24,8 @@ export {
   rows,
   streamDecodeNative,
   streamEncodeNative,
-} from "@maxjustus/chttp/native";
-import { encodeNative, type ExternalTableData, RecordBatch } from "@maxjustus/chttp/native";
+} from "@maxjustus/chwire/native";
+import { encodeNative, type ExternalTableData, RecordBatch } from "@maxjustus/chwire/native";
 import { StreamBuffer } from "./native/io.ts";
 import { type CollectableAsyncGenerator, collectable } from "./util.ts";
 import { serializeParams, extractParamTypes, SQL_NULL } from "./params.ts";
@@ -670,7 +670,7 @@ function buildMultipartBody(tables: Record<string, HttpExternalTable>): {
   body: Uint8Array | ReadableStream<Uint8Array>;
   boundary: string;
 } {
-  const boundary = `----chttpBoundary${crypto.randomUUID().replace(/-/g, "")}`;
+  const boundary = `----chwireBoundary${crypto.randomUUID().replace(/-/g, "")}`;
 
   // Check if any table has async data
   const hasAsync = Object.values(tables).some(
@@ -820,7 +820,7 @@ async function* queryImpl(
 
   const headers: Record<string, string> = {
     Connection: "close",
-    "User-Agent": `chttp/${options.clientVersion || "1.0"}`,
+    "User-Agent": `chwire/${options.clientVersion || "1.0"}`,
   };
 
   let response: Response;

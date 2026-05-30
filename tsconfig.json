@@ -26,8 +26,8 @@
     "skipLibCheck": true,
     "noEmit": true,
     "paths": {
-      "@maxjustus/chttp/native": ["./native/index.ts"],
-      "@maxjustus/chttp/tcp": ["./tcp_client/index.ts"]
+      "@maxjustus/chwire/native": ["./native/index.ts"],
+      "@maxjustus/chwire/tcp": ["./tcp_client/index.ts"]
     }
   },
   "include": ["*.ts", "native/**/*.ts", "test/**/*.ts", "tcp_client/**/*.ts", "types.d.ts", "scripts/**/*.ts"],

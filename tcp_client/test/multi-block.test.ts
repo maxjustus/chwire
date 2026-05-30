@@ -1,7 +1,7 @@
 import assert from "node:assert";
 import { after, before, describe, test } from "node:test";
-import { batchFromRows } from "@maxjustus/chttp/native";
-import type { TcpClient } from "@maxjustus/chttp/tcp";
+import { batchFromRows } from "@maxjustus/chwire/native";
+import type { TcpClient } from "@maxjustus/chwire/tcp";
 import { startClickHouse, stopClickHouse } from "../../test/setup.ts";
 import { type TcpConfig, withClient as withClientBase } from "../../test/test_utils.ts";
 

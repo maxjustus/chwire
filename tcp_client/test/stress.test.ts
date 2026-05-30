@@ -1,13 +1,13 @@
 import assert from "node:assert";
 import { after, before, describe, test } from "node:test";
-import { batchFromCols, batchFromRows, getCodec } from "@maxjustus/chttp/native";
+import { batchFromCols, batchFromRows, getCodec } from "@maxjustus/chwire/native";
 import { startClickHouse, stopClickHouse } from "../../test/setup.ts";
 import {
   toClientOptions,
   type TcpConfig,
   withClient as withClientBase,
 } from "../../test/test_utils.ts";
-import { ClickHouseException, TcpClient } from "@maxjustus/chttp/tcp";
+import { ClickHouseException, TcpClient } from "@maxjustus/chwire/tcp";
 
 describe("TCP Client Stress Tests", () => {
   let options: TcpConfig;

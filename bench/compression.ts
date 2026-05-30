@@ -173,7 +173,7 @@ function getMethods(): CompressionMethod[] {
       decompress: async (d) => new Uint8Array(await decompressFrame(Buffer.from(d))),
     },
     {
-      name: "ZSTD chttp",
+      name: "ZSTD chwire",
       compress: async (d) => encodeBlock(d, Method.ZSTD),
       decompress: async (d) => decodeBlock(d),
     },

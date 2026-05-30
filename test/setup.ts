@@ -30,7 +30,7 @@ function removeTlsFixtureDir() {
 }
 
 function createTlsFixtureDir(): string {
-  const dir = mkdtempSync(join(tmpdir(), "chttp-clickhouse-tls-"));
+  const dir = mkdtempSync(join(tmpdir(), "chwire-clickhouse-tls-"));
   try {
     execFileSync(
       "openssl",

@@ -18,7 +18,7 @@ export {
   type ServerHello,
 } from "./types.ts";
 
-import type { RecordBatch } from "@maxjustus/chttp/native";
+import type { RecordBatch } from "@maxjustus/chwire/native";
 import type { Packet } from "./types.ts";
 
 /**

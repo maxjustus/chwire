@@ -11,7 +11,7 @@ export {
   rows,
   streamDecodeNative,
   streamEncodeNative,
-} from "@maxjustus/chttp/native";
+} from "@maxjustus/chwire/native";
 export {
   buildReqUrl,
   ClickHouseException,

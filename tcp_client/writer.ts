@@ -1,4 +1,4 @@
-import { BlockInfoField, BufferWriter } from "@maxjustus/chttp/native";
+import { BlockInfoField, BufferWriter } from "@maxjustus/chwire/native";
 import { encodeBlock, Method, type MethodCode } from "../compression.ts";
 import { serializeParams, SQL_NULL } from "../params.ts";
 import {
@@ -54,7 +54,7 @@ export class StreamingWriter {
 
   encodeHello(database: string, user: string, pass: string): Uint8Array {
     this.writeVarInt(ClientPacketId.Hello);
-    this.writeString("chttp-client 0.1.0");
+    this.writeString("chwire-client 0.1.0");
     this.writeVarInt(CLIENT_VERSION.MAJOR);
     this.writeVarInt(CLIENT_VERSION.MINOR);
     this.writeVarInt(DBMS_TCP_PROTOCOL_VERSION);
@@ -105,7 +105,7 @@ export class StreamingWriter {
     }
 
     this.writeU8(1); // Interface::TCP
-    this.writeString("chttp-client"); // os_user
+    this.writeString("chwire-client"); // os_user
     this.writeString("localhost"); // client_hostname
     this.writeString("ClickHouse"); // client_name
     this.writeVarInt(CLIENT_VERSION.MAJOR);

@@ -1,6 +1,6 @@
 import assert from "node:assert";
 import { after, before, describe, test } from "node:test";
-import { TcpClient } from "@maxjustus/chttp/tcp";
+import { TcpClient } from "@maxjustus/chwire/tcp";
 import type { ClickHouseSettings } from "../../settings.ts";
 import { startClickHouse, stopClickHouse } from "../../test/setup.ts";
 import { type TcpConfig, toClientOptions } from "../../test/test_utils.ts";

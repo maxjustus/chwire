@@ -9,8 +9,8 @@
     "skipLibCheck": true,
     "baseUrl": ".",
     "paths": {
-      "@maxjustus/chttp/native": ["./native/index.ts"],
-      "@maxjustus/chttp/tcp": ["./tcp_client/index.ts"]
+      "@maxjustus/chwire/native": ["./native/index.ts"],
+      "@maxjustus/chwire/tcp": ["./tcp_client/index.ts"]
     },
     "declaration": true,
     "declarationMap": true,

@@ -1,11 +1,13 @@
-# chttp
+# chwire
 
-ClickHouse HTTP/TCP client with native compression (LZ4/ZSTD) and Native format support.
+ClickHouse HTTP/TCP client and Native/RowBinary wire format toolkit for TypeScript.
+
+`@maxjustus/chwire` is the renamed successor to `@maxjustus/chttp`.
 
 ## Install
 
 ```bash
-npm install @maxjustus/chttp
+npm install @maxjustus/chwire
 ```
 
 ## HTTP vs TCP
@@ -25,7 +27,7 @@ Use **HTTP** for browser apps or simple queries. Use **TCP** for observability, 
 ### HTTP Client
 
 ```ts
-import { insert, query, streamEncodeJsonEachRow, collectText } from "@maxjustus/chttp";
+import { insert, query, streamEncodeJsonEachRow, collectText } from "@maxjustus/chwire";
 
 const config = {
   baseUrl: "http://localhost:8123/",
@@ -51,7 +53,7 @@ for await (const _ of query("CREATE TABLE ...", "session123", config)) {}
 ### TCP Client
 
 ```ts
-import { TcpClient } from "@maxjustus/chttp/tcp";
+import { TcpClient } from "@maxjustus/chwire/tcp";
 
 const client = new TcpClient({ host: "localhost", port: 9000 });
 await client.connect();
@@ -163,7 +165,7 @@ import {
   collectJsonEachRow,
   collectText,
   collectBytes,
-} from "@maxjustus/chttp";
+} from "@maxjustus/chwire";
 
 // JSONEachRow - streaming parsed objects
 for await (const row of streamDecodeJsonEachRow(
@@ -207,7 +209,7 @@ import {
   batchFromRows,
   batchFromCols,
   getCodec,
-} from "@maxjustus/chttp";
+} from "@maxjustus/chwire";
 
 const schema = [
   { name: "id", type: "UInt32" },
@@ -338,7 +340,7 @@ batchFromCols({
 ### Streaming Insert
 
 ```ts
-import { insert, streamEncodeNative, batchFromCols, getCodec } from "@maxjustus/chttp";
+import { insert, streamEncodeNative, batchFromCols, getCodec } from "@maxjustus/chwire";
 
 async function* generateBatches() {
   const batchSize = 10000;
@@ -387,7 +389,7 @@ Direct TCP protocol. Single connection per client - use separate clients for con
 ### Basic Usage
 
 ```ts
-import { TcpClient } from "@maxjustus/chttp/tcp";
+import { TcpClient } from "@maxjustus/chwire/tcp";
 
 const client = new TcpClient({
   host: "localhost",
@@ -562,7 +564,7 @@ for await (const packet of client.insert("INSERT INTO t", generateRows())) {
 Use separate connections for concurrent read/write:
 
 ```ts
-import { TcpClient, recordBatches } from "@maxjustus/chttp/tcp";
+import { TcpClient, recordBatches } from "@maxjustus/chwire/tcp";
 
 const readClient = new TcpClient(options);
 const writeClient = new TcpClient(options);
@@ -605,7 +607,7 @@ Send temporary in-memory tables with your query. Schema is auto-extracted from R
 Pass RecordBatches directly to either client:
 
 ```ts
-import { batchFromCols, getCodec, query, collectText } from "@maxjustus/chttp";
+import { batchFromCols, getCodec, query, collectText } from "@maxjustus/chwire";
 
 const users = batchFromCols({
   id: getCodec("UInt32").fromValues(new Uint32Array([1, 2, 3])),
@@ -695,7 +697,7 @@ Requires Node.js 20+, Bun, Deno, or modern browsers (Chrome 116+, Firefox 124+, 
 The HTTP client throws `ClickHouseException` for server errors:
 
 ```ts
-import { ClickHouseException } from "@maxjustus/chttp";
+import { ClickHouseException } from "@maxjustus/chwire";
 
 try {
   for await (const _ of query("SELECT * FROM nonexistent", session, config)) {}
@@ -726,7 +728,7 @@ try {
 The TCP client throws `ClickHouseException` for server errors, which includes structured details:
 
 ```ts
-import { TcpClient, ClickHouseException } from "@maxjustus/chttp/tcp";
+import { TcpClient, ClickHouseException } from "@maxjustus/chwire/tcp";
 
 try {
   for await (const _ of client.query("SELECT * FROM nonexistent")) {}
@@ -813,20 +815,20 @@ Run queries directly from the command line via the bundled TCP client:
 
 ```bash
 # Single query (outputs NDJSON packets)
-npx @maxjustus/chttp 'SELECT version()'
-bunx @maxjustus/chttp 'SELECT 1 + 1'
+npx @maxjustus/chwire 'SELECT version()'
+bunx @maxjustus/chwire 'SELECT 1 + 1'
 
 # Interactive REPL with history
-npx @maxjustus/chttp
+npx @maxjustus/chwire
 
 # Deno (with Node compatibility)
-deno run -A npm:@maxjustus/chttp 'SELECT now()'
+deno run -A npm:@maxjustus/chwire 'SELECT now()'
 ```
 
 Configure via environment variables:
 
 ```bash
-CH_HOST=clickhouse.example.com CH_PORT=9000 npx @maxjustus/chttp 'SELECT 1'
+CH_HOST=clickhouse.example.com CH_PORT=9000 npx @maxjustus/chwire 'SELECT 1'
 ```
 
 | Variable | Default | Description |

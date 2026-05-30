@@ -4,7 +4,7 @@ import {
   Compression,
   readVarInt64,
   TEXT_DECODER,
-} from "@maxjustus/chttp/native";
+} from "@maxjustus/chwire/native";
 import { decodeBlock } from "../compression.ts";
 import { ClickHouseException } from "./types.ts";
 

@@ -1,22 +1,22 @@
 {
-  "name": "@maxjustus/chttp",
-  "version": "1.15.0",
-  "description": "ClickHouse HTTP/TCP client with native compression (LZ4/ZSTD) and Native format support",
+  "name": "@maxjustus/chwire",
+  "version": "1.0.0",
+  "description": "ClickHouse HTTP/TCP client and Native/RowBinary wire format toolkit for TypeScript",
   "type": "module",
-  "main": "./dist/chttp.js",
+  "main": "./dist/chwire.js",
   "bin": {
-    "chttp": "./dist/cli.js"
+    "chwire": "./dist/cli.js"
   },
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
-      "import": "./dist/chttp.js",
-      "require": "./dist/chttp.cjs"
+      "import": "./dist/chwire.js",
+      "require": "./dist/chwire.cjs"
     },
     "./lz4": {
       "types": "./dist/index.d.ts",
-      "import": "./dist/chttp-lz4.js",
-      "require": "./dist/chttp-lz4.cjs"
+      "import": "./dist/chwire-lz4.js",
+      "require": "./dist/chwire-lz4.cjs"
     },
     "./native": {
       "types": "./dist/native/index.d.ts",
@@ -35,6 +35,7 @@
   "files": [
     "dist",
     "vendor",
+    "CHANGELOG.md",
     "index.ts",
     "client.ts",
     "compression.ts",
@@ -58,12 +59,12 @@
     "build:copy-wasm": "cp node_modules/@bokuweb/zstd-wasm/dist/common/zstd.wasm dist/",
     "build:native": "esbuild native/index.ts --bundle --format=esm --outfile=dist/native.js --platform=neutral --target=es2022 --minify --external:lz4-napi --external:zstd-napi",
     "build:native:cjs": "esbuild native/index.ts --bundle --format=cjs --outfile=dist/native.cjs --platform=node --target=es2022 --minify --external:lz4-napi --external:zstd-napi",
-    "build:full": "esbuild index.ts --bundle --format=esm --outfile=dist/chttp.js --platform=browser --target=es2022 --minify --define:BUILD_WITH_ZSTD=true --external:zstd-napi --external:lz4-napi --external:@maxjustus/chttp/native --alias:@maxjustus/chttp/native=@maxjustus/chttp/native",
-    "build:full:cjs": "esbuild index.ts --bundle --format=cjs --outfile=dist/chttp.cjs --platform=node --target=es2022 --minify --define:BUILD_WITH_ZSTD=true --external:zstd-napi --external:lz4-napi --external:@maxjustus/chttp/native --alias:@maxjustus/chttp/native=@maxjustus/chttp/native",
-    "build:lz4": "esbuild index.ts --bundle --format=esm --outfile=dist/chttp-lz4.js --platform=browser --target=es2022 --minify --define:BUILD_WITH_ZSTD=false --external:zstd-napi --external:lz4-napi --external:@maxjustus/chttp/native --alias:@maxjustus/chttp/native=@maxjustus/chttp/native",
-    "build:lz4:cjs": "esbuild index.ts --bundle --format=cjs --outfile=dist/chttp-lz4.cjs --platform=node --target=es2022 --minify --define:BUILD_WITH_ZSTD=false --external:zstd-napi --external:lz4-napi --external:@maxjustus/chttp/native --alias:@maxjustus/chttp/native=@maxjustus/chttp/native",
-    "build:tcp": "esbuild tcp_client/index.ts --bundle --format=esm --outfile=dist/tcp.js --platform=node --target=es2022 --minify --external:lz4-napi --external:zstd-napi --external:@maxjustus/chttp/native --alias:@maxjustus/chttp/native=@maxjustus/chttp/native",
-    "build:tcp:cjs": "esbuild tcp_client/index.ts --bundle --format=cjs --outfile=dist/tcp.cjs --platform=node --target=es2022 --minify --external:lz4-napi --external:zstd-napi --external:@maxjustus/chttp/native --alias:@maxjustus/chttp/native=@maxjustus/chttp/native",
+    "build:full": "esbuild index.ts --bundle --format=esm --outfile=dist/chwire.js --platform=browser --target=es2022 --minify --define:BUILD_WITH_ZSTD=true --external:zstd-napi --external:lz4-napi --external:@maxjustus/chwire/native --alias:@maxjustus/chwire/native=@maxjustus/chwire/native",
+    "build:full:cjs": "esbuild index.ts --bundle --format=cjs --outfile=dist/chwire.cjs --platform=node --target=es2022 --minify --define:BUILD_WITH_ZSTD=true --external:zstd-napi --external:lz4-napi --external:@maxjustus/chwire/native --alias:@maxjustus/chwire/native=@maxjustus/chwire/native",
+    "build:lz4": "esbuild index.ts --bundle --format=esm --outfile=dist/chwire-lz4.js --platform=browser --target=es2022 --minify --define:BUILD_WITH_ZSTD=false --external:zstd-napi --external:lz4-napi --external:@maxjustus/chwire/native --alias:@maxjustus/chwire/native=@maxjustus/chwire/native",
+    "build:lz4:cjs": "esbuild index.ts --bundle --format=cjs --outfile=dist/chwire-lz4.cjs --platform=node --target=es2022 --minify --define:BUILD_WITH_ZSTD=false --external:zstd-napi --external:lz4-napi --external:@maxjustus/chwire/native --alias:@maxjustus/chwire/native=@maxjustus/chwire/native",
+    "build:tcp": "esbuild tcp_client/index.ts --bundle --format=esm --outfile=dist/tcp.js --platform=node --target=es2022 --minify --external:lz4-napi --external:zstd-napi --external:@maxjustus/chwire/native --alias:@maxjustus/chwire/native=@maxjustus/chwire/native",
+    "build:tcp:cjs": "esbuild tcp_client/index.ts --bundle --format=cjs --outfile=dist/tcp.cjs --platform=node --target=es2022 --minify --external:lz4-napi --external:zstd-napi --external:@maxjustus/chwire/native --alias:@maxjustus/chwire/native=@maxjustus/chwire/native",
     "test": "tsc --noEmit && NODE_OPTIONS=--conditions=development tsx --test test/native/*.test.ts test/*.test.ts",
     "test:compression": "NODE_OPTIONS=--conditions=development tsx --test test/compression.test.ts",
     "test:integration": "NODE_OPTIONS=--conditions=development tsx --test test/http-integration.test.ts test/native/integration.test.ts test/native/integration_matrix.test.ts",

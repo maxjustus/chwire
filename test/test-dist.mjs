@@ -1,9 +1,9 @@
 // Test importing from the bundled dist directly
 // This simulates what happens when someone npm installs the package
 
-console.log("=== Testing full build (dist/chttp.js) ===\n");
+console.log("=== Testing full build (dist/chwire.js) ===\n");
 
-const full = await import("../dist/chttp.js");
+const full = await import("../dist/chwire.js");
 
 try {
   console.log("Calling init()...");
@@ -29,9 +29,9 @@ try {
   process.exit(1);
 }
 
-console.log("=== Testing LZ4-only build (dist/chttp-lz4.js) ===\n");
+console.log("=== Testing LZ4-only build (dist/chwire-lz4.js) ===\n");
 
-const lz4Only = await import("../dist/chttp-lz4.js");
+const lz4Only = await import("../dist/chwire-lz4.js");
 
 try {
   console.log("Calling init()...");

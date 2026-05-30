@@ -1,7 +1,7 @@
 import assert from "node:assert";
 import { after, before, describe, test } from "node:test";
-import { batchFromCols, getCodec } from "@maxjustus/chttp/native";
-import { TcpClient } from "@maxjustus/chttp/tcp";
+import { batchFromCols, getCodec } from "@maxjustus/chwire/native";
+import { TcpClient } from "@maxjustus/chwire/tcp";
 import { startClickHouse, stopClickHouse } from "../../test/setup.ts";
 import {
   type TcpConfig,

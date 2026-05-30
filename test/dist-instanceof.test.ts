@@ -9,7 +9,7 @@ import assert from "node:assert/strict";
 describe("RecordBatch instanceof across import paths", () => {
   test("dist RecordBatch works with tcp_client instanceof check", async () => {
     // Import from the package path (as users would)
-    const { batchFromCols, getCodec, RecordBatch } = await import("@maxjustus/chttp/native");
+    const { batchFromCols, getCodec, RecordBatch } = await import("@maxjustus/chwire/native");
 
     // Create a batch the way a user would
     const batch = batchFromCols({
@@ -24,7 +24,7 @@ describe("RecordBatch instanceof across import paths", () => {
 
   test("RecordBatch class identity is consistent", async () => {
     // Import RecordBatch from both the package path and source path
-    const { RecordBatch: PackageRecordBatch } = await import("@maxjustus/chttp/native");
+    const { RecordBatch: PackageRecordBatch } = await import("@maxjustus/chwire/native");
     const { RecordBatch: SourceRecordBatch } = await import("../native/index.ts");
 
     // They should be the exact same class (same identity)
@@ -39,8 +39,8 @@ describe("RecordBatch instanceof across import paths", () => {
   test("batchFromCols result passes instanceof from different import", async () => {
     // Simulate what happens when user creates batch with package import
     // but it's checked by tcp_client which also imports from package
-    const { batchFromCols, getCodec } = await import("@maxjustus/chttp/native");
-    const { RecordBatch } = await import("@maxjustus/chttp/native");
+    const { batchFromCols, getCodec } = await import("@maxjustus/chwire/native");
+    const { RecordBatch } = await import("@maxjustus/chwire/native");
 
     const batch = batchFromCols({
       x: getCodec("UInt32").fromValues([1, 2, 3]),
