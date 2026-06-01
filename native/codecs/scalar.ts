@@ -209,6 +209,129 @@ function randomBigIntInRange(rng: Rng, min: bigint, max: bigint): bigint {
   return min + (value % (span + 1n));
 }
 
+/**
+ * Adversarial integer in [min, max]: oversamples the width boundaries
+ * (min, max, 0, 1, -1, min+1, max-1) so over/underflow and sign-edge bugs
+ * surface, falling back to uniform-random the rest of the time.
+ */
+function adversarialInt(rng: Rng, min: number, max: number): number {
+  if (rng.int(0, 1) === 0) {
+    const boundaries = [min, max, 0, 1, -1, min + 1, max - 1];
+    const v = boundaries[rng.int(0, boundaries.length - 1)];
+    // Clamp the symbolic boundaries into the actual width (e.g. -1 is out of
+    // range for unsigned types, min+1 may exceed max for 1-value domains).
+    return v < min ? min : v > max ? max : v;
+  }
+  return rng.int(min, max);
+}
+
+/**
+ * Adversarial bigint in [min, max]: same boundary oversampling as
+ * `adversarialInt` but for the 64/128/256-bit widths.
+ */
+function adversarialBigInt(rng: Rng, min: bigint, max: bigint): bigint {
+  if (rng.int(0, 1) === 0) {
+    const boundaries = [min, max, 0n, 1n, -1n, min + 1n, max - 1n];
+    const v = boundaries[rng.int(0, boundaries.length - 1)];
+    return v < min ? min : v > max ? max : v;
+  }
+  return randomBigIntInRange(rng, min, max);
+}
+
+/**
+ * Float64 special values that must round-trip bit-exact through CH: NaN, both
+ * infinities, both zeros, the smallest subnormal, and the magnitude extremes.
+ */
+const FLOAT64_SPECIALS: number[] = [
+  NaN,
+  Infinity,
+  -Infinity,
+  0,
+  -0,
+  Number.MIN_VALUE, // smallest positive subnormal (~5e-324)
+  -Number.MIN_VALUE,
+  Number.MAX_VALUE,
+  -Number.MAX_VALUE,
+  Number.EPSILON,
+];
+
+/**
+ * Float32 special values, each `Math.fround`-exact so the 32-bit round-trip is
+ * lossless. Smallest subnormal / max for the 32-bit format.
+ */
+const FLOAT32_SMALLEST_SUBNORMAL = 2 ** -149; // ~1.4e-45, exact in Float32
+const FLOAT32_MAX = 3.4028234663852886e38; // (2 - 2^-23) * 2^127
+const FLOAT32_SPECIALS: number[] = [
+  NaN,
+  Infinity,
+  -Infinity,
+  0,
+  -0,
+  FLOAT32_SMALLEST_SUBNORMAL,
+  -FLOAT32_SMALLEST_SUBNORMAL,
+  FLOAT32_MAX,
+  -FLOAT32_MAX,
+  Math.fround(Number.EPSILON),
+];
+
+/**
+ * Characters drawn from multiple Unicode planes plus ASCII control codes, used
+ * to build adversarial strings. Lone surrogates are intentionally absent: JS
+ * UTF-8-encodes them lossily to U+FFFD so they cannot round-trip as-is.
+ */
+const UNICODE_SAMPLES: string[] = [
+  "\u0000", // embedded NUL
+  "\u0007", // bell
+  "\u0008", // backspace
+  "\u001f", // unit separator
+  "\u007f", // DEL
+  "\t",
+  "\n",
+  "\r",
+  "\\",
+  "'",
+  "\u00e9", // e-acute, Latin-1 supplement
+  "\u0416", // Cyrillic Zhe
+  "\u4e2d", // CJK, BMP
+  "\u{1f600}", // emoji (astral plane)
+  "\u{10ffff}", // highest valid code point
+  "\u200b", // zero-width space
+];
+// NOTE: U+FEFF (BOM) is intentionally excluded. CH's `FORMAT Native` String
+// input parser strips one leading BOM from each value (verified: a leading BOM
+// is dropped, a second/mid/trailing BOM is preserved; a pure-SQL String CAST
+// keeps it, so the strip is format-input-specific). A generated leading BOM
+// therefore cannot round-trip, which would violate the generate()/decode()
+// representation contract, so it is omitted rather than worked around in
+// compare().
+
+/**
+ * Adversarial string: oversamples empty, multi-KB, ASCII control runs, and
+ * multi-plane Unicode (including embedded NUL), falling back to short random
+ * ASCII the rest of the time. All values are bare JS strings, the same
+ * representation `StringCodec.decode` returns.
+ */
+function adversarialString(rng: Rng): string {
+  switch (rng.int(0, 4)) {
+    case 0:
+      return "";
+    case 1: {
+      // Multi-KB string of a repeated unit (exercises large length varints).
+      const unit = UNICODE_SAMPLES[rng.int(0, UNICODE_SAMPLES.length - 1)];
+      return unit.repeat(rng.int(1024, 4096));
+    }
+    case 2: {
+      // Mixed pile of control + multi-plane characters.
+      const len = rng.int(1, 64);
+      let s = "";
+      for (let i = 0; i < len; i++) s += UNICODE_SAMPLES[rng.int(0, UNICODE_SAMPLES.length - 1)];
+      return s;
+    }
+    default:
+      return randomString(rng);
+  }
+}
+
 /** Short random ASCII-ish string. Length biased small to exercise repeats. */
 function randomString(rng: Rng): string {
   const len = rng.int(0, 12);
@@ -290,21 +413,25 @@ export class NumericCodec<T extends TypedArray> extends BaseCodec {
       case "Bool":
         return rng.int(0, 1);
       case "Float32":
-        // 32-bit rounded so the round-trip is exact. NaN/Inf/-0 excluded for now.
+        // Oversample the IEEE-754 specials (NaN/Inf/-0/subnormal/max), each
+        // fround-exact, then fall back to fround-rounded random so the 32-bit
+        // round-trip stays lossless.
+        if (rng.int(0, 1) === 0) return FLOAT32_SPECIALS[rng.int(0, FLOAT32_SPECIALS.length - 1)];
         return Math.fround((rng.next() - 0.5) * 2 ** rng.int(0, 60));
       case "Float64":
+        if (rng.int(0, 1) === 0) return FLOAT64_SPECIALS[rng.int(0, FLOAT64_SPECIALS.length - 1)];
         return (rng.next() - 0.5) * 2 ** rng.int(0, 200);
       case "Int64":
-        return randomBigIntInRange(rng, INT64_MIN, INT64_MAX);
+        return adversarialBigInt(rng, INT64_MIN, INT64_MAX);
       case "UInt64":
-        return randomBigIntInRange(rng, 0n, (1n << 64n) - 1n);
+        return adversarialBigInt(rng, 0n, (1n << 64n) - 1n);
     }
     // Remaining integer typed arrays: derive [min, max] from the constructor.
     const bits = this.Ctor.BYTES_PER_ELEMENT * 8;
     const signed = this.type.startsWith("Int");
     const max = signed ? 2 ** (bits - 1) - 1 : 2 ** bits - 1;
     const min = signed ? -(2 ** (bits - 1)) : 0;
-    return rng.int(min, max);
+    return adversarialInt(rng, min, max);
   }
 }
 
@@ -456,7 +583,7 @@ export class StringCodec extends BaseCodec {
   }
 
   generate(ctx: GenContext): string {
-    return randomString(ctx.rng);
+    return adversarialString(ctx.rng);
   }
 }
 
@@ -533,8 +660,14 @@ export class UUIDCodec extends BaseCodec {
   }
 
   generate(ctx: GenContext): string {
+    const rng = ctx.rng;
     let hex = "";
-    for (let i = 0; i < 16; i++) hex += BYTE_TO_HEX[ctx.rng.int(0, 0xff)];
+    // Oversample the all-zero and all-0xFF byte patterns; otherwise random.
+    const fill = rng.int(0, 3);
+    for (let i = 0; i < 16; i++) {
+      const byte = fill === 0 ? 0x00 : fill === 1 ? 0xff : rng.int(0, 0xff);
+      hex += BYTE_TO_HEX[byte];
+    }
     return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
   }
 }
@@ -635,8 +768,12 @@ export class FixedStringCodec extends BaseCodec {
   }
 
   generate(ctx: GenContext): Uint8Array {
+    const rng = ctx.rng;
     const bytes = new Uint8Array(this.len);
-    for (let i = 0; i < this.len; i++) bytes[i] = ctx.rng.int(0, 0xff);
+    // Oversample all-zero and all-0xFF fills; otherwise random per-byte.
+    const fill = rng.int(0, 3);
+    if (fill === 1) bytes.fill(0xff);
+    else if (fill >= 2) for (let i = 0; i < this.len; i++) bytes[i] = rng.int(0, 0xff);
     return bytes;
   }
 }
@@ -708,7 +845,7 @@ export class BigIntCodec extends BaseCodec {
   }
 
   generate(ctx: GenContext): bigint {
-    return randomBigIntInRange(ctx.rng, this.min, this.max);
+    return adversarialBigInt(ctx.rng, this.min, this.max);
   }
 }
 
@@ -942,14 +1079,25 @@ export class DateTime64Codec extends BaseCodec {
   }
 
   generate(ctx: GenContext): ClickHouseDateTime64 {
+    const rng = ctx.rng;
     // CH DateTime64 spans years 1900..2299, but high precision narrows that:
-    // ticks = seconds * 10^precision must fit in Int64. Clamp the second window
-    // so the scaled ticks stay representable.
+    // ticks = seconds * 10^precision must fit in Int64. Derive the tick window
+    // from the second window, then clamp to Int64: maxSec is
+    // floor(INT64_MAX/fullScale), so adding the full fractional part can spill
+    // past INT64_MAX.
     const minSec = bigIntMax(-2208988800n, INT64_MIN / this.fullScale);
     const maxSec = bigIntMin(10413792000n, INT64_MAX / this.fullScale);
-    const seconds = randomBigIntInRange(ctx.rng, minSec, maxSec);
-    const frac = randomBigIntInRange(ctx.rng, 0n, this.fullScale - 1n);
-    return new ClickHouseDateTime64(seconds * this.fullScale + frac, this.precision);
+    const minTicks = bigIntMax(minSec * this.fullScale, INT64_MIN);
+    const maxTicks = bigIntMin(maxSec * this.fullScale + (this.fullScale - 1n), INT64_MAX);
+    // Oversample epoch and the two range boundaries; otherwise a uniform tick.
+    if (rng.int(0, 2) === 0) {
+      const boundaries = [0n, minTicks, maxTicks];
+      return new ClickHouseDateTime64(
+        boundaries[rng.int(0, boundaries.length - 1)],
+        this.precision,
+      );
+    }
+    return new ClickHouseDateTime64(randomBigIntInRange(rng, minTicks, maxTicks), this.precision);
   }
 
   compare(a: unknown, b: unknown): boolean {
@@ -1075,7 +1223,8 @@ export class EpochCodec<T extends Uint16Array | Int32Array | Uint32Array> extend
         : this.type === "Date32"
           ? [-25567, 120529] // 1900-01-01 .. 2299-12-31
           : [0, UINT32_MAX]; // DateTime: 1970-01-01 .. 2106-02-07
-    const units = ctx.rng.int(minUnits, maxUnits);
+    // Oversample epoch and the two range boundaries; otherwise random units.
+    const units = adversarialInt(ctx.rng, minUnits, maxUnits);
     return new Date(units * this.multiplier);
   }
 }
@@ -1128,7 +1277,10 @@ export class IPv4Codec extends BaseCodec {
   }
 
   generate(ctx: GenContext): string {
-    const o = () => ctx.rng.int(0, 255);
+    const rng = ctx.rng;
+    // Oversample all-zero (0.0.0.0) and all-0xFF (255.255.255.255); else random.
+    const fill = rng.int(0, 3);
+    const o = () => (fill === 0 ? 0 : fill === 1 ? 255 : rng.int(0, 255));
     return `${o()}.${o()}.${o()}.${o()}`;
   }
 }
@@ -1173,10 +1325,14 @@ export class IPv6Codec extends BaseCodec {
   }
 
   generate(ctx: GenContext): string {
+    const rng = ctx.rng;
     // Format the random bytes through the decode path so the generated string
     // matches decode's representation (minimal hex per group, no :: compression).
+    // Oversample all-zero and all-0xFF byte fills; otherwise random per-byte.
     const bytes = new Uint8Array(16);
-    for (let i = 0; i < 16; i++) bytes[i] = ctx.rng.int(0, 0xff);
+    const fill = rng.int(0, 3);
+    if (fill === 1) bytes.fill(0xff);
+    else if (fill >= 2) for (let i = 0; i < 16; i++) bytes[i] = rng.int(0, 0xff);
     return bytesToIpv6(bytes);
   }
 }

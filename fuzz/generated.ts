@@ -121,7 +121,15 @@ function makeRng(seed: number): Rng {
   };
 }
 
-const MAX_DEPTH = 4;
+/**
+ * Generation depth budget for client-invented Dynamic/JSON nesting. Raised from
+ * a polite 4 so deeply nested values are produced. `MAX_STRUCTURE_DEPTH` is the
+ * separate, higher bound on CH-supplied generateRandomStructure types (deep
+ * Tuples) so they are not rejected for nesting; it stays under a level that
+ * would OOM.
+ */
+const MAX_DEPTH = 14;
+const MAX_STRUCTURE_DEPTH = 20;
 
 function makeContext(rng: Rng, depth: number, dynamicTypePool: string[]): GenContext {
   const ctx: GenContext = {
@@ -190,7 +198,9 @@ function isGeneratable(type: string, rng: Rng): boolean {
   for (const sub of UNSUPPORTED_SUBSTRINGS) {
     if (type.includes(sub)) return false;
   }
-  if (nestingDepth(type) > MAX_DEPTH) return false;
+  // Accept deep CH-supplied structures (e.g. ~15-level Tuples) up to a bound
+  // that avoids OOM; only the generation depth (MAX_DEPTH) is the polite one.
+  if (nestingDepth(type) > MAX_STRUCTURE_DEPTH) return false;
   try {
     const codec = getCodec(type);
     // Probe a few draws: a single draw may take an empty-container branch and

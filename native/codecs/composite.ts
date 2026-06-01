@@ -23,8 +23,29 @@ import {
   readKinds1,
   readKinds2,
   readKindsMany,
+  type Rng,
   SQL_NULL,
 } from "./base.ts";
+
+/**
+ * Adversarial container length: oversamples 0, 1, and a large count (up to 64)
+ * so empty/singleton/long-offset paths are all exercised, otherwise a small
+ * uniform length. The large branch only fires near the leaves (`depth <= 2`) so
+ * a large container of large containers cannot blow up combinatorially under
+ * deep nesting. Used by Array and Map generators.
+ */
+function adversarialLength(rng: Rng, depth: number): number {
+  switch (rng.int(0, 4)) {
+    case 0:
+      return 0;
+    case 1:
+      return 1;
+    case 2:
+      return depth <= 2 ? rng.int(16, 64) : rng.int(0, 5);
+    default:
+      return rng.int(0, 5);
+  }
+}
 
 // When used as a column in Map/Tuple, inner codec's prefix needs to be handled
 export class ArrayCodec extends BaseCodec {
@@ -148,7 +169,7 @@ export class ArrayCodec extends BaseCodec {
 
   generate(ctx: GenContext): unknown[] {
     if (ctx.depth <= 0) return [];
-    const len = ctx.rng.int(0, 5);
+    const len = adversarialLength(ctx.rng, ctx.depth);
     const result = new Array(len);
     for (let i = 0; i < len; i++) result[i] = this.inner.generate(ctx.descend());
     return result;
@@ -542,7 +563,7 @@ export class MapCodec extends BaseCodec {
 
   generate(ctx: GenContext): [unknown, unknown][] {
     if (ctx.depth <= 0) return [];
-    const len = ctx.rng.int(0, 5);
+    const len = adversarialLength(ctx.rng, ctx.depth);
     const entries: [unknown, unknown][] = [];
     const seen = new Set<string>();
     for (let i = 0; i < len; i++) {
