@@ -23,28 +23,36 @@ import {
   readKinds1,
   readKinds2,
   readKindsMany,
-  type Rng,
   SQL_NULL,
 } from "./base.ts";
 
 /**
- * Adversarial container length: oversamples 0, 1, and a large count (up to 64)
- * so empty/singleton/long-offset paths are all exercised, otherwise a small
- * uniform length. The large branch only fires near the leaves (`depth <= 2`) so
- * a large container of large containers cannot blow up combinatorially under
- * deep nesting. Used by Array and Map generators.
+ * Adversarial container length: oversamples 0, 1, and a large count (16-64) so
+ * empty/singleton/long-offset paths are all exercised, otherwise a small uniform
+ * length. Every length is clamped to (and decrements) the shared per-cell element
+ * budget, so large containers fire at any depth while total elements stay bounded
+ * — a large-of-large or all-small-deep tree cannot blow up. Used by Array and Map.
  */
-function adversarialLength(rng: Rng, depth: number): number {
-  switch (rng.int(0, 4)) {
+function adversarialLength(ctx: GenContext): number {
+  const cap = Math.max(0, ctx.budget.remaining);
+  let len: number;
+  switch (ctx.rng.int(0, 4)) {
     case 0:
-      return 0;
+      len = 0;
+      break;
     case 1:
-      return 1;
+      len = 1;
+      break;
     case 2:
-      return depth <= 2 ? rng.int(16, 64) : rng.int(0, 5);
+      len = ctx.rng.int(16, 64);
+      break;
     default:
-      return rng.int(0, 5);
+      len = ctx.rng.int(0, 5);
+      break;
   }
+  len = Math.min(len, cap);
+  ctx.budget.remaining -= len;
+  return len;
 }
 
 // When used as a column in Map/Tuple, inner codec's prefix needs to be handled
@@ -169,7 +177,7 @@ export class ArrayCodec extends BaseCodec {
 
   generate(ctx: GenContext): unknown[] {
     if (ctx.depth <= 0) return [];
-    const len = adversarialLength(ctx.rng, ctx.depth);
+    const len = adversarialLength(ctx);
     const result = new Array(len);
     for (let i = 0; i < len; i++) result[i] = this.inner.generate(ctx.descend());
     return result;
@@ -563,7 +571,7 @@ export class MapCodec extends BaseCodec {
 
   generate(ctx: GenContext): [unknown, unknown][] {
     if (ctx.depth <= 0) return [];
-    const len = adversarialLength(ctx.rng, ctx.depth);
+    const len = adversarialLength(ctx);
     const entries: [unknown, unknown][] = [];
     const seen = new Set<string>();
     for (let i = 0; i < len; i++) {

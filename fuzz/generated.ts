@@ -136,12 +136,21 @@ function makeRng(seed: number): Rng {
 const MAX_DEPTH = 14;
 const MAX_STRUCTURE_DEPTH = 20;
 
-function makeContext(rng: Rng, depth: number, dynamicTypePool: string[]): GenContext {
+/** Total Array/Map elements one generated cell may contain (bounds large + deep containers). */
+const ELEMENT_BUDGET = 256;
+
+function makeContext(
+  rng: Rng,
+  depth: number,
+  dynamicTypePool: string[],
+  budget: { remaining: number } = { remaining: ELEMENT_BUDGET },
+): GenContext {
   const ctx: GenContext = {
     rng,
     depth,
+    budget,
     descend(): GenContext {
-      return makeContext(rng, Math.max(0, depth - 1), dynamicTypePool);
+      return makeContext(rng, Math.max(0, depth - 1), dynamicTypePool, budget);
     },
     pickDynamicType(): string {
       return dynamicTypePool[rng.int(0, dynamicTypePool.length - 1)];

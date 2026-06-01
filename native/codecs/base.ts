@@ -88,6 +88,11 @@ export interface GenContext {
   readonly rng: Rng;
   /** Remaining nesting budget; at 0 containers emit empty/leaf values. */
   readonly depth: number;
+  /**
+   * Shared per-cell element budget bounding total Array/Map elements, so large or
+   * deeply nested containers cannot blow up. Decremented as lengths are chosen.
+   */
+  readonly budget: { remaining: number };
   /** Child context with `depth - 1` (clamped at 0). */
   descend(): GenContext;
   /** Sample a ClickHouse type string for a Dynamic/JSON value. */
