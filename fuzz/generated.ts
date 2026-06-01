@@ -18,7 +18,13 @@
  */
 
 import { describe, it } from "node:test";
-import { type ColumnDef, encodeNative, getCodec, streamDecodeNative } from "../native/index.ts";
+import {
+  type ColumnDef,
+  DynamicValue,
+  encodeNative,
+  getCodec,
+  streamDecodeNative,
+} from "../native/index.ts";
 import {
   extractTypeArgs,
   type GenContext,
@@ -58,22 +64,42 @@ function enabledKinds(): Set<Kind> {
 }
 
 /**
- * Dynamic/JSON type pool: types whose generated representation is a `guessType`
- * fixed point. `DynamicColumn.fromValues` re-derives each cell's discriminator
- * from its runtime value via `guessType`, discarding the sampled type, so a pool
- * entry only round-trips if `guessType(codec.generate())` resolves back to a
- * codec with the same decode representation:
- *   - String  -> always "String"
- *   - Int64   -> always "Int64" (bigint)
- *   - Array(String) -> "Array(String)" (empty included)
- *   - Array(Int64)  -> "Array(Int64)" when non-empty; an empty array degrades to
- *     "Array(String)" but its value ([]) compares equal regardless.
- * Float64/Bool/Date/Decimal/etc. are excluded: their generated values misclassify
- * (e.g. an integer-valued Float64 -> Int64 -> bigint, a Date -> DateTime64(3)).
- * max_dynamic_types defaults to 32, so the >256-distinct U16/U32 discriminator
- * widths are unreachable through Dynamic and are not targeted here.
+ * Pool for NESTED Dynamic (Array(Dynamic), JSON dynamic paths): values flow
+ * through DynamicColumn.fromValues -> guessType, which re-derives the type from
+ * the runtime value, so a type only round-trips if it is a guessType fixed point
+ * (String, Int64 as bigint, Array(String)/Array(Int64)). Float64/Bool/Date/etc.
+ * misclassify (integer Float64 -> Int64, Date -> DateTime64(3)).
  */
 const DEFAULT_DYNAMIC_TYPE_POOL = ["String", "Int64", "Array(String)", "Array(Int64)"];
+
+/**
+ * Pool for a standalone Dynamic column: cells are wrapped in DynamicValue, which
+ * carries an explicit type and bypasses guessType, so the full type space is
+ * reachable. Kept under max_dynamic_types (default 32) so each type gets its own
+ * discriminator rather than spilling into the shared-data path.
+ */
+const FULL_DYNAMIC_TYPE_POOL = [
+  "Int8",
+  "Int32",
+  "Int64",
+  "Int128",
+  "UInt8",
+  "UInt64",
+  "Float32",
+  "Float64",
+  "Bool",
+  "String",
+  "FixedString(16)",
+  "UUID",
+  "Date",
+  "DateTime",
+  "DateTime64(9)",
+  "Decimal(18, 4)",
+  "IPv4",
+  "IPv6",
+  "Array(Int64)",
+  "Array(String)",
+];
 
 /**
  * mulberry32 PRNG: deterministic, seedable, fast. The seed comes from the
@@ -389,11 +415,14 @@ function generateCells(kind: Kind, canonicalType: string, rng: Rng, rowCount: nu
   if (kind === "dynamic") {
     // Each pool type is a distinct discriminator; the shape controls how they
     // are distributed across rows (runs, alternation, all-null, uniform mix).
-    const poolCodecs = DEFAULT_DYNAMIC_TYPE_POOL.map((t) => getCodec(t));
+    // DynamicValue carries the explicit type so guessType is bypassed and the
+    // full type space round-trips, not just guessType fixed points.
+    const pool = FULL_DYNAMIC_TYPE_POOL;
+    const poolCodecs = pool.map((t) => getCodec(t));
     const selectors = selectorsForShape(shape, rowCount, poolCodecs.length, rng);
     for (let r = 0; r < rowCount; r++) {
       const sel = selectors[r];
-      cells[r] = sel === null ? null : poolCodecs[sel].generate(ctx());
+      cells[r] = sel === null ? null : new DynamicValue(pool[sel], poolCodecs[sel].generate(ctx()));
     }
     return cells;
   }

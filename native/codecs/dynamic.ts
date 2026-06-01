@@ -7,6 +7,7 @@ import {
   VariantColumn,
 } from "../columns.ts";
 import { Dynamic, JSONFormat, Variant } from "../constants.ts";
+import { DynamicValue } from "../types.ts";
 import { type BufferReader, BufferWriter } from "../io.ts";
 import type { DeserializerState } from "../serialization.ts";
 import {
@@ -284,7 +285,9 @@ export class DynamicCodec implements Codec {
     for (let i = 0; i < values.length; i++) {
       const v = values[i];
       if (v == null) continue;
-      const vType = this.guessType(v);
+      const typed = v instanceof DynamicValue;
+      const vType = typed ? v.type : this.guessType(v);
+      const actual = typed ? v.value : v;
       let idx = typeIndex.get(vType);
       if (idx === undefined) {
         idx = typeOrder.length;
@@ -293,7 +296,7 @@ export class DynamicCodec implements Codec {
         typeMap.set(vType, []);
       }
       discriminators[i] = idx;
-      typeMap.get(vType)!.push(v);
+      typeMap.get(vType)!.push(actual);
     }
 
     const nullDisc = typeOrder.length;
@@ -360,12 +363,17 @@ export class DynamicCodec implements Codec {
   }
 
   /**
-   * The declared type is unknown at compare time, so dispatch structurally on
-   * the runtime representation. Both values are canonical (`generate` emits the
-   * representation `DynamicColumn.get` returns), so structural deep-equal holds.
+   * `a` is the generated value (possibly a DynamicValue carrying an explicit
+   * type); `b` is the decoded bare value. Unwrap and compare via the declared
+   * type's codec when known, else structurally — the inner values are in the
+   * canonical representation `DynamicColumn.get` returns.
    */
   compare(a: unknown, b: unknown): boolean {
-    return deepCompare(a, b);
+    const av = a instanceof DynamicValue ? a.value : a;
+    const bv = b instanceof DynamicValue ? b.value : b;
+    if (av == null || bv == null) return av === bv;
+    const type = a instanceof DynamicValue ? a.type : b instanceof DynamicValue ? b.type : null;
+    return type ? this.resolveCodec(type).compare(av, bv) : deepCompare(av, bv);
   }
 }
 

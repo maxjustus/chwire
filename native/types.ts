@@ -290,3 +290,18 @@ export class ClickHouseDateTime64 {
     return this.toClosestDate().toString();
   }
 }
+
+/**
+ * Explicit-typed value for a Dynamic column, e.g. `new DynamicValue("Float64", 3)`.
+ * Bypasses guessType so a value is stored as a specific ClickHouse type (Int8 vs
+ * Int64, Float64 vs Int64) instead of one inferred from its JS runtime form.
+ */
+export class DynamicValue {
+  readonly type: string;
+  readonly value: unknown;
+
+  constructor(type: string, value: unknown) {
+    this.type = type;
+    this.value = value;
+  }
+}
