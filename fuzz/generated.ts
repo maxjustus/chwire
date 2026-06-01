@@ -519,23 +519,11 @@ async function runColumn(opts: {
     }),
   );
 
-  // ClickHouse canonicalizes some types (e.g. it sorts Variant arms:
-  // Variant(String, Int64) -> Variant(Int64, String)). Generate, encode, and
-  // compare against the stored type so discriminators line up with CH's.
-  const canonicalType = (
-    await collectText(
-      query(
-        `SELECT type FROM system.columns WHERE table = '${opts.table}' AND name = 'v' FORMAT TabSeparated`,
-        opts.sessionId,
-        { baseUrl, auth, compression: false },
-      ),
-    )
-  )
-    .trim()
-    // TSV escapes backslash-quote inside Enum names; unescape before codec build.
-    .replace(/\\'/g, "'");
-
-  const codec = getCodec(canonicalType);
+  // VariantCodec reorders arms into ClickHouse's canonical (sorted) order, so
+  // codec.type is the type CH actually stores. Build, encode, and compare
+  // against it so discriminators line up with the server.
+  const codec = getCodec(columnType);
+  const canonicalType = codec.type;
   const schema: ColumnDef[] = [{ name: "v", type: canonicalType }];
 
   const rng = makeRng(seed);

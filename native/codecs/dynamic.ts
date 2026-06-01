@@ -53,10 +53,19 @@ export class VariantCodec implements Codec {
   private typeStrings: string[];
   private codecs: Codec[];
 
-  constructor(type: string, typeStrings: string[], codecs: Codec[]) {
-    this.type = type;
-    this.typeStrings = typeStrings;
-    this.codecs = codecs;
+  constructor(typeStrings: string[], codecs: Codec[]) {
+    // ClickHouse canonicalizes a Variant by sorting its arms by type name and
+    // assigns discriminators in that sorted order. Match it: a declared order
+    // that differs from the sorted order writes discriminators the server reads
+    // against its own sorted arms, corrupting the round-trip.
+    const order = typeStrings
+      .map((_, i) => i)
+      .sort((a, b) =>
+        typeStrings[a] < typeStrings[b] ? -1 : typeStrings[a] > typeStrings[b] ? 1 : 0,
+      );
+    this.typeStrings = order.map((i) => typeStrings[i]);
+    this.codecs = order.map((i) => codecs[i]);
+    this.type = `Variant(${this.typeStrings.join(", ")})`;
   }
 
   writePrefix(writer: BufferWriter) {

@@ -86,7 +86,7 @@ export function createCodec(type: string): Codec {
   }
   if (type.startsWith("Variant")) {
     const innerTypes = parseTypeList(extractTypeArgs(type));
-    return new VariantCodec(type, innerTypes, innerTypes.map(getCodec));
+    return new VariantCodec(innerTypes, innerTypes.map(getCodec));
   }
   if (type === "Dynamic") return new DynamicCodec(getCodec);
   if (type === "JSON" || type.startsWith("JSON")) {

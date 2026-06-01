@@ -469,11 +469,11 @@ describe("Complex types via fromCols", () => {
     const table = batchFromCols({
       val: getCodec("Variant(String, Int64, Bool)").fromValues(["hello", 42n, true, null]),
     });
-    // Type inference: string->0, bigint->1, bool->2
-    assert.deepStrictEqual(table.getColumn("val")?.get(0), [0, "hello"]);
+    // Arms canonicalize to ClickHouse's sorted order: Bool=0, Int64=1, String=2
+    assert.deepStrictEqual(table.getColumn("val")?.get(0), [2, "hello"]);
     assert.deepStrictEqual(table.getColumn("val")?.get(1), [1, 42n]);
     // Bool stores as 1/0
-    assert.deepStrictEqual(table.getColumn("val")?.get(2), [2, 1]);
+    assert.deepStrictEqual(table.getColumn("val")?.get(2), [0, 1]);
     assert.strictEqual(table.getColumn("val")?.get(3), null);
 
     const decoded = await decodeBatch(encodeNative(table));
@@ -483,15 +483,15 @@ describe("Complex types via fromCols", () => {
   it("Variant(String, Int64, Bool) - explicit discriminators", async () => {
     const table = batchFromCols({
       val: getCodec("Variant(String, Int64, Bool)").fromValues([
-        [0, "hello"],
+        [2, "hello"],
         [1, 42n],
-        [2, true],
+        [0, true],
         null,
       ]),
     });
-    assert.deepStrictEqual(table.getColumn("val")?.get(0), [0, "hello"]);
+    assert.deepStrictEqual(table.getColumn("val")?.get(0), [2, "hello"]);
     assert.deepStrictEqual(table.getColumn("val")?.get(1), [1, 42n]);
-    assert.deepStrictEqual(table.getColumn("val")?.get(2), [2, 1]);
+    assert.deepStrictEqual(table.getColumn("val")?.get(2), [0, 1]);
     assert.strictEqual(table.getColumn("val")?.get(3), null);
 
     const decoded = await decodeBatch(encodeNative(table));
@@ -610,10 +610,10 @@ describe("Complex types via getCodec().fromValues()", () => {
 
   it("Variant(String, Int64, Bool) - type inferred", async () => {
     const col = getCodec("Variant(String, Int64, Bool)").fromValues(["hello", 42n, true, null]);
-    assert.strictEqual(col.type, "Variant(String, Int64, Bool)");
-    assert.deepStrictEqual(col.get(0), [0, "hello"]);
+    assert.strictEqual(col.type, "Variant(Bool, Int64, String)");
+    assert.deepStrictEqual(col.get(0), [2, "hello"]);
     assert.deepStrictEqual(col.get(1), [1, 42n]);
-    assert.deepStrictEqual(col.get(2), [2, 1]); // bool becomes 1/0
+    assert.deepStrictEqual(col.get(2), [0, 1]); // bool becomes 1/0
     assert.strictEqual(col.get(3), null);
 
     const table = batchFromCols({ val: col });
@@ -623,13 +623,13 @@ describe("Complex types via getCodec().fromValues()", () => {
 
   it("Variant(String, Int64, Bool) - explicit discriminators", async () => {
     const col = getCodec("Variant(String, Int64, Bool)").fromValues([
-      [0, "hello"],
+      [2, "hello"],
       [1, 42n],
-      [2, true],
+      [0, true],
       null,
     ]);
-    assert.strictEqual(col.type, "Variant(String, Int64, Bool)");
-    assert.deepStrictEqual(col.get(0), [0, "hello"]);
+    assert.strictEqual(col.type, "Variant(Bool, Int64, String)");
+    assert.deepStrictEqual(col.get(0), [2, "hello"]);
     assert.deepStrictEqual(col.get(1), [1, 42n]);
     assert.strictEqual(col.get(3), null);
 
