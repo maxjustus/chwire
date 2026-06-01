@@ -32,7 +32,7 @@ import {
   UINT32_MAX,
   UINT256_MAX,
 } from "../coercion.ts";
-import { asBytes, BaseCodec, escapeString, wrapQuoted } from "./base.ts";
+import { asBytes, BaseCodec, escapeString, type GenContext, type Rng, wrapQuoted } from "./base.ts";
 
 // Hex lookup tables for optimized UUID encode/decode
 const HEX_LUT = new Uint8Array(256);
@@ -194,8 +194,32 @@ function bytesToIpv6(bytes: Uint8Array): string {
   return parts.join(":");
 }
 
+const bigIntMin = (a: bigint, b: bigint): bigint => (a < b ? a : b);
+const bigIntMax = (a: bigint, b: bigint): bigint => (a > b ? a : b);
+
+/** Uniform bigint in [min, max] inclusive, assembled from 32-bit rng words. */
+function randomBigIntInRange(rng: Rng, min: bigint, max: bigint): bigint {
+  const span = max - min;
+  let value = 0n;
+  let bits = 0n;
+  while (1n << bits <= span) {
+    value = (value << 32n) | BigInt(rng.int(0, 0xffffffff));
+    bits += 32n;
+  }
+  return min + (value % (span + 1n));
+}
+
+/** Short random ASCII-ish string. Length biased small to exercise repeats. */
+function randomString(rng: Rng): string {
+  const len = rng.int(0, 12);
+  let s = "";
+  for (let i = 0; i < len; i++) s += String.fromCharCode(rng.int(32, 126));
+  return s;
+}
+
 export class NumericCodec<T extends TypedArray> extends BaseCodec {
   readonly type: string;
+  readonly numericFastPath = true;
   readonly Ctor: TypedArrayConstructor<T>;
   readonly converter?: (v: unknown) => number | bigint;
 
@@ -258,6 +282,29 @@ export class NumericCodec<T extends TypedArray> extends BaseCodec {
     if (this.type === "Bool") return toBool(value) ? "true" : "false";
     const v = this.converter ? this.converter(value) : value;
     return String(v);
+  }
+
+  generate(ctx: GenContext): number | bigint {
+    const rng = ctx.rng;
+    switch (this.type) {
+      case "Bool":
+        return rng.int(0, 1);
+      case "Float32":
+        // 32-bit rounded so the round-trip is exact. NaN/Inf/-0 excluded for now.
+        return Math.fround((rng.next() - 0.5) * 2 ** rng.int(0, 60));
+      case "Float64":
+        return (rng.next() - 0.5) * 2 ** rng.int(0, 200);
+      case "Int64":
+        return randomBigIntInRange(rng, INT64_MIN, INT64_MAX);
+      case "UInt64":
+        return randomBigIntInRange(rng, 0n, (1n << 64n) - 1n);
+    }
+    // Remaining integer typed arrays: derive [min, max] from the constructor.
+    const bits = this.Ctor.BYTES_PER_ELEMENT * 8;
+    const signed = this.type.startsWith("Int");
+    const max = signed ? 2 ** (bits - 1) - 1 : 2 ** bits - 1;
+    const min = signed ? -(2 ** (bits - 1)) : 0;
+    return rng.int(min, max);
   }
 }
 
@@ -365,6 +412,11 @@ export class EnumCodec extends BaseCodec {
     if (quoted) return `'${escapeString(name, true)}'`;
     return escapeString(name);
   }
+
+  generate(ctx: GenContext): string {
+    const names = [...this.mapping.valueToName.values()];
+    return names[ctx.rng.int(0, names.length - 1)];
+  }
 }
 
 export class StringCodec extends BaseCodec {
@@ -401,6 +453,10 @@ export class StringCodec extends BaseCodec {
     const str = coerceToString(value);
     if (quoted) return `'${escapeString(str, true)}'`;
     return escapeString(str);
+  }
+
+  generate(ctx: GenContext): string {
+    return randomString(ctx.rng);
   }
 }
 
@@ -474,6 +530,12 @@ export class UUIDCodec extends BaseCodec {
 
   serializeLiteral(value: unknown, quoted?: boolean): string {
     return wrapQuoted(toValidUUID(value), quoted);
+  }
+
+  generate(ctx: GenContext): string {
+    let hex = "";
+    for (let i = 0; i < 16; i++) hex += BYTE_TO_HEX[ctx.rng.int(0, 0xff)];
+    return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
   }
 }
 
@@ -571,6 +633,12 @@ export class FixedStringCodec extends BaseCodec {
     if (quoted) return `'${escapeString(str, true)}'`;
     return escapeString(str);
   }
+
+  generate(ctx: GenContext): Uint8Array {
+    const bytes = new Uint8Array(this.len);
+    for (let i = 0; i < this.len; i++) bytes[i] = ctx.rng.int(0, 0xff);
+    return bytes;
+  }
 }
 
 export class BigIntCodec extends BaseCodec {
@@ -637,6 +705,10 @@ export class BigIntCodec extends BaseCodec {
 
   serializeLiteral(value: unknown): string {
     return String(this.coerce(value));
+  }
+
+  generate(ctx: GenContext): bigint {
+    return randomBigIntInRange(ctx.rng, this.min, this.max);
   }
 }
 
@@ -740,6 +812,10 @@ export class DecimalCodec extends BaseCodec {
   serializeLiteral(value: unknown): string {
     if (typeof value === "bigint") return formatScaledBigInt(value, this.scale);
     return toValidDecimal(value);
+  }
+
+  generate(ctx: GenContext): string {
+    return formatScaledBigInt(randomBigIntInRange(ctx.rng, this.min, this.max), this.scale);
   }
 }
 
@@ -864,6 +940,22 @@ export class DateTime64Codec extends BaseCodec {
     }
     return String(value);
   }
+
+  generate(ctx: GenContext): ClickHouseDateTime64 {
+    // CH DateTime64 spans years 1900..2299, but high precision narrows that:
+    // ticks = seconds * 10^precision must fit in Int64. Clamp the second window
+    // so the scaled ticks stay representable.
+    const minSec = bigIntMax(-2208988800n, INT64_MIN / this.fullScale);
+    const maxSec = bigIntMin(10413792000n, INT64_MAX / this.fullScale);
+    const seconds = randomBigIntInRange(ctx.rng, minSec, maxSec);
+    const frac = randomBigIntInRange(ctx.rng, 0n, this.fullScale - 1n);
+    return new ClickHouseDateTime64(seconds * this.fullScale + frac, this.precision);
+  }
+
+  compare(a: unknown, b: unknown): boolean {
+    if (!(a instanceof ClickHouseDateTime64) || !(b instanceof ClickHouseDateTime64)) return false;
+    return a.ticks === b.ticks && a.precision === b.precision;
+  }
 }
 
 export class EpochCodec<T extends Uint16Array | Int32Array | Uint32Array> extends BaseCodec {
@@ -972,6 +1064,20 @@ export class EpochCodec<T extends Uint16Array | Int32Array | Uint32Array> extend
     }
     return d.toISOString().slice(0, 19).replace("T", " ");
   }
+
+  generate(ctx: GenContext): Date {
+    // Pick a unit count inside CH's accepted range for this type so the value
+    // round-trips without clamping. Decode produces new Date(units * multiplier),
+    // so emit the same.
+    const [minUnits, maxUnits] =
+      this.type === "Date"
+        ? [0, UINT16_MAX] // 1970-01-01 .. 2149-06-06
+        : this.type === "Date32"
+          ? [-25567, 120529] // 1900-01-01 .. 2299-12-31
+          : [0, UINT32_MAX]; // DateTime: 1970-01-01 .. 2106-02-07
+    const units = ctx.rng.int(minUnits, maxUnits);
+    return new Date(units * this.multiplier);
+  }
 }
 
 export class IPv4Codec extends BaseCodec {
@@ -1020,6 +1126,11 @@ export class IPv4Codec extends BaseCodec {
   serializeLiteral(value: unknown, quoted?: boolean): string {
     return wrapQuoted(toValidIPv4(value), quoted);
   }
+
+  generate(ctx: GenContext): string {
+    const o = () => ctx.rng.int(0, 255);
+    return `${o()}.${o()}.${o()}.${o()}`;
+  }
 }
 
 export class IPv6Codec extends BaseCodec {
@@ -1059,5 +1170,13 @@ export class IPv6Codec extends BaseCodec {
 
   serializeLiteral(value: unknown, quoted?: boolean): string {
     return wrapQuoted(toValidIPv6(value), quoted);
+  }
+
+  generate(ctx: GenContext): string {
+    // Format the random bytes through the decode path so the generated string
+    // matches decode's representation (minimal hex per group, no :: compression).
+    const bytes = new Uint8Array(16);
+    for (let i = 0; i < 16; i++) bytes[i] = ctx.rng.int(0, 0xff);
+    return bytesToIpv6(bytes);
   }
 }

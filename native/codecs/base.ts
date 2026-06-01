@@ -63,6 +63,37 @@ export function extractTypeArgs(type: string): string {
   return type.substring(type.indexOf("(") + 1, type.lastIndexOf(")"));
 }
 
+/**
+ * Seedable pseudo-random number generator used by codec generators.
+ *
+ * The concrete implementation lives in the fuzz harness; only the type ships in
+ * the package so codec `generate()` methods can be typed against it.
+ */
+export interface Rng {
+  /** Float in [0, 1). */
+  next(): number;
+  /** Integer in [min, max] inclusive. */
+  int(min: number, max: number): number;
+}
+
+/**
+ * Context threaded through codec `generate()` calls.
+ *
+ * Carries the seeded RNG (for failure replay), a depth budget that bounds
+ * recursive nesting, and a Dynamic/JSON type pool. `DynamicCodec` discovers its
+ * types lazily from the wire and has no type universe at construction, so it
+ * samples from `pickDynamicType()` rather than from local codecs.
+ */
+export interface GenContext {
+  readonly rng: Rng;
+  /** Remaining nesting budget; at 0 containers emit empty/leaf values. */
+  readonly depth: number;
+  /** Child context with `depth - 1` (clamped at 0). */
+  descend(): GenContext;
+  /** Sample a ClickHouse type string for a Dynamic/JSON value. */
+  pickDynamicType(): string;
+}
+
 export interface Codec {
   /** ClickHouse type string this codec handles */
   readonly type: string;
@@ -84,6 +115,17 @@ export interface Codec {
    * @returns The serialized literal string, or SQL_NULL symbol for null values
    */
   toLiteral(value: unknown, quoted?: boolean): string | typeof SQL_NULL;
+  /**
+   * Generate a random value in the same representation `decode()` returns.
+   * Used by the client-generated CH-anchored fuzzer (`fuzz/generated.ts`).
+   */
+  generate(ctx: GenContext): unknown;
+  /**
+   * Compare a generated value `a` against the value `b` decoded after a
+   * ClickHouse round-trip. Near-strict equality; overridden for cases where the
+   * decoded representation is not deterministic (e.g. Map ordering).
+   */
+  compare(a: unknown, b: unknown, ctx?: GenContext): boolean;
 }
 
 /**
@@ -118,13 +160,21 @@ export function escapeString(s: string, escapeSingleQuote = false): string {
   return result;
 }
 
+/**
+ * A codec whose `fromValues` writes each raw value straight into a `Ctor`
+ * typed array (optionally through `converter`). Only such codecs are eligible
+ * for `ArrayCodec`'s element fast path. EnumCodec and EpochCodec also hold a
+ * typed-array `Ctor`, but their `fromValues` translates values first (enum name
+ * -> code, Date -> epoch units), so they must NOT match here.
+ */
 interface NumericLikeCodec extends Codec {
+  readonly numericFastPath: true;
   readonly Ctor: TypedArrayConstructor<any>;
   readonly converter?: (v: unknown) => number | bigint;
 }
 
 export function isNumericLikeCodec(codec: Codec): codec is NumericLikeCodec {
-  return typeof (codec as any)?.Ctor === "function";
+  return (codec as any)?.numericFastPath === true;
 }
 
 export function defaultDeserializerState(): DeserializerState {
@@ -297,6 +347,41 @@ function readSparse(
  * Base class for codecs that support sparse serialization.
  * Centralizes the sparse check pattern - subclasses implement decodeDense().
  */
+/**
+ * Structural deep-equal used by the default `compare`. Uses `Object.is` for
+ * primitives (correct for NaN and -0), recurses arrays, and falls back to
+ * own-enumerable-key comparison for plain objects. `Uint8Array` and `Date` are
+ * compared element/time-wise.
+ */
+export function deepCompare(a: unknown, b: unknown): boolean {
+  if (Object.is(a, b)) return true;
+  if (a === null || b === null || typeof a !== "object" || typeof b !== "object") return false;
+
+  if (a instanceof Uint8Array && b instanceof Uint8Array) {
+    if (a.length !== b.length) return false;
+    for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+    return true;
+  }
+  if (a instanceof Date && b instanceof Date) return a.getTime() === b.getTime();
+
+  if (Array.isArray(a) || Array.isArray(b)) {
+    if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false;
+    for (let i = 0; i < a.length; i++) if (!deepCompare(a[i], b[i])) return false;
+    return true;
+  }
+
+  const ao = a as Record<string, unknown>;
+  const bo = b as Record<string, unknown>;
+  const aKeys = Object.keys(ao);
+  const bKeys = Object.keys(bo);
+  if (aKeys.length !== bKeys.length) return false;
+  for (const key of aKeys) {
+    if (!Object.hasOwn(bo, key)) return false;
+    if (!deepCompare(ao[key], bo[key])) return false;
+  }
+  return true;
+}
+
 export abstract class BaseCodec implements Codec {
   abstract readonly type: string;
   abstract encode(col: Column, sizeHint?: number): Uint8Array;
@@ -309,6 +394,19 @@ export abstract class BaseCodec implements Codec {
   toLiteral(value: unknown, quoted?: boolean): string | typeof SQL_NULL {
     if (value == null) value = this.zeroValue();
     return this.serializeLiteral(value, quoted);
+  }
+
+  /**
+   * Default rejects: codecs opt in to client-generated fuzzing by overriding.
+   * The harness's `isGeneratable` predicate never rolls a type whose codec has
+   * not overridden this, so the throw only fires on a wiring mistake.
+   */
+  generate(_ctx: GenContext): unknown {
+    throw new Error(`generate() not implemented for ${this.type}`);
+  }
+
+  compare(a: unknown, b: unknown): boolean {
+    return deepCompare(a, b);
   }
 
   decode(reader: BufferReader, rows: number, state: DeserializerState): Column {

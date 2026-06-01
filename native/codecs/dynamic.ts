@@ -13,7 +13,9 @@ import {
   asBytes,
   childState,
   type Codec,
+  deepCompare,
   escapeString,
+  type GenContext,
   nullToLiteral,
   readKindsMany,
   SQL_NULL,
@@ -167,6 +169,22 @@ export class VariantCodec implements Codec {
     const idx = this.findVariantIndex(value, this.typeStrings);
     return nullToLiteral(this.codecs[idx].toLiteral(value));
   }
+
+  generate(ctx: GenContext): [number, unknown] | null {
+    // Index N selects the NULL discriminator; 0..N-1 select an arm.
+    const disc = ctx.rng.int(0, this.codecs.length);
+    if (disc === this.codecs.length) return null;
+    return [disc, this.codecs[disc].generate(ctx.descend())];
+  }
+
+  compare(a: unknown, b: unknown, ctx?: GenContext): boolean {
+    if (a === null || b === null) return a === b;
+    if (!Array.isArray(a) || !Array.isArray(b)) return false;
+    const [discA, valA] = a as [number, unknown];
+    const [discB, valB] = b as [number, unknown];
+    if (discA !== discB) return false;
+    return this.codecs[discA].compare(valA, valB, ctx);
+  }
 }
 
 /**
@@ -313,6 +331,32 @@ export class DynamicCodec implements Codec {
     const vType = this.guessType(value);
     const codec = this.resolveCodec(vType);
     return nullToLiteral(codec.toLiteral(value));
+  }
+
+  /**
+   * Generate a bare Dynamic value (matching `DynamicColumn.get`).
+   *
+   * `DynamicCodec` has no type universe at construction (types are discovered
+   * from the wire), so the type is sampled from the harness-injected pool via
+   * `ctx.pickDynamicType()`. The pool must only contain types whose generated
+   * representation survives `guessType` (`fromValues` re-derives each cell's
+   * discriminator from its runtime value, discarding the sampled type), so the
+   * harness restricts the pool to `guessType` fixed points.
+   *
+   * `null` exercises the null discriminator (`types.length`).
+   */
+  generate(ctx: GenContext): unknown {
+    if (ctx.rng.int(0, 9) === 0) return null;
+    return this.resolveCodec(ctx.pickDynamicType()).generate(ctx.descend());
+  }
+
+  /**
+   * The declared type is unknown at compare time, so dispatch structurally on
+   * the runtime representation. Both values are canonical (`generate` emits the
+   * representation `DynamicColumn.get` returns), so structural deep-equal holds.
+   */
+  compare(a: unknown, b: unknown): boolean {
+    return deepCompare(a, b);
   }
 }
 
@@ -465,5 +509,46 @@ export class JsonCodec implements Codec {
   toLiteral(value: unknown): string | typeof SQL_NULL {
     if (value == null) return SQL_NULL;
     return `'${escapeString(JSON.stringify(value), true)}'`;
+  }
+
+  /**
+   * Generate a random JSON object from the typed paths (matching
+   * `JsonColumn.get`): each typed path via its codec, null values omitted since
+   * `JsonColumn.get` omits null paths on decode. Dynamic paths are scheduled by
+   * the fuzz harness (per-column path-presence shapes) and merged on top.
+   */
+  generate(ctx: GenContext): Record<string, unknown> {
+    const obj: Record<string, unknown> = {};
+    for (const tp of this.typedPaths) {
+      const v = tp.codec.generate(ctx.descend());
+      if (v !== null) obj[tp.name] = v;
+    }
+    return obj;
+  }
+
+  /**
+   * Compare two JSON objects under the null-path-omission rule: a path absent in
+   * one side equals a null/absent path in the other (`JsonColumn.get` omits null
+   * paths). Typed paths compare via their codec; dynamic paths compare
+   * structurally (both sides are already in the canonical decoded representation,
+   * with integers as bigint).
+   */
+  compare(a: unknown, b: unknown, ctx?: GenContext): boolean {
+    if (a == null || b == null || typeof a !== "object" || typeof b !== "object") return false;
+    const ao = a as Record<string, unknown>;
+    const bo = b as Record<string, unknown>;
+    const typedCodecs = new Map(this.typedPaths.map((tp) => [tp.name, tp.codec]));
+
+    for (const key of new Set([...Object.keys(ao), ...Object.keys(bo)])) {
+      const av = ao[key] ?? null;
+      const bv = bo[key] ?? null;
+      if (av === null || bv === null) {
+        if (av !== bv) return false;
+        continue;
+      }
+      const codec = typedCodecs.get(key);
+      if (codec ? !codec.compare(av, bv, ctx) : !deepCompare(av, bv)) return false;
+    }
+    return true;
   }
 }

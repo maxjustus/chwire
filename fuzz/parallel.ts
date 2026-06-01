@@ -6,11 +6,12 @@
  *   tsx fuzz/parallel.ts [options]
  *
  * Options:
- *   --unit      Run unit tests
- *   --http      Run HTTP integration tests
- *   --tcp       Run TCP integration tests
- *   --all       Run all tests (default if none specified)
- *   --verbose   Stream test output in real-time
+ *   --unit       Run unit tests
+ *   --http       Run HTTP integration tests
+ *   --tcp        Run TCP integration tests
+ *   --generated  Run client-generated CH-anchored tests
+ *   --all        Run all tests (default if none specified)
+ *   --verbose    Stream test output in real-time
  *
  * Environment:
  *   FUZZ_ITERATIONS - number of iterations (default: 25)
@@ -38,12 +39,14 @@ interface JobResult {
   output: string;
 }
 
+type Suite = "unit" | "http" | "tcp" | "generated";
+
 function parseArgs(): {
-  suites: ("unit" | "http" | "tcp")[];
+  suites: Suite[];
   verbose: boolean;
 } {
   const args = process.argv.slice(2);
-  const suites: ("unit" | "http" | "tcp")[] = [];
+  const suites: Suite[] = [];
   let verbose = false;
 
   for (const arg of args) {
@@ -53,21 +56,23 @@ function parseArgs(): {
       suites.push("http");
     } else if (arg === "--tcp") {
       suites.push("tcp");
+    } else if (arg === "--generated") {
+      suites.push("generated");
     } else if (arg === "--all") {
-      suites.push("unit", "http", "tcp");
+      suites.push("unit", "http", "tcp", "generated");
     } else if (arg === "--verbose" || arg === "-v") {
       verbose = true;
     }
   }
 
   if (suites.length === 0) {
-    suites.push("unit", "http", "tcp");
+    suites.push("unit", "http", "tcp", "generated");
   }
 
   return { suites: [...new Set(suites)], verbose };
 }
 
-function buildJobs(suites: Array<"unit" | "http" | "tcp">): Job[] {
+function buildJobs(suites: Suite[]): Job[] {
   const jobs: Job[] = [];
 
   for (const suite of suites) {

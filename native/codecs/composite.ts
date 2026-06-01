@@ -17,6 +17,7 @@ import {
   childState,
   type Codec,
   defaultDeserializerState,
+  type GenContext,
   isNumericLikeCodec,
   nullToLiteral,
   readKinds1,
@@ -144,6 +145,22 @@ export class ArrayCodec extends BaseCodec {
     }
     return `[${elements.join(", ")}]`;
   }
+
+  generate(ctx: GenContext): unknown[] {
+    if (ctx.depth <= 0) return [];
+    const len = ctx.rng.int(0, 5);
+    const result = new Array(len);
+    for (let i = 0; i < len; i++) result[i] = this.inner.generate(ctx.descend());
+    return result;
+  }
+
+  compare(a: unknown, b: unknown, ctx?: GenContext): boolean {
+    if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false;
+    for (let i = 0; i < a.length; i++) {
+      if (!this.inner.compare(a[i], b[i], ctx)) return false;
+    }
+    return true;
+  }
 }
 
 // Delegates prefix handling to inner codec
@@ -220,6 +237,16 @@ export class NullableCodec extends BaseCodec {
 
   serializeLiteral(): string {
     return "";
+  }
+
+  generate(ctx: GenContext): unknown {
+    if (ctx.rng.int(0, 4) === 0) return null;
+    return this.inner.generate(ctx);
+  }
+
+  compare(a: unknown, b: unknown, ctx?: GenContext): boolean {
+    if (a === null || b === null) return a === b;
+    return this.inner.compare(a, b, ctx);
   }
 }
 
@@ -374,6 +401,14 @@ export class LowCardinalityCodec extends BaseCodec {
   serializeLiteral(): string {
     return "";
   }
+
+  generate(ctx: GenContext): unknown {
+    return this.inner.generate(ctx);
+  }
+
+  compare(a: unknown, b: unknown, ctx?: GenContext): boolean {
+    return this.inner.compare(a, b, ctx);
+  }
 }
 
 // Map is serialized as Array(Tuple(K, V))
@@ -504,6 +539,51 @@ export class MapCodec extends BaseCodec {
     }
     return `{${parts.join(", ")}}`;
   }
+
+  generate(ctx: GenContext): [unknown, unknown][] {
+    if (ctx.depth <= 0) return [];
+    const len = ctx.rng.int(0, 5);
+    const entries: [unknown, unknown][] = [];
+    const seen = new Set<string>();
+    for (let i = 0; i < len; i++) {
+      const key = this.keyCodec.generate(ctx.descend());
+      const k = mapKeyId(key);
+      if (seen.has(k)) continue; // CH Maps reject duplicate keys
+      seen.add(k);
+      entries.push([key, this.valCodec.generate(ctx.descend())]);
+    }
+    return entries;
+  }
+
+  // CH does not preserve Map entry order, so match keys then compare values.
+  compare(a: unknown, b: unknown, ctx?: GenContext): boolean {
+    const ea = toEntries(a);
+    const eb = toEntries(b);
+    if (ea.length !== eb.length) return false;
+    const byKey = new Map<string, unknown>();
+    for (const [k, v] of eb) byKey.set(mapKeyId(k), v);
+    for (const [k, v] of ea) {
+      const id = mapKeyId(k);
+      if (!byKey.has(id)) return false;
+      if (!this.valCodec.compare(v, byKey.get(id), ctx)) return false;
+    }
+    return true;
+  }
+}
+
+/** Normalize a decoded Map (entry array or Map) to a [key, value][] list. */
+function toEntries(value: unknown): [unknown, unknown][] {
+  if (Array.isArray(value)) return value as [unknown, unknown][];
+  if (value instanceof Map) return Array.from(value.entries());
+  return [];
+}
+
+/** Stable identity for a Map key, used for dedup and order-insensitive compare. */
+function mapKeyId(key: unknown): string {
+  if (typeof key === "bigint") return `b:${key}`;
+  if (key instanceof Date) return `d:${key.getTime()}`;
+  if (key instanceof Uint8Array) return `u:${Array.from(key).join(",")}`;
+  return `${typeof key}:${String(key)}`;
 }
 
 export class TupleCodec extends BaseCodec {
@@ -615,5 +695,25 @@ export class TupleCodec extends BaseCodec {
       throw new TypeError(`Expected array or object for ${this.type}, got ${typeof value}`);
     }
     return `(${parts.join(", ")})`;
+  }
+
+  generate(ctx: GenContext): unknown {
+    if (this.isNamed) {
+      const obj: Record<string, unknown> = {};
+      for (const elem of this.elements) obj[elem.name!] = elem.codec.generate(ctx.descend());
+      return obj;
+    }
+    return this.elements.map((elem) => elem.codec.generate(ctx.descend()));
+  }
+
+  compare(a: unknown, b: unknown, ctx?: GenContext): boolean {
+    if (a == null || b == null || typeof a !== "object" || typeof b !== "object") return false;
+    for (let i = 0; i < this.elements.length; i++) {
+      const elem = this.elements[i];
+      const av = this.isNamed ? (a as Record<string, unknown>)[elem.name!] : (a as unknown[])[i];
+      const bv = this.isNamed ? (b as Record<string, unknown>)[elem.name!] : (b as unknown[])[i];
+      if (!elem.codec.compare(av, bv, ctx)) return false;
+    }
+    return true;
   }
 }

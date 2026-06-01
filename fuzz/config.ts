@@ -52,7 +52,7 @@ export function getIterationIndex(): number | null {
 }
 
 export interface FuzzErrorContext {
-  testType: "tcp" | "http";
+  testType: "tcp" | "http" | "generated";
   iteration: number;
   totalIterations: number;
   compression: Compression;
@@ -109,7 +109,7 @@ export function logFuzzError(ctx: FuzzErrorContext, err: unknown): void {
   console.error(lines.join("\n"));
 }
 
-export function logConfig(testType: "unit" | "http" | "tcp"): void {
+export function logConfig(testType: "unit" | "http" | "tcp" | "generated"): void {
   let mode = `iterations=${config.iterations}`;
   const iterIdx = getIterationIndex();
   if (iterIdx !== null) {
