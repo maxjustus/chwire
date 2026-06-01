@@ -849,6 +849,13 @@ export class BigIntCodec extends BaseCodec {
   }
 }
 
+/** Significant-digit precision P of a Decimal type (Decimal(P, S) or the shorthand widths). */
+function extractDecimalPrecision(type: string, byteSize: 4 | 8 | 16 | 32): number {
+  const m = type.match(/^Decimal\(\s*(\d+)/);
+  if (m) return Number(m[1]);
+  return byteSize === 4 ? 9 : byteSize === 8 ? 18 : byteSize === 16 ? 38 : 76;
+}
+
 export class DecimalCodec extends BaseCodec {
   readonly type: string;
   private byteSize: 4 | 8 | 16 | 32;
@@ -861,19 +868,27 @@ export class DecimalCodec extends BaseCodec {
     this.type = type;
     this.byteSize = decimalByteSize(type);
     this.scale = extractDecimalScale(type);
+    // Storage-width range, then tighten to the declared precision P: a
+    // Decimal(P, S) value's unscaled magnitude must be <= 10^P - 1 (CH enforces
+    // this), which is always within the width.
+    let widthMin: bigint;
+    let widthMax: bigint;
     if (this.byteSize === 4) {
-      this.min = BigInt(INT32_MIN);
-      this.max = BigInt(INT32_MAX);
+      widthMin = BigInt(INT32_MIN);
+      widthMax = BigInt(INT32_MAX);
     } else if (this.byteSize === 8) {
-      this.min = INT64_MIN;
-      this.max = INT64_MAX;
+      widthMin = INT64_MIN;
+      widthMax = INT64_MAX;
     } else if (this.byteSize === 16) {
-      this.min = INT128_MIN;
-      this.max = INT128_MAX;
+      widthMin = INT128_MIN;
+      widthMax = INT128_MAX;
     } else {
-      this.min = INT256_MIN;
-      this.max = INT256_MAX;
+      widthMin = INT256_MIN;
+      widthMax = INT256_MAX;
     }
+    const precMax = 10n ** BigInt(extractDecimalPrecision(type, this.byteSize)) - 1n;
+    this.max = bigIntMin(widthMax, precMax);
+    this.min = bigIntMax(widthMin, -precMax);
   }
 
   encode(col: Column): Uint8Array {
@@ -952,7 +967,7 @@ export class DecimalCodec extends BaseCodec {
   }
 
   generate(ctx: GenContext): string {
-    return formatScaledBigInt(randomBigIntInRange(ctx.rng, this.min, this.max), this.scale);
+    return formatScaledBigInt(adversarialBigInt(ctx.rng, this.min, this.max), this.scale);
   }
 }
 
