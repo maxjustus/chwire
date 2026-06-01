@@ -187,13 +187,13 @@ export class VariantCodec implements Codec {
     return [disc, this.codecs[disc].generate(ctx.descend())];
   }
 
-  compare(a: unknown, b: unknown, ctx?: GenContext): boolean {
+  compare(a: unknown, b: unknown): boolean {
     if (a === null || b === null) return a === b;
     if (!Array.isArray(a) || !Array.isArray(b)) return false;
     const [discA, valA] = a as [number, unknown];
     const [discB, valB] = b as [number, unknown];
     if (discA !== discB) return false;
-    return this.codecs[discA].compare(valA, valB, ctx);
+    return this.codecs[discA].compare(valA, valB);
   }
 }
 
@@ -550,7 +550,7 @@ export class JsonCodec implements Codec {
    * structurally (both sides are already in the canonical decoded representation,
    * with integers as bigint).
    */
-  compare(a: unknown, b: unknown, ctx?: GenContext): boolean {
+  compare(a: unknown, b: unknown): boolean {
     if (a == null || b == null || typeof a !== "object" || typeof b !== "object") return false;
     const ao = a as Record<string, unknown>;
     const bo = b as Record<string, unknown>;
@@ -564,7 +564,7 @@ export class JsonCodec implements Codec {
         continue;
       }
       const codec = typedCodecs.get(key);
-      if (codec ? !codec.compare(av, bv, ctx) : !deepCompare(av, bv)) return false;
+      if (codec ? !codec.compare(av, bv) : !deepCompare(av, bv)) return false;
     }
     return true;
   }

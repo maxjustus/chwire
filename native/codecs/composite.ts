@@ -183,10 +183,10 @@ export class ArrayCodec extends BaseCodec {
     return result;
   }
 
-  compare(a: unknown, b: unknown, ctx?: GenContext): boolean {
+  compare(a: unknown, b: unknown): boolean {
     if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false;
     for (let i = 0; i < a.length; i++) {
-      if (!this.inner.compare(a[i], b[i], ctx)) return false;
+      if (!this.inner.compare(a[i], b[i])) return false;
     }
     return true;
   }
@@ -273,9 +273,9 @@ export class NullableCodec extends BaseCodec {
     return this.inner.generate(ctx);
   }
 
-  compare(a: unknown, b: unknown, ctx?: GenContext): boolean {
+  compare(a: unknown, b: unknown): boolean {
     if (a === null || b === null) return a === b;
-    return this.inner.compare(a, b, ctx);
+    return this.inner.compare(a, b);
   }
 }
 
@@ -435,8 +435,8 @@ export class LowCardinalityCodec extends BaseCodec {
     return this.inner.generate(ctx);
   }
 
-  compare(a: unknown, b: unknown, ctx?: GenContext): boolean {
-    return this.inner.compare(a, b, ctx);
+  compare(a: unknown, b: unknown): boolean {
+    return this.inner.compare(a, b);
   }
 }
 
@@ -585,7 +585,7 @@ export class MapCodec extends BaseCodec {
   }
 
   // CH does not preserve Map entry order, so match keys then compare values.
-  compare(a: unknown, b: unknown, ctx?: GenContext): boolean {
+  compare(a: unknown, b: unknown): boolean {
     const ea = toEntries(a);
     const eb = toEntries(b);
     if (ea.length !== eb.length) return false;
@@ -594,7 +594,7 @@ export class MapCodec extends BaseCodec {
     for (const [k, v] of ea) {
       const id = mapKeyId(k);
       if (!byKey.has(id)) return false;
-      if (!this.valCodec.compare(v, byKey.get(id), ctx)) return false;
+      if (!this.valCodec.compare(v, byKey.get(id))) return false;
     }
     return true;
   }
@@ -612,6 +612,12 @@ function mapKeyId(key: unknown): string {
   if (typeof key === "bigint") return `b:${key}`;
   if (key instanceof Date) return `d:${key.getTime()}`;
   if (key instanceof Uint8Array) return `u:${Array.from(key).join(",")}`;
+  if (typeof key === "number") {
+    // String(-0) is "0" and String(NaN) is "NaN" but NaN !== NaN, so collapse
+    // both ambiguities: -0 gets its own token and all NaNs share one.
+    if (Number.isNaN(key)) return "n:NaN";
+    return `n:${Object.is(key, -0) ? "-0" : String(key)}`;
+  }
   return `${typeof key}:${String(key)}`;
 }
 
@@ -735,13 +741,13 @@ export class TupleCodec extends BaseCodec {
     return this.elements.map((elem) => elem.codec.generate(ctx.descend()));
   }
 
-  compare(a: unknown, b: unknown, ctx?: GenContext): boolean {
+  compare(a: unknown, b: unknown): boolean {
     if (a == null || b == null || typeof a !== "object" || typeof b !== "object") return false;
     for (let i = 0; i < this.elements.length; i++) {
       const elem = this.elements[i];
       const av = this.isNamed ? (a as Record<string, unknown>)[elem.name!] : (a as unknown[])[i];
       const bv = this.isNamed ? (b as Record<string, unknown>)[elem.name!] : (b as unknown[])[i];
-      if (!elem.codec.compare(av, bv, ctx)) return false;
+      if (!elem.codec.compare(av, bv)) return false;
     }
     return true;
   }

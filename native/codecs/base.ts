@@ -130,7 +130,7 @@ export interface Codec {
    * ClickHouse round-trip. Near-strict equality; overridden for cases where the
    * decoded representation is not deterministic (e.g. Map ordering).
    */
-  compare(a: unknown, b: unknown, ctx?: GenContext): boolean;
+  compare(a: unknown, b: unknown): boolean;
 }
 
 /**
@@ -395,19 +395,11 @@ export abstract class BaseCodec implements Codec {
   abstract estimateSize(rows: number): number;
   abstract decodeDense(reader: BufferReader, rows: number, state: DeserializerState): Column;
   abstract serializeLiteral(value: unknown, quoted?: boolean): string;
+  abstract generate(ctx: GenContext): unknown;
 
   toLiteral(value: unknown, quoted?: boolean): string | typeof SQL_NULL {
     if (value == null) value = this.zeroValue();
     return this.serializeLiteral(value, quoted);
-  }
-
-  /**
-   * Default rejects: codecs opt in to client-generated fuzzing by overriding.
-   * The harness's `isGeneratable` predicate never rolls a type whose codec has
-   * not overridden this, so the throw only fires on a wiring mistake.
-   */
-  generate(_ctx: GenContext): unknown {
-    throw new Error(`generate() not implemented for ${this.type}`);
   }
 
   compare(a: unknown, b: unknown): boolean {

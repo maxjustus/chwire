@@ -200,13 +200,21 @@ const bigIntMax = (a: bigint, b: bigint): bigint => (a > b ? a : b);
 /** Uniform bigint in [min, max] inclusive, assembled from 32-bit rng words. */
 function randomBigIntInRange(rng: Rng, min: bigint, max: bigint): bigint {
   const span = max - min;
-  let value = 0n;
+  if (span === 0n) return min;
+  // Build a bit mask wide enough to cover span, then rejection-sample: a plain
+  // modulo would bias toward the low end of wide ranges, so retry draws that
+  // exceed span until one lands in [0, span].
   let bits = 0n;
-  while (1n << bits <= span) {
-    value = (value << 32n) | BigInt(rng.int(0, 0xffffffff));
-    bits += 32n;
+  while (1n << bits <= span) bits += 32n;
+  const mask = (1n << bits) - 1n;
+  while (true) {
+    let value = 0n;
+    for (let drawn = 0n; drawn < bits; drawn += 32n) {
+      value = (value << 32n) | BigInt(rng.int(0, 0xffffffff));
+    }
+    value &= mask;
+    if (value <= span) return min + value;
   }
-  return min + (value % (span + 1n));
 }
 
 /**

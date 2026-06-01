@@ -69,11 +69,11 @@ function enabledKinds(): Set<Kind> {
 }
 
 /**
- * Pool for NESTED Dynamic (Array(Dynamic), JSON dynamic paths): values flow
- * through DynamicColumn.fromValues -> guessType, which re-derives the type from
- * the runtime value, so a type only round-trips if it is a guessType fixed point
- * (String, Int64 as bigint, Array(String)/Array(Int64)). Float64/Bool/Date/etc.
- * misclassify (integer Float64 -> Int64, Date -> DateTime64(3)).
+ * Pool for NESTED Dynamic (JSON dynamic paths and the nested-Dynamic generate
+ * path): values flow through DynamicColumn.fromValues -> guessType, which
+ * re-derives the type from the runtime value, so a type only round-trips if it
+ * is a guessType fixed point (String, Int64 as bigint, Array(String)/Array(Int64)).
+ * Float64/Bool/Date/etc. misclassify (integer Float64 -> Int64, Date -> DateTime64(3)).
  */
 const DEFAULT_DYNAMIC_TYPE_POOL = ["String", "Int64", "Array(String)", "Array(Int64)"];
 
@@ -616,7 +616,7 @@ async function runColumn(opts: {
   for (let r = 0; r < rows.length; r++) {
     const expected = rows[r][0];
     const actual = decoded[r];
-    if (!codec.compare(expected, actual, makeContext(rng, MAX_DEPTH, DEFAULT_DYNAMIC_TYPE_POOL))) {
+    if (!codec.compare(expected, actual)) {
       mismatches.push({ rowIndex: r, expected: stringify(expected), actual: stringify(actual) });
       if (mismatches.length >= 5) break;
     }

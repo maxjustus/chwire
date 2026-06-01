@@ -7,6 +7,11 @@ import { ClickHouseContainer, type StartedClickHouseContainer } from "@testconta
 let container: StartedClickHouseContainer | undefined;
 let tlsFixtureDir: string | undefined;
 
+// Credentials shared by the container config and the shared-server branch so the
+// two stay in sync.
+const CH_USERNAME = "default";
+const CH_PASSWORD = "password";
+
 const TCP_SECURE_PORT = 9440;
 const TLS_CONFIG = `<clickhouse>
   <tcp_port_secure>9440</tcp_port_secure>
@@ -75,8 +80,8 @@ export async function startClickHouse(version = "25.8", options: { tls?: boolean
       port: Number(u.port),
       tcpPort: Number(process.env.FUZZ_CH_TCP_PORT),
       tcpSecurePort: undefined,
-      username: "default",
-      password: "password",
+      username: CH_USERNAME,
+      password: CH_PASSWORD,
     };
   }
 
@@ -84,8 +89,8 @@ export async function startClickHouse(version = "25.8", options: { tls?: boolean
 
   const clickhouse = new ClickHouseContainer(`clickhouse/clickhouse-server:${version}`)
     .withDatabase("default")
-    .withUsername("default")
-    .withPassword("password");
+    .withUsername(CH_USERNAME)
+    .withPassword(CH_PASSWORD);
 
   if (options.tls) {
     tlsFixtureDir = createTlsFixtureDir();
@@ -135,8 +140,8 @@ export async function startClickHouse(version = "25.8", options: { tls?: boolean
     port,
     tcpPort,
     tcpSecurePort,
-    username: "default",
-    password: "password",
+    username: CH_USERNAME,
+    password: CH_PASSWORD,
   };
 }
 
