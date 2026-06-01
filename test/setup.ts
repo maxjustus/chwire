@@ -62,6 +62,24 @@ function createTlsFixtureDir(): string {
 }
 
 export async function startClickHouse(version = "25.8", options: { tls?: boolean } = {}) {
+  // Reuse an externally-managed server (set by fuzz/parallel.ts) so parallel
+  // fuzz processes share one ClickHouse instead of each starting a container.
+  // TLS needs a purpose-built container, so it always starts its own.
+  const sharedUrl = process.env.FUZZ_CH_URL;
+  if (sharedUrl && !options.tls) {
+    const u = new URL(sharedUrl);
+    return {
+      container: undefined,
+      url: sharedUrl,
+      host: u.hostname,
+      port: Number(u.port),
+      tcpPort: Number(process.env.FUZZ_CH_TCP_PORT),
+      tcpSecurePort: undefined,
+      username: "default",
+      password: "password",
+    };
+  }
+
   console.log("Starting ClickHouse container...");
 
   const clickhouse = new ClickHouseContainer(`clickhouse/clickhouse-server:${version}`)

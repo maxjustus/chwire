@@ -24,6 +24,7 @@
  */
 
 import { spawn } from "node:child_process";
+import { startClickHouse, stopClickHouse } from "../test/setup.ts";
 import { config } from "./config.ts";
 
 interface Job {
@@ -206,23 +207,36 @@ async function main() {
   console.log(`  Total jobs: ${jobs.length}`);
   console.log();
 
-  const startTime = Date.now();
-  const results = await runParallel(jobs, config.maxConcurrentProcesses, verbose);
-  const totalDuration = ((Date.now() - startTime) / 1000).toFixed(1);
+  // Start one ClickHouse server shared by every worker process (each connects
+  // via FUZZ_CH_URL instead of starting its own container). "unit" needs none.
+  const needsClickHouse = suites.some((s) => s !== "unit") && !process.env.FUZZ_CH_URL;
+  if (needsClickHouse) {
+    const ch = await startClickHouse();
+    process.env.FUZZ_CH_URL = ch.url;
+    process.env.FUZZ_CH_TCP_PORT = String(ch.tcpPort);
+  }
 
-  console.log("\n=== Summary ===");
-  const passed = results.filter((r) => r.success).length;
-  const failed = results.filter((r) => !r.success).length;
-  console.log(`Passed: ${passed}/${results.length}`);
-  console.log(`Failed: ${failed}`);
-  console.log(`Total time: ${totalDuration}s`);
+  try {
+    const startTime = Date.now();
+    const results = await runParallel(jobs, config.maxConcurrentProcesses, verbose);
+    const totalDuration = ((Date.now() - startTime) / 1000).toFixed(1);
 
-  if (failed > 0) {
-    console.log("\nFailed jobs:");
-    for (const r of results.filter((r) => !r.success)) {
-      console.log(`  - ${r.job.name}`);
+    console.log("\n=== Summary ===");
+    const passed = results.filter((r) => r.success).length;
+    const failed = results.filter((r) => !r.success).length;
+    console.log(`Passed: ${passed}/${results.length}`);
+    console.log(`Failed: ${failed}`);
+    console.log(`Total time: ${totalDuration}s`);
+
+    if (failed > 0) {
+      console.log("\nFailed jobs:");
+      for (const r of results.filter((r) => !r.success)) {
+        console.log(`  - ${r.job.name}`);
+      }
+      process.exitCode = 1;
     }
-    process.exit(1);
+  } finally {
+    if (needsClickHouse) await stopClickHouse();
   }
 }
 
