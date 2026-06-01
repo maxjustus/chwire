@@ -47,6 +47,11 @@ const COMPLEX_TYPE_SETTINGS = {
   allow_experimental_dynamic_type: true,
   allow_experimental_json_type: true,
   output_format_native_use_flattened_dynamic_and_json_serialization: true,
+  // The Nested codec implements the Array(Tuple) representation. The default
+  // flatten_nested=1 expands a top-level Nested into separate v.<field> Array
+  // columns, which a single Nested column cannot round-trip; flatten_nested=0
+  // stores it as the Array(Tuple) the codec produces.
+  flatten_nested: false,
 };
 
 /** Column kinds the type roll can produce, gated by FUZZ_KINDS. */
