@@ -159,31 +159,6 @@ function seedFor(iterationIndex: number): number {
   return (iterationIndex * 0x9e3779b1 + 0x1234567) >>> 0;
 }
 
-/** Leaf types we can generate that CH accepts as Variant arms. */
-const VARIANT_LEAF_TYPES = [
-  "Int8",
-  "Int16",
-  "Int32",
-  "Int64",
-  "UInt8",
-  "UInt16",
-  "UInt32",
-  "UInt64",
-  "Float32",
-  "Float64",
-  "Bool",
-  "String",
-  "Date",
-  "Date32",
-  "UUID",
-  "IPv4",
-  "IPv6",
-  "Decimal(18, 4)",
-  "DateTime64(3)",
-  "Array(String)",
-  "Array(Int64)",
-];
-
 /**
  * Types that contain a leaf we cannot yet generate standalone, or that need
  * their own kind. Reject when any appears anywhere in the type tree.
@@ -244,12 +219,41 @@ function isComposite(type: string): boolean {
   return COMPOSITE_PREFIXES.some((p) => type.startsWith(p));
 }
 
+interface Conn {
+  baseUrl: string;
+  auth: { username: string; password: string };
+}
+
+/**
+ * Draw a single random CH type via `generateRandomStructure(1, seed)`, which
+ * yields one `name Type` column. Returns the bare type (Enum TSV-escaping of
+ * `\'` undone, matching fuzz/http.ts) or null if the structure did not parse.
+ */
+async function fetchRandomStructureType(
+  rng: Rng,
+  sessionId: string,
+  conn: Conn,
+): Promise<string | null> {
+  const chSeed = rng.int(0, 0x7fffffff);
+  const structure = (
+    await collectText(
+      query(`SELECT generateRandomStructure(1, ${chSeed}) FORMAT TabSeparated`, sessionId, {
+        baseUrl: conn.baseUrl,
+        auth: conn.auth,
+      }),
+    )
+  ).trim();
+  const match = structure.match(/^\S+\s+(.+)$/);
+  if (!match) return null;
+  return match[1].replace(/\\'/g, "'");
+}
+
 /** Ask CH for a random column type matching one of the requested kinds. */
 async function rollColumnType(
   kinds: Set<Kind>,
   rng: Rng,
   sessionId: string,
-  conn: { baseUrl: string; auth: { username: string; password: string } },
+  conn: Conn,
 ): Promise<{ kind: Kind; type: string } | null> {
   const wantScalar = kinds.has("scalar");
   const wantComposite = kinds.has("composite");
@@ -266,28 +270,18 @@ async function rollColumnType(
   if (wantJson) complexKinds.push("json");
   if (complexKinds.length > 0 && (!(wantScalar || wantComposite) || rng.int(0, 2) === 0)) {
     const kind = complexKinds[rng.int(0, complexKinds.length - 1)];
-    if (kind === "variant") return { kind, type: rollVariantType(rng) };
+    if (kind === "variant") {
+      const type = await rollVariantType(rng, sessionId, conn);
+      return type === null ? null : { kind, type };
+    }
     if (kind === "dynamic") return { kind, type: "Dynamic" };
     return { kind, type: await rollJsonType(rng, sessionId, conn) };
   }
 
   let scalarLeaf: string | null = null;
   for (let attempt = 0; attempt < 8; attempt++) {
-    // generateRandomStructure(1, seed) yields a single "name Type" column;
-    // a per-attempt seed varies it deterministically.
-    const chSeed = rng.int(0, 0x7fffffff);
-    const structure = (
-      await collectText(
-        query(`SELECT generateRandomStructure(1, ${chSeed}) FORMAT TabSeparated`, sessionId, {
-          baseUrl: conn.baseUrl,
-          auth: conn.auth,
-        }),
-      )
-    ).trim();
-    const match = structure.match(/^\S+\s+(.+)$/);
-    if (!match) continue;
-    // TSV escapes backslash-quote in Enum names; unescape before use (as fuzz/http.ts does).
-    const type = match[1].replace(/\\'/g, "'");
+    const type = await fetchRandomStructureType(rng, sessionId, conn);
+    if (type === null) continue;
     if (!isGeneratable(type, rng)) continue;
     if (isComposite(type)) {
       if (wantComposite) return { kind: "composite", type };
@@ -311,16 +305,83 @@ function wrapScalar(leaf: string, rng: Rng): string {
   return rng.int(0, 1) === 0 ? `Array(${leaf})` : `Tuple(${leaf}, ${leaf})`;
 }
 
-/** Compose a Variant from 2-4 distinct generatable leaf arms (CH dedupes arms). */
-function rollVariantType(rng: Rng): string {
-  const count = rng.int(2, 4);
+/**
+ * Reject an arm whose top-level wrapper is Nullable or LowCardinality(Nullable):
+ * CH rejects those directly inside a Variant with BAD_ARGUMENTS. Nested Nullable
+ * (Array(Nullable(T)), Tuple(a Nullable(T))) is a legal arm, so this checks only
+ * the outermost wrapper, not a blanket substring.
+ */
+function isTopLevelNullableArm(arm: string): boolean {
+  return arm.startsWith("Nullable") || /^LowCardinality\(Nullable/.test(arm);
+}
+
+/**
+ * Compose a Variant from arms drawn via CH's generateRandomStructure, then let
+ * CH canonicalize and dedup the arm set.
+ *
+ * CH sorts Variant arms by their canonical type string and silently collapses
+ * collisions where aliases coincide (Decimal32(2)==Decimal(9, 2),
+ * Int64+Int64==Int64) without erroring. The codec sorts arms the same way but
+ * does NOT canonicalize aliases, so a client-side dedup-by-codec-string keeps
+ * arms CH collapses, desyncing discriminators. The dedup must therefore be done
+ * by CH: build a candidate Variant, CREATE a throwaway table, read the compact
+ * canonical form from system.columns.type, DROP. If fewer than 2 distinct arms
+ * survive (collision collapse) or the candidate is illegal, return null so the
+ * caller skips, mirroring rollColumnType's null path.
+ */
+async function rollVariantType(rng: Rng, sessionId: string, conn: Conn): Promise<string | null> {
+  const armCount = rng.int(2, 5);
   const arms: string[] = [];
-  for (let i = 0; i < count; i++) {
-    const arm = VARIANT_LEAF_TYPES[rng.int(0, VARIANT_LEAF_TYPES.length - 1)];
-    if (!arms.includes(arm)) arms.push(arm);
+  for (let attempt = 0; arms.length < armCount && attempt < armCount * 4; attempt++) {
+    const arm = await fetchRandomStructureType(rng, sessionId, conn);
+    if (arm === null) continue;
+    if (isTopLevelNullableArm(arm)) continue;
+    if (!isGeneratable(arm, rng)) continue;
+    arms.push(arm);
   }
-  if (arms.length < 2) arms.push(arms[0] === "String" ? "Int64" : "String");
-  return `Variant(${arms.join(", ")})`;
+  if (arms.length < 2) return null;
+
+  // Let CH dedup + canonicalize via the CREATE TABLE / system.columns oracle.
+  const table = `variant_canon_${Date.now()}_${rng.int(0, 0x7fffffff)}`;
+  let canonical: string | null = null;
+  try {
+    await consume(
+      query(`CREATE TABLE ${table} (v Variant(${arms.join(", ")})) ENGINE = Memory`, sessionId, {
+        baseUrl: conn.baseUrl,
+        auth: conn.auth,
+        compression: false,
+        settings: COMPLEX_TYPE_SETTINGS,
+      }),
+    );
+    canonical = (
+      await collectText(
+        query(
+          `SELECT type FROM system.columns WHERE database = currentDatabase() AND table = '${table}' AND name = 'v' FORMAT TabSeparated`,
+          sessionId,
+          { baseUrl: conn.baseUrl, auth: conn.auth },
+        ),
+      )
+    )
+      .trim()
+      .replace(/\\'/g, "'");
+  } catch {
+    // An illegal arm set (e.g. a Nullable that slipped the filter) errors here;
+    // treat it as a skipped roll rather than crashing the iteration.
+    return null;
+  } finally {
+    await consume(
+      query(`DROP TABLE IF EXISTS ${table} SYNC`, sessionId, {
+        baseUrl: conn.baseUrl,
+        auth: conn.auth,
+        compression: false,
+      }),
+    );
+  }
+
+  if (!canonical) return null;
+  // After CH dedup, require at least 2 distinct arms survive.
+  if (parseTypeList(extractTypeArgs(canonical)).length < 2) return null;
+  return canonical;
 }
 
 /**
@@ -330,26 +391,12 @@ function rollVariantType(rng: Rng): string {
  * rather than as a materialized default. A bare `JSON` (no typed paths) is also
  * rolled to exercise the all-dynamic-path code path.
  */
-async function rollJsonType(
-  rng: Rng,
-  sessionId: string,
-  conn: { baseUrl: string; auth: { username: string; password: string } },
-): Promise<string> {
+async function rollJsonType(rng: Rng, sessionId: string, conn: Conn): Promise<string> {
   const numTypedPaths = rng.int(0, 3);
   const defs: string[] = [];
   for (let p = 0; defs.length < numTypedPaths && p < numTypedPaths * 4; p++) {
-    const chSeed = rng.int(0, 0x7fffffff);
-    const structure = (
-      await collectText(
-        query(`SELECT generateRandomStructure(1, ${chSeed}) FORMAT TabSeparated`, sessionId, {
-          baseUrl: conn.baseUrl,
-          auth: conn.auth,
-        }),
-      )
-    ).trim();
-    const match = structure.match(/^\S+\s+(.+)$/);
-    if (!match) continue;
-    const type = match[1].replace(/\\'/g, "'");
+    const type = await fetchRandomStructureType(rng, sessionId, conn);
+    if (type === null) continue;
     // Nullable wraps scalars only; composites round-trip non-null defaults
     // differently, so skip them as typed paths here.
     if (isComposite(type) || !isGeneratable(type, rng)) continue;
