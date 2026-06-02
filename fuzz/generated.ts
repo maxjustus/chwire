@@ -489,6 +489,10 @@ async function rollJsonType(rng: Rng, sessionId: string, conn: Conn): Promise<st
     const declared = isComposite(type) ? type : `Nullable(${type})`;
     defs.push(`${jsonPathName("tp", defs.length, rng)} ${declared}`);
   }
+  // Occasionally cap dynamic paths low so cells with more of them overflow into
+  // CH's shared-data storage; FLATTENED serialization flattens that back into
+  // ordinary dynamic paths on the wire, so it round-trips without special handling.
+  if (rng.int(0, 3) === 0) defs.unshift(`max_dynamic_paths=${rng.int(1, 4)}`);
   return defs.length > 0 ? `JSON(${defs.join(", ")})` : "JSON";
 }
 
