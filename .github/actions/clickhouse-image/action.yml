@@ -1,0 +1,31 @@
+name: "ClickHouse image (cached)"
+description: >
+  Restore the ClickHouse testcontainers image from the Actions cache, or pull it
+  from Docker Hub once and cache it, so CH-needing jobs do not pull from the
+  registry on every run (the source of intermittent Docker Hub timeouts).
+
+inputs:
+  image:
+    description: "ClickHouse image ref. Keep in sync with test/setup.ts."
+    default: "clickhouse/clickhouse-server:25.8"
+
+runs:
+  using: "composite"
+  steps:
+    - name: Restore ClickHouse image cache
+      uses: actions/cache@v4
+      with:
+        path: /tmp/ch-image.tar
+        key: docker-image-${{ inputs.image }}
+
+    - name: Load cached image or pull + cache it
+      shell: bash
+      run: |
+        if [ -f /tmp/ch-image.tar ]; then
+          echo "Loading ${{ inputs.image }} from cache"
+          docker load -i /tmp/ch-image.tar
+        else
+          echo "Pulling ${{ inputs.image }} from Docker Hub"
+          docker pull "${{ inputs.image }}"
+          docker save "${{ inputs.image }}" -o /tmp/ch-image.tar
+        fi

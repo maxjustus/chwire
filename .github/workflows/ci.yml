@@ -35,6 +35,9 @@ jobs:
       - name: Build
         run: npm run build
 
+      - name: ClickHouse image (cached)
+        uses: ./.github/actions/clickhouse-image
+
       - name: Unit + Integration Tests
         run: npm test
 
@@ -73,6 +76,9 @@ jobs:
 
       - name: Build
         run: npm run build
+
+      - name: ClickHouse image (cached)
+        uses: ./.github/actions/clickhouse-image
 
       - name: Fuzz Tests (quick mode, 3K rows)
         run: FUZZ_ITERATIONS=3 FUZZ_ROWS=3000 npm run test:fuzz
