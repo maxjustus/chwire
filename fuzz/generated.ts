@@ -563,8 +563,15 @@ async function runColumn(opts: {
   // VariantCodec reorders arms into ClickHouse's canonical (sorted) order, so
   // codec.type is the type CH actually stores. Build, encode, and compare
   // against it so discriminators line up with the server.
+  //
+  // JsonCodec.type is the bare "JSON" regardless of typed paths, so for JSON we
+  // keep the full requested type: declaring the source column as plain "JSON"
+  // when the table is JSON(typed paths) makes CH cast JSON -> JSON(typed) on
+  // INSERT, and that cast round-trips dynamic paths through a text serialization
+  // CH itself cannot re-parse for large integers (Int128 text exceeds 64-bit) or
+  // sub-second DateTime64. Declaring the typed type makes it an identity insert.
   const codec = getCodec(columnType);
-  const canonicalType = codec.type;
+  const canonicalType = kind === "json" ? columnType : codec.type;
   const schema: ColumnDef[] = [{ name: "v", type: canonicalType }];
 
   const rng = makeRng(seed);
