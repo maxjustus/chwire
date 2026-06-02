@@ -78,9 +78,11 @@ function enabledKinds(): Set<Kind> {
 const PROBE_DYNAMIC_TYPES = ["Int64", "String", "Float64", "Bool"];
 
 /**
- * Upper bound on a Dynamic column's distinct-type pool. Stays under
- * max_dynamic_types (default 32) so every type gets its own discriminator rather
- * than spilling into the shared-data path (which the codec does not implement).
+ * Size of a Dynamic column's distinct-type pool. With a bare Dynamic (default
+ * max_types=32) each pool type keeps its own discriminator; a column that declares
+ * a lower max_types (see rollDynamicType) overflows the pool into the shared
+ * variant on purpose — the flattened wire format presents those back as ordinary
+ * discriminators, so it still round-trips.
  */
 const DYNAMIC_POOL_SIZE = 24;
 
@@ -291,6 +293,25 @@ async function rollColumnType(
   return rollPlainType(wantScalar, wantComposite, rng, sessionId, conn);
 }
 
+/**
+ * Roll a Dynamic column shape: a bare Dynamic, a capped Dynamic whose low
+ * max_types forces the pool's distinct types to overflow into the shared variant,
+ * or a Dynamic nested inside a composite (Array/Map/Tuple). All round-trip through
+ * the flattened wire format.
+ */
+function rollDynamicType(rng: Rng): string {
+  switch (rng.int(0, 3)) {
+    case 0:
+      return `Dynamic(max_types=${rng.int(1, 8)})`;
+    case 1:
+      return "Array(Dynamic)";
+    case 2:
+      return rng.int(0, 1) === 0 ? "Map(String, Dynamic)" : "Tuple(c0 Dynamic, c1 Dynamic)";
+    default:
+      return "Dynamic";
+  }
+}
+
 /** Resolve an already-chosen complex kind to a concrete column type. */
 async function rollComplexType(
   kind: Kind,
@@ -302,7 +323,7 @@ async function rollComplexType(
     const v = await rollVariantType(rng, sessionId, conn);
     return v === null ? null : { kind, type: v.type, table: v.table };
   }
-  if (kind === "dynamic") return { kind, type: "Dynamic" };
+  if (kind === "dynamic") return { kind, type: rollDynamicType(rng) };
   return { kind, type: await rollJsonType(rng, sessionId, conn) };
 }
 
@@ -568,7 +589,11 @@ function generateCells(
     return cells;
   }
 
-  if (kind === "dynamic") {
+  // Top-level Dynamic (bare or capped) routes through the shape scheduler; a
+  // Dynamic nested in a composite (Array(Dynamic) etc.) falls through to the
+  // generic recursive generate below, where DynamicCodec.generate samples the
+  // same pool via ctx.pickDynamicType.
+  if (kind === "dynamic" && canonicalType.startsWith("Dynamic")) {
     // Each pool type is a distinct discriminator; the shape controls how they
     // are distributed across rows (runs, alternation, all-null, uniform mix).
     // DynamicValue carries the explicit type so guessType is bypassed and the
