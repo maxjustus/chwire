@@ -417,11 +417,13 @@ export class JsonCodec implements Codec {
 
   constructor(resolveCodec: CodecResolver, typedPaths: { name: string; type: string }[] = []) {
     this.resolveCodec = resolveCodec;
-    this.typedPaths = typedPaths.map((p) => ({
-      name: p.name,
-      type: p.type,
-      codec: resolveCodec(p.type),
-    }));
+    // ClickHouse canonicalizes JSON typed paths into lexicographic order. The
+    // sub-columns are serialized positionally (no per-path name on the wire), so
+    // our order must match the server's or the streams desync. Match its plain
+    // byte-order sort (e.g. `tp_10` before `tp_2`).
+    this.typedPaths = typedPaths
+      .map((p) => ({ name: p.name, type: p.type, codec: resolveCodec(p.type) }))
+      .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
     this.typedPathNames = new Set(this.typedPaths.map((tp) => tp.name));
   }
 
