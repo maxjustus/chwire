@@ -27,13 +27,13 @@ import {
 } from "./base.ts";
 
 /**
- * Adversarial container length: oversamples 0, 1, and a large count (16-64) so
+ * Container length, oversampling 0, 1, and a large count (16-64) so
  * empty/singleton/long-offset paths are all exercised, otherwise a small uniform
  * length. Every length is clamped to (and decrements) the shared per-cell element
  * budget, so large containers fire at any depth while total elements stay bounded
  * — a large-of-large or all-small-deep tree cannot blow up. Used by Array and Map.
  */
-function adversarialLength(ctx: GenContext): number {
+function genLength(ctx: GenContext): number {
   const cap = Math.max(0, ctx.budget.remaining);
   let len: number;
   switch (ctx.rng.int(0, 4)) {
@@ -177,7 +177,7 @@ export class ArrayCodec extends BaseCodec {
 
   generate(ctx: GenContext): unknown[] {
     if (ctx.depth <= 0) return [];
-    const len = adversarialLength(ctx);
+    const len = genLength(ctx);
     const result = new Array(len);
     for (let i = 0; i < len; i++) result[i] = this.inner.generate(ctx.descend());
     return result;
@@ -571,7 +571,7 @@ export class MapCodec extends BaseCodec {
 
   generate(ctx: GenContext): [unknown, unknown][] {
     if (ctx.depth <= 0) return [];
-    const len = adversarialLength(ctx);
+    const len = genLength(ctx);
     const entries: [unknown, unknown][] = [];
     const seen = new Set<string>();
     for (let i = 0; i < len; i++) {

@@ -226,7 +226,7 @@ const pick = <T>(rng: Rng, arr: readonly T[]): T => arr[rng.int(0, arr.length - 
  * Half the time, pick one of the symbolic width boundaries and clamp it into
  * [min, max] (e.g. -1 is out of range for unsigned types, min+1 may exceed max
  * for 1-value domains); otherwise return null to signal a uniform-random draw.
- * Shared by `adversarialInt`/`adversarialBigInt`; each builds its own typed
+ * Shared by `genInt`/`genBigInt`; each builds its own typed
  * boundary list and supplies the uniform fallback.
  */
 function clampPick<T extends number | bigint>(rng: Rng, boundaries: T[], min: T, max: T): T | null {
@@ -236,20 +236,20 @@ function clampPick<T extends number | bigint>(rng: Rng, boundaries: T[], min: T,
 }
 
 /**
- * Adversarial integer in [min, max]: oversamples the width boundaries
+ * Integer in [min, max], oversampling the width boundaries
  * (min, max, 0, 1, -1, min+1, max-1) so over/underflow and sign-edge bugs
- * surface, falling back to uniform-random the rest of the time.
+ * surface; uniform-random the rest of the time.
  */
-function adversarialInt(rng: Rng, min: number, max: number): number {
+function genInt(rng: Rng, min: number, max: number): number {
   const v = clampPick(rng, [min, max, 0, 1, -1, min + 1, max - 1], min, max);
   return v ?? rng.int(min, max);
 }
 
 /**
- * Adversarial bigint in [min, max]: same boundary oversampling as
- * `adversarialInt` but for the 64/128/256-bit widths.
+ * Bigint in [min, max] with the same boundary oversampling as `genInt`,
+ * for the 64/128/256-bit widths.
  */
-function adversarialBigInt(rng: Rng, min: bigint, max: bigint): bigint {
+function genBigInt(rng: Rng, min: bigint, max: bigint): bigint {
   const v = clampPick(rng, [min, max, 0n, 1n, -1n, min + 1n, max - 1n], min, max);
   return v ?? randomBigIntInRange(rng, min, max);
 }
@@ -292,7 +292,7 @@ const FLOAT32_SPECIALS: number[] = [
 
 /**
  * Characters drawn from multiple Unicode planes plus ASCII control codes, used
- * to build adversarial strings. Lone surrogates are intentionally absent: JS
+ * by `genString`. Lone surrogates are intentionally absent: JS
  * UTF-8-encodes them lossily to U+FFFD so they cannot round-trip as-is.
  */
 const UNICODE_SAMPLES: string[] = [
@@ -322,12 +322,12 @@ const UNICODE_SAMPLES: string[] = [
 // compare().
 
 /**
- * Adversarial string: oversamples empty, multi-KB, ASCII control runs, and
- * multi-plane Unicode (including embedded NUL), falling back to short random
- * ASCII the rest of the time. All values are bare JS strings, the same
- * representation `StringCodec.decode` returns.
+ * String oversampling empty, multi-KB, ASCII control runs, and multi-plane
+ * Unicode (including embedded NUL); short random ASCII the rest of the time.
+ * All values are bare JS strings, the same representation `StringCodec.decode`
+ * returns.
  */
-function adversarialString(rng: Rng): string {
+function genString(rng: Rng): string {
   switch (rng.int(0, 4)) {
     case 0:
       return "";
@@ -343,30 +343,27 @@ function adversarialString(rng: Rng): string {
       for (let i = 0; i < len; i++) s += pick(rng, UNICODE_SAMPLES);
       return s;
     }
-    default:
-      return randomString(rng);
+    default: {
+      // short random ASCII; length biased small to exercise repeats
+      const len = rng.int(0, 12);
+      let s = "";
+      for (let i = 0; i < len; i++) s += String.fromCharCode(rng.int(32, 126));
+      return s;
+    }
   }
 }
 
 /**
- * `n` adversarial bytes: oversamples the all-zero and all-0xFF fills (each 1/4),
+ * `n` bytes, oversampling the all-zero and all-0xFF fills (each 1/4),
  * otherwise random per-byte (1/2). Backs the fixed-width byte generators
  * (UUID/FixedString/IPv4/IPv6) so each draws the same fill class then bytes.
  */
-function adversarialBytes(rng: Rng, n: number): Uint8Array {
+function genBytes(rng: Rng, n: number): Uint8Array {
   const bytes = new Uint8Array(n);
   const fill = rng.int(0, 3);
   if (fill === 1) bytes.fill(0xff);
   else if (fill >= 2) for (let i = 0; i < n; i++) bytes[i] = rng.int(0, 0xff);
   return bytes;
-}
-
-/** Short random ASCII-ish string. Length biased small to exercise repeats. */
-function randomString(rng: Rng): string {
-  const len = rng.int(0, 12);
-  let s = "";
-  for (let i = 0; i < len; i++) s += String.fromCharCode(rng.int(32, 126));
-  return s;
 }
 
 export class NumericCodec<T extends TypedArray> extends BaseCodec {
@@ -460,12 +457,12 @@ export class NumericCodec<T extends TypedArray> extends BaseCodec {
         if (rng.int(0, 1) === 0) return pick(rng, FLOAT64_SPECIALS);
         return (rng.next() - 0.5) * 2 ** rng.int(0, 200);
       case "Int64":
-        return adversarialBigInt(rng, INT64_MIN, INT64_MAX);
+        return genBigInt(rng, INT64_MIN, INT64_MAX);
       case "UInt64":
-        return adversarialBigInt(rng, 0n, (1n << 64n) - 1n);
+        return genBigInt(rng, 0n, (1n << 64n) - 1n);
     }
     // Remaining integer typed arrays use the width range from the constructor.
-    return adversarialInt(rng, this.min, this.max);
+    return genInt(rng, this.min, this.max);
   }
 }
 
@@ -616,7 +613,7 @@ export class StringCodec extends BaseCodec {
   }
 
   generate(ctx: GenContext): string {
-    return adversarialString(ctx.rng);
+    return genString(ctx.rng);
   }
 }
 
@@ -693,7 +690,7 @@ export class UUIDCodec extends BaseCodec {
   }
 
   generate(ctx: GenContext): string {
-    const bytes = adversarialBytes(ctx.rng, 16);
+    const bytes = genBytes(ctx.rng, 16);
     let hex = "";
     for (let i = 0; i < 16; i++) hex += BYTE_TO_HEX[bytes[i]];
     return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
@@ -796,7 +793,7 @@ export class FixedStringCodec extends BaseCodec {
   }
 
   generate(ctx: GenContext): Uint8Array {
-    return adversarialBytes(ctx.rng, this.len);
+    return genBytes(ctx.rng, this.len);
   }
 }
 
@@ -867,7 +864,7 @@ export class BigIntCodec extends BaseCodec {
   }
 
   generate(ctx: GenContext): bigint {
-    return adversarialBigInt(ctx.rng, this.min, this.max);
+    return genBigInt(ctx.rng, this.min, this.max);
   }
 }
 
@@ -989,7 +986,7 @@ export class DecimalCodec extends BaseCodec {
   }
 
   generate(ctx: GenContext): string {
-    return formatScaledBigInt(adversarialBigInt(ctx.rng, this.min, this.max), this.scale);
+    return formatScaledBigInt(genBigInt(ctx.rng, this.min, this.max), this.scale);
   }
 }
 
@@ -1126,9 +1123,9 @@ export class DateTime64Codec extends BaseCodec {
     const maxSec = bigIntMin(10413792000n, INT64_MAX / this.fullScale);
     const minTicks = bigIntMax(minSec * this.fullScale, INT64_MIN);
     const maxTicks = bigIntMin(maxSec * this.fullScale + (this.fullScale - 1n), INT64_MAX);
-    // adversarialBigInt oversamples the window boundaries (its set already
+    // genBigInt oversamples the window boundaries (its set already
     // includes minTicks/maxTicks/0n); otherwise a uniform tick.
-    return new ClickHouseDateTime64(adversarialBigInt(rng, minTicks, maxTicks), this.precision);
+    return new ClickHouseDateTime64(genBigInt(rng, minTicks, maxTicks), this.precision);
   }
 
   compare(a: unknown, b: unknown): boolean {
@@ -1255,7 +1252,7 @@ export class EpochCodec<T extends Uint16Array | Int32Array | Uint32Array> extend
           ? [-25567, 120529] // 1900-01-01 .. 2299-12-31
           : [0, UINT32_MAX]; // DateTime: 1970-01-01 .. 2106-02-07
     // Oversample epoch and the two range boundaries; otherwise random units.
-    const units = adversarialInt(ctx.rng, minUnits, maxUnits);
+    const units = genInt(ctx.rng, minUnits, maxUnits);
     return new Date(units * this.multiplier);
   }
 }
@@ -1309,7 +1306,7 @@ export class IPv4Codec extends BaseCodec {
 
   generate(ctx: GenContext): string {
     // 0xff fill yields 255.255.255.255; all-zero yields 0.0.0.0; else random.
-    return adversarialBytes(ctx.rng, 4).join(".");
+    return genBytes(ctx.rng, 4).join(".");
   }
 }
 
@@ -1355,6 +1352,6 @@ export class IPv6Codec extends BaseCodec {
   generate(ctx: GenContext): string {
     // Format the bytes through the decode path so the generated string matches
     // decode's representation (minimal hex per group, no :: compression).
-    return bytesToIpv6(adversarialBytes(ctx.rng, 16));
+    return bytesToIpv6(genBytes(ctx.rng, 16));
   }
 }
