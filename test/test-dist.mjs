@@ -15,11 +15,11 @@ try {
   const testData = new TextEncoder().encode("Hello, World! This is a test string for compression.");
 
   // LZ4 compression
-  const lz4Compressed = full.encodeBlock(testData, 0x82); // Method.LZ4
+  const lz4Compressed = full.encodeBlock(testData, "lz4");
   console.log(`LZ4: ${testData.length} bytes -> ${lz4Compressed.length} bytes`);
 
   // ZSTD compression
-  const zstdCompressed = full.encodeBlock(testData, 0x90); // Method.ZSTD
+  const zstdCompressed = full.encodeBlock(testData, "zstd");
   console.log(`ZSTD: ${testData.length} bytes -> ${zstdCompressed.length} bytes`);
 
   console.log("\nFull build PASSED!\n");
@@ -40,7 +40,7 @@ try {
 
   console.log("Testing LZ4 compression...");
   const testData = new TextEncoder().encode("Hello, World! This is a test string for compression.");
-  const compressed = lz4Only.encodeBlock(testData, 0x82);
+  const compressed = lz4Only.encodeBlock(testData, "lz4");
   console.log(`LZ4: ${testData.length} bytes -> ${compressed.length} bytes`);
 
   console.log("\nLZ4-only build PASSED!\n");
