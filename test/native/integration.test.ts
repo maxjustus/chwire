@@ -149,6 +149,109 @@ describe("Native format integration", { timeout: 120000 }, () => {
     assert.strictEqual(decodedRows[0][11], "active");
   });
 
+  it("round-trips a top-level Nested column with flatten_nested=0", async () => {
+    const table = `test_native_nested_off_${Date.now()}`;
+    const columns: ColumnDef[] = [
+      { name: "id", type: "Int32" },
+      { name: "n", type: "Nested(a UInt32, b String)" },
+    ];
+    const rows = [
+      [
+        1,
+        [
+          { a: 1, b: "x" },
+          { a: 2, b: "y" },
+        ],
+      ],
+      [2, []],
+    ];
+
+    const settings = { flatten_nested: false } as const;
+    await consume(query(`DROP TABLE IF EXISTS ${table}`, sessionId, { baseUrl, auth }));
+    await consume(
+      query(
+        `CREATE TABLE ${table} (id Int32, n Nested(a UInt32, b String)) ENGINE = Memory`,
+        sessionId,
+        { baseUrl, auth, settings },
+      ),
+    );
+    try {
+      const encoded = encodeNativeRows(columns, rows);
+      await insert(`INSERT INTO ${table} FORMAT Native`, encoded, sessionId, {
+        baseUrl,
+        auth,
+        settings,
+      });
+
+      const data = await collectBytes(
+        query(`SELECT * FROM ${table} ORDER BY id FORMAT Native`, sessionId, { baseUrl, auth }),
+      );
+      const decoded = await decodeBatch(data);
+      const decodedRows = toArrayRows(decoded);
+
+      assert.strictEqual(decoded.rowCount, 2);
+      assert.deepStrictEqual(decodedRows[0][1], [
+        { a: 1, b: "x" },
+        { a: 2, b: "y" },
+      ]);
+      assert.deepStrictEqual(decodedRows[1][1], []);
+    } finally {
+      await consume(query(`DROP TABLE ${table}`, sessionId, { baseUrl, auth }));
+    }
+  });
+
+  // Pins the documented non-support: under the default flatten_nested=1 the
+  // table is split into n.a / n.b Array columns, so a single Native column
+  // named "n" matches no physical column and the rows are silently stored as
+  // empty arrays. This is a canary for that CH behavior, not an endorsement.
+  it("silently stores empty rows for a top-level Nested column under flatten_nested=1", async () => {
+    const table = `test_native_nested_on_${Date.now()}`;
+    const columns: ColumnDef[] = [
+      { name: "id", type: "Int32" },
+      { name: "n", type: "Nested(a UInt32, b String)" },
+    ];
+    const rows = [
+      [
+        1,
+        [
+          { a: 1, b: "x" },
+          { a: 2, b: "y" },
+        ],
+      ],
+      [2, [{ a: 3, b: "z" }]],
+    ];
+
+    await consume(query(`DROP TABLE IF EXISTS ${table}`, sessionId, { baseUrl, auth }));
+    await consume(
+      query(
+        `CREATE TABLE ${table} (id Int32, n Nested(a UInt32, b String)) ENGINE = Memory`,
+        sessionId,
+        { baseUrl, auth },
+      ),
+    );
+    try {
+      const encoded = encodeNativeRows(columns, rows);
+      await insert(`INSERT INTO ${table} FORMAT Native`, encoded, sessionId, { baseUrl, auth });
+
+      const data = await collectBytes(
+        query(`SELECT id, n.a, n.b FROM ${table} ORDER BY id FORMAT Native`, sessionId, {
+          baseUrl,
+          auth,
+        }),
+      );
+      const decoded = await decodeBatch(data);
+      const decodedRows = toArrayRows(decoded);
+
+      assert.strictEqual(decoded.rowCount, 2);
+      for (const row of decodedRows) {
+        assert.deepStrictEqual(Array.from(row[1] as ArrayLike<number>), []);
+        assert.deepStrictEqual(row[2], []);
+      }
+    } finally {
+      await consume(query(`DROP TABLE ${table}`, sessionId, { baseUrl, auth }));
+    }
+  });
+
   it("round-trips JSON and Dynamic via V3 settings", async () => {
     const table = "test_native_json_dynamic";
     const columns: ColumnDef[] = [
