@@ -69,12 +69,24 @@ export class VariantCodec implements Codec {
     this.type = `Variant(${this.typeStrings.join(", ")})`;
   }
 
-  writePrefix(writer: BufferWriter) {
+  writePrefix(writer: BufferWriter, col: Column) {
     writer.writeU64LE(Variant.MODE_BASIC);
+    // ClickHouse writes every arm's serialization prefix after the mode flag,
+    // in sorted arm order, regardless of whether that arm carries any rows
+    // (e.g. a LowCardinality arm writes its key-version even with zero values).
+    // Pass the arm's group column when present, else an empty column of the arm
+    // type so nested prefix writers (Array/Tuple/Map -> LowCardinality) still
+    // emit their static metadata.
+    const variant = col as VariantColumn;
+    for (let i = 0; i < this.codecs.length; i++) {
+      const group = variant.groups.get(i) ?? this.codecs[i].fromValues([]);
+      this.codecs[i].writePrefix?.(writer, group);
+    }
   }
 
   readPrefix(reader: BufferReader) {
     reader.offset += 8;
+    for (const codec of this.codecs) codec.readPrefix?.(reader);
   }
 
   encode(col: Column, sizeHint?: number): Uint8Array {
