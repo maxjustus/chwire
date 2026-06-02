@@ -201,11 +201,13 @@ const bigIntMax = (a: bigint, b: bigint): bigint => (a > b ? a : b);
 function randomBigIntInRange(rng: Rng, min: bigint, max: bigint): bigint {
   const span = max - min;
   if (span === 0n) return min;
-  // Build a bit mask wide enough to cover span, then rejection-sample: a plain
+  // Mask to the minimal width that covers span, then rejection-sample: a plain
   // modulo would bias toward the low end of wide ranges, so retry draws that
-  // exceed span until one lands in [0, span].
-  let bits = 0n;
-  while (1n << bits <= span) bits += 32n;
+  // exceed span until one lands in [0, span]. The mask must hug span (length
+  // rounded up to 32-bit chunks would leave a span ~2^41 sampled with a 2^64
+  // mask, rejecting ~all draws); using span's exact bit length bounds the
+  // rejection rate below 1/2.
+  const bits = BigInt(span.toString(2).length);
   const mask = (1n << bits) - 1n;
   while (true) {
     let value = 0n;
