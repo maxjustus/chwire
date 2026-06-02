@@ -220,19 +220,26 @@ function randomBigIntInRange(rng: Rng, min: bigint, max: bigint): bigint {
 }
 
 /**
+ * Half the time, pick one of the symbolic width boundaries and clamp it into
+ * [min, max] (e.g. -1 is out of range for unsigned types, min+1 may exceed max
+ * for 1-value domains); otherwise return null to signal a uniform-random draw.
+ * Shared by `adversarialInt`/`adversarialBigInt`; each builds its own typed
+ * boundary list and supplies the uniform fallback.
+ */
+function clampPick<T extends number | bigint>(rng: Rng, boundaries: T[], min: T, max: T): T | null {
+  if (rng.int(0, 1) !== 0) return null;
+  const v = boundaries[rng.int(0, boundaries.length - 1)];
+  return v < min ? min : v > max ? max : v;
+}
+
+/**
  * Adversarial integer in [min, max]: oversamples the width boundaries
  * (min, max, 0, 1, -1, min+1, max-1) so over/underflow and sign-edge bugs
  * surface, falling back to uniform-random the rest of the time.
  */
 function adversarialInt(rng: Rng, min: number, max: number): number {
-  if (rng.int(0, 1) === 0) {
-    const boundaries = [min, max, 0, 1, -1, min + 1, max - 1];
-    const v = boundaries[rng.int(0, boundaries.length - 1)];
-    // Clamp the symbolic boundaries into the actual width (e.g. -1 is out of
-    // range for unsigned types, min+1 may exceed max for 1-value domains).
-    return v < min ? min : v > max ? max : v;
-  }
-  return rng.int(min, max);
+  const v = clampPick(rng, [min, max, 0, 1, -1, min + 1, max - 1], min, max);
+  return v ?? rng.int(min, max);
 }
 
 /**
@@ -240,12 +247,8 @@ function adversarialInt(rng: Rng, min: number, max: number): number {
  * `adversarialInt` but for the 64/128/256-bit widths.
  */
 function adversarialBigInt(rng: Rng, min: bigint, max: bigint): bigint {
-  if (rng.int(0, 1) === 0) {
-    const boundaries = [min, max, 0n, 1n, -1n, min + 1n, max - 1n];
-    const v = boundaries[rng.int(0, boundaries.length - 1)];
-    return v < min ? min : v > max ? max : v;
-  }
-  return randomBigIntInRange(rng, min, max);
+  const v = clampPick(rng, [min, max, 0n, 1n, -1n, min + 1n, max - 1n], min, max);
+  return v ?? randomBigIntInRange(rng, min, max);
 }
 
 /**
@@ -355,6 +358,11 @@ export class NumericCodec<T extends TypedArray> extends BaseCodec {
   readonly numericFastPath = true;
   readonly Ctor: TypedArrayConstructor<T>;
   readonly converter?: (v: unknown) => number | bigint;
+  // Width range for the plain-integer generate() fallback. Float/Bool ignore
+  // these; Int64/UInt64 are bigint-special-cased before the fallback, so the
+  // Number-precision overflow at 64-bit widths never reaches a read site.
+  private readonly min: number;
+  private readonly max: number;
 
   constructor(
     type: string,
@@ -365,6 +373,10 @@ export class NumericCodec<T extends TypedArray> extends BaseCodec {
     this.type = type;
     this.Ctor = Ctor;
     this.converter = converter;
+    const bits = Ctor.BYTES_PER_ELEMENT * 8;
+    const signed = type.startsWith("Int");
+    this.max = signed ? 2 ** (bits - 1) - 1 : 2 ** bits - 1;
+    this.min = signed ? -(2 ** (bits - 1)) : 0;
   }
 
   encode(col: Column): Uint8Array {
@@ -436,12 +448,8 @@ export class NumericCodec<T extends TypedArray> extends BaseCodec {
       case "UInt64":
         return adversarialBigInt(rng, 0n, (1n << 64n) - 1n);
     }
-    // Remaining integer typed arrays: derive [min, max] from the constructor.
-    const bits = this.Ctor.BYTES_PER_ELEMENT * 8;
-    const signed = this.type.startsWith("Int");
-    const max = signed ? 2 ** (bits - 1) - 1 : 2 ** bits - 1;
-    const min = signed ? -(2 ** (bits - 1)) : 0;
-    return adversarialInt(rng, min, max);
+    // Remaining integer typed arrays use the width range from the constructor.
+    return adversarialInt(rng, this.min, this.max);
   }
 }
 
@@ -1114,15 +1122,9 @@ export class DateTime64Codec extends BaseCodec {
     const maxSec = bigIntMin(10413792000n, INT64_MAX / this.fullScale);
     const minTicks = bigIntMax(minSec * this.fullScale, INT64_MIN);
     const maxTicks = bigIntMin(maxSec * this.fullScale + (this.fullScale - 1n), INT64_MAX);
-    // Oversample epoch and the two range boundaries; otherwise a uniform tick.
-    if (rng.int(0, 2) === 0) {
-      const boundaries = [0n, minTicks, maxTicks];
-      return new ClickHouseDateTime64(
-        boundaries[rng.int(0, boundaries.length - 1)],
-        this.precision,
-      );
-    }
-    return new ClickHouseDateTime64(randomBigIntInRange(rng, minTicks, maxTicks), this.precision);
+    // adversarialBigInt oversamples the window boundaries (its set already
+    // includes minTicks/maxTicks/0n); otherwise a uniform tick.
+    return new ClickHouseDateTime64(adversarialBigInt(rng, minTicks, maxTicks), this.precision);
   }
 
   compare(a: unknown, b: unknown): boolean {
