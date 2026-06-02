@@ -77,7 +77,18 @@ export function createCodec(type: string): Codec {
       isNamed,
     );
   }
-  // Nested is syntactic sugar for Array(Tuple(...))
+  // Nested is syntactic sugar for Array(Tuple(...)) and is encoded as that
+  // single column. This only round-trips a TOP-LEVEL Nested column when the
+  // target table was created with flatten_nested=0. Under the default
+  // flatten_nested=1, ClickHouse splits the table into separate
+  // <name>.<field> Array columns, so inserting one Native column named after
+  // the Nested group does not match any physical column: the row values are
+  // dropped and the <name>.<field> columns default to empty arrays (silent
+  // data loss, no error). The codec only sees the column type string at encode
+  // time, not the server's flatten_nested setting, so this is documented rather
+  // than guarded here. Nested INSIDE other types (Array(Nested(...)),
+  // Nested(... Nested ...)) and a directly declared Array(Tuple(...)) are not
+  // affected and round-trip normally.
   if (type.startsWith("Nested")) {
     const args = parseTupleElements(extractTypeArgs(type));
     const tupleType = `Tuple(${args.map((a) => `${a.name} ${a.type}`).join(", ")})`;

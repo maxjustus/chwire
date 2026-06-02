@@ -335,6 +335,16 @@ batchFromCols({
 batchFromCols({
   data: getCodec("JSON").fromValues([{ a: 1, b: "x" }, { a: 2, c: true }]),
 });
+
+// Nested(a UInt32, b String) - encoded as Array(Tuple(a UInt32, b String)).
+// A top-level Nested column only round-trips when the target table was created
+// with flatten_nested=0 (see the note below).
+batchFromCols({
+  n: getCodec("Nested(a UInt32, b String)").fromValues([
+    [{ a: 1, b: "x" }, { a: 2, b: "y" }],
+    [],
+  ]),
+});
 ```
 
 ### Streaming Insert
@@ -369,6 +379,8 @@ await insert(
 Supports all ClickHouse types.
 
 **Limitation**: `Dynamic` and `JSON` types require V3 flattened format. On ClickHouse 25.6+, set `output_format_native_use_flattened_dynamic_and_json_serialization=1`.
+
+**Limitation**: A top-level `Nested` column is encoded as a single `Array(Tuple(...))` column. It only round-trips when the target table was created with `flatten_nested=0`. Under the default `flatten_nested=1`, ClickHouse stores the group as separate `<name>.<field>` Array columns; inserting the single Nested column then matches no physical column and the rows are silently stored as empty arrays (no error). `Nested` used inside another type is unaffected.
 
 ### BigInt Handling
 
