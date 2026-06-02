@@ -376,7 +376,7 @@ await insert(
 );
 ```
 
-Supports all ClickHouse types.
+Supports all ClickHouse types, with the two caveats below.
 
 **Limitation**: `Dynamic` and `JSON` types require V3 flattened format. On ClickHouse 25.6+, set `output_format_native_use_flattened_dynamic_and_json_serialization=1`.
 
