@@ -293,6 +293,18 @@ async function rollColumnType(
   return rollPlainType(wantScalar, wantComposite, rng, sessionId, conn);
 }
 
+/** Wrap a canonical Variant in a composite to exercise nested-Variant columns. */
+function wrapVariant(variant: string, rng: Rng): string {
+  switch (rng.int(0, 2)) {
+    case 0:
+      return `Array(${variant})`;
+    case 1:
+      return `Map(String, ${variant})`;
+    default:
+      return `Tuple(c0 ${variant}, c1 Int64)`;
+  }
+}
+
 /**
  * Roll a Dynamic column shape: a bare Dynamic, a capped Dynamic whose low
  * max_types forces the pool's distinct types to overflow into the shared variant,
@@ -321,7 +333,21 @@ async function rollComplexType(
 ): Promise<{ kind: Kind; type: string; table?: string } | null> {
   if (kind === "variant") {
     const v = await rollVariantType(rng, sessionId, conn);
-    return v === null ? null : { kind, type: v.type, table: v.table };
+    if (v === null) return null;
+    // 1/3 of the time nest the canonical Variant in a composite. The oracle table
+    // holds a top-level Variant column, so the wrapped column needs a fresh table:
+    // drop the oracle one and let runColumn create it (no preCreated reuse).
+    if (rng.int(0, 2) === 0) {
+      await consume(
+        query(`DROP TABLE IF EXISTS ${v.table} SYNC`, sessionId, {
+          baseUrl: conn.baseUrl,
+          auth: conn.auth,
+          compression: false,
+        }),
+      );
+      return { kind, type: wrapVariant(v.type, rng) };
+    }
+    return { kind, type: v.type, table: v.table };
   }
   if (kind === "dynamic") return { kind, type: rollDynamicType(rng) };
   return { kind, type: await rollJsonType(rng, sessionId, conn) };
@@ -578,7 +604,10 @@ function generateCells(
   const ctx = () => makeContext(rng, MAX_DEPTH, dynamicTypePool);
   const shape = SHAPES[rng.int(0, SHAPES.length - 1)];
 
-  if (kind === "variant") {
+  // Top-level Variant routes through the shape scheduler; a Variant nested in a
+  // composite (Array(Variant) etc.) falls through to the generic recursive
+  // generate below, where VariantCodec.generate emits each [disc, value] cell.
+  if (kind === "variant" && canonicalType.startsWith("Variant")) {
     const arms = parseTypeList(extractTypeArgs(canonicalType));
     const armCodecs = arms.map((t) => getCodec(t));
     const selectors = selectorsForShape(shape, rowCount, arms.length, rng);
