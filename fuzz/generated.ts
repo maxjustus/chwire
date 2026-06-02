@@ -350,7 +350,9 @@ async function rollVariantType(
   // string sort does not). The table is KEPT and returned so runColumn reuses it
   // — it already holds the canonical column — instead of creating a second one.
   // Dropped here only on the reject/collapse paths; on success the caller drops it.
-  const table = `variant_canon_${Date.now()}_${rng.int(0, 0x7fffffff)}`;
+  // Math.random (not the seeded rng) so parallel jobs that share an iteration
+  // seed across compressions get distinct names instead of colliding on one table.
+  const table = `variant_canon_${Date.now()}_${Math.random().toString(36).slice(2)}`;
   const drop = () =>
     consume(
       query(`DROP TABLE IF EXISTS ${table} SYNC`, sessionId, {
