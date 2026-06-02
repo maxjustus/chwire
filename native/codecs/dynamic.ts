@@ -346,20 +346,23 @@ export class DynamicCodec implements Codec {
   }
 
   /**
-   * Generate a bare Dynamic value (matching `DynamicColumn.get`).
+   * Generate an explicit-typed Dynamic value (`DynamicValue`).
    *
    * `DynamicCodec` has no type universe at construction (types are discovered
    * from the wire), so the type is sampled from the harness-injected pool via
-   * `ctx.pickDynamicType()`. The pool must only contain types whose generated
-   * representation survives `guessType` (`fromValues` re-derives each cell's
-   * discriminator from its runtime value, discarding the sampled type), so the
-   * harness restricts the pool to `guessType` fixed points.
+   * `ctx.pickDynamicType()`. Wrapping the sampled value in a `DynamicValue`
+   * carries the type through `fromValues`, which otherwise re-derives the
+   * discriminator from the runtime value via `guessType` and would collapse the
+   * full type space onto `guessType` fixed points. This makes the whole pool
+   * reachable for nested Dynamic (Array(Dynamic), JSON dynamic paths), matching
+   * how standalone Dynamic columns are generated.
    *
    * `null` exercises the null discriminator (`types.length`).
    */
   generate(ctx: GenContext): unknown {
     if (ctx.rng.int(0, 9) === 0) return null;
-    return this.resolveCodec(ctx.pickDynamicType()).generate(ctx.descend());
+    const t = ctx.pickDynamicType();
+    return new DynamicValue(t, this.resolveCodec(t).generate(ctx.descend()));
   }
 
   /**
@@ -546,9 +549,11 @@ export class JsonCodec implements Codec {
   /**
    * Compare two JSON objects under the null-path-omission rule: a path absent in
    * one side equals a null/absent path in the other (`JsonColumn.get` omits null
-   * paths). Typed paths compare via their codec; dynamic paths compare
-   * structurally (both sides are already in the canonical decoded representation,
-   * with integers as bigint).
+   * paths). Typed paths compare via their codec. Dynamic paths carry a generated
+   * `DynamicValue` (explicit type) on side `a` and a bare decoded value on side
+   * `b`; compare via the declared type's codec so type-aware equality (Float32
+   * precision, Decimal scale, DateTime64 ticks) applies, falling back to a
+   * structural compare when neither side is type-tagged.
    */
   compare(a: unknown, b: unknown): boolean {
     if (a == null || b == null || typeof a !== "object" || typeof b !== "object") return false;
@@ -557,14 +562,23 @@ export class JsonCodec implements Codec {
     const typedCodecs = new Map(this.typedPaths.map((tp) => [tp.name, tp.codec]));
 
     for (const key of new Set([...Object.keys(ao), ...Object.keys(bo)])) {
-      const av = ao[key] ?? null;
-      const bv = bo[key] ?? null;
+      const rawA = ao[key] ?? null;
+      const rawB = bo[key] ?? null;
+      const av = rawA instanceof DynamicValue ? rawA.value : rawA;
+      const bv = rawB instanceof DynamicValue ? rawB.value : rawB;
       if (av === null || bv === null) {
         if (av !== bv) return false;
         continue;
       }
-      const codec = typedCodecs.get(key);
-      if (codec ? !codec.compare(av, bv) : !deepCompare(av, bv)) return false;
+      const typedCodec = typedCodecs.get(key);
+      if (typedCodec) {
+        if (!typedCodec.compare(av, bv)) return false;
+        continue;
+      }
+      const dynType =
+        rawA instanceof DynamicValue ? rawA.type : rawB instanceof DynamicValue ? rawB.type : null;
+      const ok = dynType ? this.resolveCodec(dynType).compare(av, bv) : deepCompare(av, bv);
+      if (!ok) return false;
     }
     return true;
   }

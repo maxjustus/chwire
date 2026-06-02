@@ -69,19 +69,14 @@ function enabledKinds(): Set<Kind> {
 }
 
 /**
- * Pool for NESTED Dynamic (JSON dynamic paths and the nested-Dynamic generate
- * path): values flow through DynamicColumn.fromValues -> guessType, which
- * re-derives the type from the runtime value, so a type only round-trips if it
- * is a guessType fixed point (String, Int64 as bigint, Array(String)/Array(Int64)).
- * Float64/Bool/Date/etc. misclassify (integer Float64 -> Int64, Date -> DateTime64(3)).
- */
-const DEFAULT_DYNAMIC_TYPE_POOL = ["String", "Int64", "Array(String)", "Array(Int64)"];
-
-/**
- * Pool for a standalone Dynamic column: cells are wrapped in DynamicValue, which
- * carries an explicit type and bypasses guessType, so the full type space is
- * reachable. Kept under max_dynamic_types (default 32) so each type gets its own
- * discriminator rather than spilling into the shared-data path.
+ * Pool for every Dynamic generation path (standalone columns, Array(Dynamic) and
+ * other Dynamic-in-composite forms, JSON dynamic paths). Cells are wrapped in
+ * DynamicValue, which carries an explicit type and bypasses guessType, so the
+ * full type space is reachable rather than only the guessType fixed points. Kept
+ * under max_dynamic_types (default 32): the distinct-type count per Dynamic
+ * column is bounded by the pool size regardless of element/row count, so each
+ * type gets its own discriminator rather than spilling into the shared-data path
+ * (which the codec does not implement).
  */
 const FULL_DYNAMIC_TYPE_POOL = [
   "Int8",
@@ -193,14 +188,7 @@ const VARIANT_LEAF_TYPES = [
  * Types that contain a leaf we cannot yet generate standalone, or that need
  * their own kind. Reject when any appears anywhere in the type tree.
  */
-const UNSUPPORTED_SUBSTRINGS = [
-  "Dynamic",
-  "JSON",
-  "Variant",
-  "Nothing",
-  "AggregateFunction",
-  "Interval",
-];
+const UNSUPPORTED_SUBSTRINGS = ["JSON", "Variant", "Nothing", "AggregateFunction", "Interval"];
 
 /**
  * Whether a CH type can be rolled into a scalar/composite column: its codec
@@ -220,7 +208,7 @@ function isGeneratable(type: string, rng: Rng): boolean {
     // Probe a few draws: a single draw may take an empty-container branch and
     // skip an unimplemented leaf codec.
     for (let i = 0; i < 4; i++) {
-      codec.generate(makeContext(rng, MAX_DEPTH, DEFAULT_DYNAMIC_TYPE_POOL));
+      codec.generate(makeContext(rng, MAX_DEPTH, FULL_DYNAMIC_TYPE_POOL));
     }
     return true;
   } catch {
@@ -422,7 +410,7 @@ function selectorsForShape(
  */
 function generateCells(kind: Kind, canonicalType: string, rng: Rng, rowCount: number): unknown[] {
   const cells = new Array<unknown>(rowCount);
-  const ctx = () => makeContext(rng, MAX_DEPTH, DEFAULT_DYNAMIC_TYPE_POOL);
+  const ctx = () => makeContext(rng, MAX_DEPTH, FULL_DYNAMIC_TYPE_POOL);
   const shape = SHAPES[rng.int(0, SHAPES.length - 1)];
 
   if (kind === "variant") {
@@ -513,7 +501,7 @@ function dynamicPathMasks(
  * bare Dynamic values whose per-row presence follows a scheduled column shape.
  */
 function generateJsonCells(canonicalType: string, rng: Rng, rowCount: number): unknown[] {
-  const ctx = () => makeContext(rng, MAX_DEPTH, DEFAULT_DYNAMIC_TYPE_POOL);
+  const ctx = () => makeContext(rng, MAX_DEPTH, FULL_DYNAMIC_TYPE_POOL);
   const json = getCodec(canonicalType) as JsonCodec;
   const dynCodec = getCodec("Dynamic");
 
