@@ -208,6 +208,7 @@ import {
   batchFromRows,
   batchFromCols,
   getCodec,
+  DynamicValue,
 } from "@maxjustus/chwire";
 
 const schema = [
@@ -328,6 +329,11 @@ batchFromCols({
 // Dynamic - types inferred automatically
 batchFromCols({
   dyn: getCodec("Dynamic").fromValues(["hello", 42, true, [1, 2, 3], null]),
+});
+
+// Dynamic with an explicit per-value type (skips inference) via DynamicValue
+batchFromCols({
+  dyn: getCodec("Dynamic").fromValues([new DynamicValue("Int8", 5), new DynamicValue("Float64", 3)]),
 });
 
 // JSON - plain objects

@@ -7,7 +7,8 @@ release includes the unreleased changes since `@maxjustus/chttp@1.15.0`.
 
 ### Added
 
-- Added configurable ZSTD compression level via `compression: { method: "zstd", level }`.
+- Added configurable ZSTD compression level via `compression: { method: "zstd", level }` (replaces the separate `zstdLevel` option).
+- Added `DynamicValue` for inserting `Dynamic`-column values with an explicit ClickHouse type, bypassing runtime type inference.
 - Added exported `ClickHouseException` support for structured ClickHouse server errors.
 - Added TCP TLS coverage in the test suite.
 
