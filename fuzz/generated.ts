@@ -435,23 +435,48 @@ async function rollVariantType(
   return { type: canonical, table };
 }
 
+/** Path count: usually a handful, occasionally wide, to stress the path index. */
+function rollPathCount(rng: Rng): number {
+  return rng.int(0, 3) === 0 ? rng.int(0, 18) : rng.int(0, 4);
+}
+
 /**
- * Compose a JSON type with 0-3 typed paths. Typed-path types come from CH's
- * generateRandomStructure (matching fuzz/http.ts:216) restricted to generatable
- * scalars, each wrapped in Nullable so an absent path round-trips as omitted
- * rather than as a materialized default. A bare `JSON` (no typed paths) is also
- * rolled to exercise the all-dynamic-path code path.
+ * CH serializes a JSON sub-column Map as an object, so a Map in a typed path must
+ * have a String key. Detects Map(<non-String>, ...) at any depth. (Dynamic paths
+ * are Variant-wrapped, not JSON-native, so this restriction does not apply there.)
+ */
+function hasNonStringMapKey(type: string): boolean {
+  for (let i = type.indexOf("Map("); i !== -1; i = type.indexOf("Map(", i + 4)) {
+    const keyStart = i + 4;
+    let depth = 0;
+    let j = keyStart;
+    for (; j < type.length; j++) {
+      const c = type[j];
+      if (c === "(") depth++;
+      else if (c === ")") depth--;
+      else if (c === "," && depth === 0) break;
+    }
+    if (type.slice(keyStart, j).trim() !== "String") return true;
+  }
+  return false;
+}
+
+/**
+ * Compose a JSON type with typed paths whose types come from CH's
+ * generateRandomStructure (matching fuzz/http.ts:216). Scalars are wrapped in
+ * Nullable so an absent path round-trips as omitted; composites are declared bare
+ * (Nullable(Array/Map/Tuple) is illegal and they are always materialized, so
+ * there is no absent-default ambiguity). A bare `JSON` (no typed paths) is also
+ * rolled to exercise the all-dynamic-path path.
  */
 async function rollJsonType(rng: Rng, sessionId: string, conn: Conn): Promise<string> {
-  const numTypedPaths = rng.int(0, 3);
+  const numTypedPaths = rollPathCount(rng);
   const defs: string[] = [];
-  for (let p = 0; defs.length < numTypedPaths && p < numTypedPaths * 4; p++) {
+  for (let p = 0; defs.length < numTypedPaths && p < numTypedPaths * 4 + 4; p++) {
     const type = await fetchRandomStructureType(rng, sessionId, conn);
-    if (type === null) continue;
-    // Nullable wraps scalars only; composites round-trip non-null defaults
-    // differently, so skip them as typed paths here.
-    if (isComposite(type) || !isGeneratable(type, rng)) continue;
-    defs.push(`tp_${defs.length} Nullable(${type})`);
+    if (type === null || !isGeneratable(type, rng) || hasNonStringMapKey(type)) continue;
+    const declared = isComposite(type) ? type : `Nullable(${type})`;
+    defs.push(`tp_${defs.length} ${declared}`);
   }
   return defs.length > 0 ? `JSON(${defs.join(", ")})` : "JSON";
 }
@@ -616,7 +641,7 @@ function generateJsonCells(
   const json = getCodec(canonicalType) as JsonCodec;
   const dynCodec = getCodec("Dynamic");
 
-  const pathCount = rng.int(0, 3);
+  const pathCount = rollPathCount(rng);
   const shape = JSON_SHAPES[rng.int(0, JSON_SHAPES.length - 1)];
   const masks = dynamicPathMasks(shape, pathCount, rowCount, rng);
 
