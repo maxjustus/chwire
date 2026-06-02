@@ -57,6 +57,7 @@ const COMPLEX_TYPE_SETTINGS = {
 /** Column kinds the type roll can produce, gated by FUZZ_KINDS. */
 type Kind = "scalar" | "composite" | "variant" | "dynamic" | "json";
 const ALL_KINDS: Kind[] = ["scalar", "composite", "variant", "dynamic", "json"];
+const COMPLEX_KINDS: Kind[] = ["variant", "dynamic", "json"];
 
 function enabledKinds(): Set<Kind> {
   const value = process.env.FUZZ_KINDS;
@@ -257,32 +258,49 @@ async function rollColumnType(
 ): Promise<{ kind: Kind; type: string; table?: string } | null> {
   const wantScalar = kinds.has("scalar");
   const wantComposite = kinds.has("composite");
-  const wantVariant = kinds.has("variant");
-  const wantDynamic = kinds.has("dynamic");
-  const wantJson = kinds.has("json");
+  const complexKinds = COMPLEX_KINDS.filter((k) => kinds.has(k));
 
-  // Oversample the complex kinds: they carry the marquee coverage. When a
-  // plain kind is also requested, take a complex kind 1/3 of the time; when
-  // only complex kinds are requested, always.
-  const complexKinds: Kind[] = [];
-  if (wantVariant) complexKinds.push("variant");
-  if (wantDynamic) complexKinds.push("dynamic");
-  if (wantJson) complexKinds.push("json");
-  if (complexKinds.length > 0 && (!(wantScalar || wantComposite) || rng.int(0, 2) === 0)) {
+  // Oversample the complex kinds: they carry the marquee coverage. When a plain
+  // kind is also requested, take a complex kind 1/3 of the time; otherwise always.
+  const wantPlain = wantScalar || wantComposite;
+  if (complexKinds.length > 0 && (!wantPlain || rng.int(0, 2) === 0)) {
     const kind = complexKinds[rng.int(0, complexKinds.length - 1)];
-    if (kind === "variant") {
-      const v = await rollVariantType(rng, sessionId, conn);
-      return v === null ? null : { kind, type: v.type, table: v.table };
-    }
-    if (kind === "dynamic") return { kind, type: "Dynamic" };
-    return { kind, type: await rollJsonType(rng, sessionId, conn) };
+    return rollComplexType(kind, rng, sessionId, conn);
   }
+  return rollPlainType(wantScalar, wantComposite, rng, sessionId, conn);
+}
 
+/** Resolve an already-chosen complex kind to a concrete column type. */
+async function rollComplexType(
+  kind: Kind,
+  rng: Rng,
+  sessionId: string,
+  conn: Conn,
+): Promise<{ kind: Kind; type: string; table?: string } | null> {
+  if (kind === "variant") {
+    const v = await rollVariantType(rng, sessionId, conn);
+    return v === null ? null : { kind, type: v.type, table: v.table };
+  }
+  if (kind === "dynamic") return { kind, type: "Dynamic" };
+  return { kind, type: await rollJsonType(rng, sessionId, conn) };
+}
+
+/**
+ * Roll a scalar or composite type from CH's generateRandomStructure, retrying up
+ * to 8x for a natural match. If a composite was wanted but none was rolled in
+ * time, wrap a remembered scalar leaf so the composite wrappers stay covered.
+ */
+async function rollPlainType(
+  wantScalar: boolean,
+  wantComposite: boolean,
+  rng: Rng,
+  sessionId: string,
+  conn: Conn,
+): Promise<{ kind: Kind; type: string } | null> {
   let scalarLeaf: string | null = null;
   for (let attempt = 0; attempt < 8; attempt++) {
     const type = await fetchRandomStructureType(rng, sessionId, conn);
-    if (type === null) continue;
-    if (!isGeneratable(type, rng)) continue;
+    if (type === null || !isGeneratable(type, rng)) continue;
     if (isComposite(type)) {
       if (wantComposite) return { kind: "composite", type };
       // composite rolled but only scalar wanted: keep rolling
@@ -291,8 +309,6 @@ async function rollColumnType(
       if (scalarLeaf === null) scalarLeaf = type; // remember for wrapping
     }
   }
-  // Composite requested but no natural composite was rolled in time: wrap a
-  // scalar leaf so the composite wrappers stay covered. CH supplied the leaf.
   if (wantComposite && scalarLeaf !== null) {
     const wrapped = wrapScalar(scalarLeaf, rng);
     if (isGeneratable(wrapped, rng)) return { kind: "composite", type: wrapped };
