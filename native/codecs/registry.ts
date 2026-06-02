@@ -103,7 +103,10 @@ export function createCodec(type: string): Codec {
     const innerTypes = parseTypeList(extractTypeArgs(type));
     return new VariantCodec(innerTypes, innerTypes.map(getCodec));
   }
-  if (type === "Dynamic") return new DynamicCodec(getCodec);
+  // Dynamic or Dynamic(max_types=N): the max_types hint only bounds how many
+  // distinct types stay separate vs. spill to the shared variant in storage; the
+  // flattened wire format presents all of them, so it does not affect the codec.
+  if (type === "Dynamic" || type.startsWith("Dynamic(")) return new DynamicCodec(getCodec);
   if (type === "JSON" || type.startsWith("JSON")) {
     const typedPaths = parseJsonTypedPaths(type);
     return new JsonCodec(getCodec, typedPaths);
