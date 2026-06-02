@@ -31,31 +31,60 @@ export function asBytes(arr: ArrayBufferView): Uint8Array {
 export function parseTypeList(inner: string): string[] {
   const types: string[] = [];
   let depth = 0;
+  let inQuote = false;
   let current = "";
   for (const char of inner) {
-    if (char === "(") depth++;
-    if (char === ")") depth--;
-    if (char === "," && depth === 0) {
-      types.push(current.trim());
-      current = "";
-    } else {
-      current += char;
+    // A backtick-quoted name (e.g. a JSON path `a.b`) may contain commas/parens
+    // that must not be treated as list or type delimiters.
+    if (char === "`") inQuote = !inQuote;
+    if (!inQuote) {
+      if (char === "(") depth++;
+      else if (char === ")") depth--;
+      else if (char === "," && depth === 0) {
+        types.push(current.trim());
+        current = "";
+        continue;
+      }
     }
+    current += char;
   }
   if (current.trim()) types.push(current.trim());
   return types;
 }
 
 export function parseTupleElements(inner: string): { name: string | null; type: string }[] {
-  const parts = parseTypeList(inner);
-  return parts.map((part) => {
-    // ClickHouse type names are either bare identifiers (Int32, String) or use parens
-    // (Array(T), Nullable(T)). Neither form contains a space at the top level.
-    // So if this pattern matches, it must be a named field: "fieldName TypeName".
-    const match = part.match(/^([a-z_][a-z0-9_]*)\s+(.+)$/i);
-    if (match) return { name: match[1], type: match[2] };
-    return { name: null, type: part };
-  });
+  return parseTypeList(inner).map(parseNamedElement);
+}
+
+/**
+ * Split a "name Type" element into name and type. Names are either bare
+ * identifiers that may contain dots (JSON nested paths like `a.b.c`) or, when the
+ * name has characters ClickHouse must quote, a backtick-quoted string (`` `a.b` ``,
+ * a doubled backtick escaping a literal one). A bare type with no name (a Tuple
+ * element, a config param) returns name=null.
+ */
+function parseNamedElement(part: string): { name: string | null; type: string } {
+  if (part.startsWith("`")) {
+    let name = "";
+    let i = 1;
+    for (; i < part.length; i++) {
+      if (part[i] === "`") {
+        if (part[i + 1] === "`") {
+          name += "`";
+          i++;
+          continue;
+        }
+        i++; // consume the closing backtick
+        break;
+      }
+      name += part[i];
+    }
+    const type = part.slice(i).trim();
+    return type ? { name, type } : { name: null, type: part };
+  }
+  const match = part.match(/^([a-z_][a-z0-9_]*(?:\.[a-z_][a-z0-9_]*)*)\s+(.+)$/i);
+  if (match) return { name: match[1], type: match[2] };
+  return { name: null, type: part };
 }
 
 // Extracts the content between the outermost parentheses: "Array(Int32)" -> "Int32"
