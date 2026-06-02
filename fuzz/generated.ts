@@ -254,7 +254,7 @@ async function rollColumnType(
   rng: Rng,
   sessionId: string,
   conn: Conn,
-): Promise<{ kind: Kind; type: string } | null> {
+): Promise<{ kind: Kind; type: string; table?: string } | null> {
   const wantScalar = kinds.has("scalar");
   const wantComposite = kinds.has("composite");
   const wantVariant = kinds.has("variant");
@@ -271,8 +271,8 @@ async function rollColumnType(
   if (complexKinds.length > 0 && (!(wantScalar || wantComposite) || rng.int(0, 2) === 0)) {
     const kind = complexKinds[rng.int(0, complexKinds.length - 1)];
     if (kind === "variant") {
-      const type = await rollVariantType(rng, sessionId, conn);
-      return type === null ? null : { kind, type };
+      const v = await rollVariantType(rng, sessionId, conn);
+      return v === null ? null : { kind, type: v.type, table: v.table };
     }
     if (kind === "dynamic") return { kind, type: "Dynamic" };
     return { kind, type: await rollJsonType(rng, sessionId, conn) };
@@ -329,7 +329,11 @@ function isTopLevelNullableArm(arm: string): boolean {
  * survive (collision collapse) or the candidate is illegal, return null so the
  * caller skips, mirroring rollColumnType's null path.
  */
-async function rollVariantType(rng: Rng, sessionId: string, conn: Conn): Promise<string | null> {
+async function rollVariantType(
+  rng: Rng,
+  sessionId: string,
+  conn: Conn,
+): Promise<{ type: string; table: string } | null> {
   const armCount = rng.int(2, 5);
   const arms: string[] = [];
   for (let attempt = 0; arms.length < armCount && attempt < armCount * 4; attempt++) {
@@ -341,9 +345,22 @@ async function rollVariantType(rng: Rng, sessionId: string, conn: Conn): Promise
   }
   if (arms.length < 2) return null;
 
-  // Let CH dedup + canonicalize via the CREATE TABLE / system.columns oracle.
+  // Let CH dedup + canonicalize the arm set via the CREATE TABLE / system.columns
+  // oracle (CH collapses aliases like Decimal32(2)==Decimal(9,2) that the codec's
+  // string sort does not). The table is KEPT and returned so runColumn reuses it
+  // — it already holds the canonical column — instead of creating a second one.
+  // Dropped here only on the reject/collapse paths; on success the caller drops it.
   const table = `variant_canon_${Date.now()}_${rng.int(0, 0x7fffffff)}`;
-  let canonical: string | null = null;
+  const drop = () =>
+    consume(
+      query(`DROP TABLE IF EXISTS ${table} SYNC`, sessionId, {
+        baseUrl: conn.baseUrl,
+        auth: conn.auth,
+        compression: false,
+      }),
+    );
+
+  let canonical: string;
   try {
     await consume(
       query(`CREATE TABLE ${table} (v Variant(${arms.join(", ")})) ENGINE = Memory`, sessionId, {
@@ -367,21 +384,16 @@ async function rollVariantType(rng: Rng, sessionId: string, conn: Conn): Promise
   } catch {
     // An illegal arm set (e.g. a Nullable that slipped the filter) errors here;
     // treat it as a skipped roll rather than crashing the iteration.
+    await drop();
     return null;
-  } finally {
-    await consume(
-      query(`DROP TABLE IF EXISTS ${table} SYNC`, sessionId, {
-        baseUrl: conn.baseUrl,
-        auth: conn.auth,
-        compression: false,
-      }),
-    );
   }
 
-  if (!canonical) return null;
   // After CH dedup, require at least 2 distinct arms survive.
-  if (parseTypeList(extractTypeArgs(canonical)).length < 2) return null;
-  return canonical;
+  if (!canonical || parseTypeList(extractTypeArgs(canonical)).length < 2) {
+    await drop();
+    return null;
+  }
+  return { type: canonical, table };
 }
 
 /**
@@ -595,17 +607,21 @@ async function runColumn(opts: {
   sessionId: string;
   insertSessionId: string;
   table: string;
+  /** Variant rolls arrive with a CH-canonicalized table already created; reuse it. */
+  preCreated?: boolean;
 }): Promise<void> {
   const { kind, columnType, seed, rowCount, compression, baseUrl, auth } = opts;
 
-  await consume(
-    query(`CREATE TABLE ${opts.table} (v ${columnType}) ENGINE = Memory`, opts.sessionId, {
-      baseUrl,
-      auth,
-      compression: false,
-      settings: COMPLEX_TYPE_SETTINGS,
-    }),
-  );
+  if (!opts.preCreated) {
+    await consume(
+      query(`CREATE TABLE ${opts.table} (v ${columnType}) ENGINE = Memory`, opts.sessionId, {
+        baseUrl,
+        auth,
+        compression: false,
+        settings: COMPLEX_TYPE_SETTINGS,
+      }),
+    );
+  }
 
   // VariantCodec reorders arms into ClickHouse's canonical (sorted) order, so
   // codec.type is the type CH actually stores. Build, encode, and compare
@@ -701,7 +717,6 @@ describe("Native client-generated Fuzz Tests", { timeout: 600000 }, () => {
           const suffix = `${Date.now()}_${i}_${Math.random().toString(36).slice(2)}`;
           const sessionId = `generated_fuzz_${compression}_${suffix}`;
           const insertSessionId = `${sessionId}_insert`;
-          const table = `generated_fuzz_${suffix}`;
 
           // Roll the column type with its own seeded rng so the per-row
           // generation rng (re-seeded inside runColumn) stays deterministic.
@@ -714,6 +729,8 @@ describe("Native client-generated Fuzz Tests", { timeout: 600000 }, () => {
             continue;
           }
           const { kind, type: columnType } = rolled;
+          // Variant rolls bring a pre-created, CH-canonicalized table; reuse it.
+          const table = rolled.table ?? `generated_fuzz_${suffix}`;
 
           console.log(
             `[generated fuzz ${i + 1}/${N} compression=${compression}] ${kind} ${columnType} seed=${seed}`,
@@ -731,6 +748,7 @@ describe("Native client-generated Fuzz Tests", { timeout: 600000 }, () => {
               sessionId,
               insertSessionId,
               table,
+              preCreated: rolled.table !== undefined,
             });
           } catch (err) {
             logFuzzError(
