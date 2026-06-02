@@ -345,6 +345,19 @@ function adversarialString(rng: Rng): string {
   }
 }
 
+/**
+ * `n` adversarial bytes: oversamples the all-zero and all-0xFF fills (each 1/4),
+ * otherwise random per-byte (1/2). Backs the fixed-width byte generators
+ * (UUID/FixedString/IPv4/IPv6) so each draws the same fill class then bytes.
+ */
+function adversarialBytes(rng: Rng, n: number): Uint8Array {
+  const bytes = new Uint8Array(n);
+  const fill = rng.int(0, 3);
+  if (fill === 1) bytes.fill(0xff);
+  else if (fill >= 2) for (let i = 0; i < n; i++) bytes[i] = rng.int(0, 0xff);
+  return bytes;
+}
+
 /** Short random ASCII-ish string. Length biased small to exercise repeats. */
 function randomString(rng: Rng): string {
   const len = rng.int(0, 12);
@@ -678,14 +691,9 @@ export class UUIDCodec extends BaseCodec {
   }
 
   generate(ctx: GenContext): string {
-    const rng = ctx.rng;
+    const bytes = adversarialBytes(ctx.rng, 16);
     let hex = "";
-    // Oversample the all-zero and all-0xFF byte patterns; otherwise random.
-    const fill = rng.int(0, 3);
-    for (let i = 0; i < 16; i++) {
-      const byte = fill === 0 ? 0x00 : fill === 1 ? 0xff : rng.int(0, 0xff);
-      hex += BYTE_TO_HEX[byte];
-    }
+    for (let i = 0; i < 16; i++) hex += BYTE_TO_HEX[bytes[i]];
     return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
   }
 }
@@ -786,13 +794,7 @@ export class FixedStringCodec extends BaseCodec {
   }
 
   generate(ctx: GenContext): Uint8Array {
-    const rng = ctx.rng;
-    const bytes = new Uint8Array(this.len);
-    // Oversample all-zero and all-0xFF fills; otherwise random per-byte.
-    const fill = rng.int(0, 3);
-    if (fill === 1) bytes.fill(0xff);
-    else if (fill >= 2) for (let i = 0; i < this.len; i++) bytes[i] = rng.int(0, 0xff);
-    return bytes;
+    return adversarialBytes(ctx.rng, this.len);
   }
 }
 
@@ -1304,11 +1306,8 @@ export class IPv4Codec extends BaseCodec {
   }
 
   generate(ctx: GenContext): string {
-    const rng = ctx.rng;
-    // Oversample all-zero (0.0.0.0) and all-0xFF (255.255.255.255); else random.
-    const fill = rng.int(0, 3);
-    const o = () => (fill === 0 ? 0 : fill === 1 ? 255 : rng.int(0, 255));
-    return `${o()}.${o()}.${o()}.${o()}`;
+    // 0xff fill yields 255.255.255.255; all-zero yields 0.0.0.0; else random.
+    return adversarialBytes(ctx.rng, 4).join(".");
   }
 }
 
@@ -1352,14 +1351,8 @@ export class IPv6Codec extends BaseCodec {
   }
 
   generate(ctx: GenContext): string {
-    const rng = ctx.rng;
-    // Format the random bytes through the decode path so the generated string
-    // matches decode's representation (minimal hex per group, no :: compression).
-    // Oversample all-zero and all-0xFF byte fills; otherwise random per-byte.
-    const bytes = new Uint8Array(16);
-    const fill = rng.int(0, 3);
-    if (fill === 1) bytes.fill(0xff);
-    else if (fill >= 2) for (let i = 0; i < 16; i++) bytes[i] = rng.int(0, 0xff);
-    return bytesToIpv6(bytes);
+    // Format the bytes through the decode path so the generated string matches
+    // decode's representation (minimal hex per group, no :: compression).
+    return bytesToIpv6(adversarialBytes(ctx.rng, 16));
   }
 }
