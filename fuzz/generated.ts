@@ -70,37 +70,19 @@ function enabledKinds(): Set<Kind> {
 }
 
 /**
- * Pool for every Dynamic generation path (standalone columns, Array(Dynamic) and
- * other Dynamic-in-composite forms, JSON dynamic paths). Cells are wrapped in
- * DynamicValue, which carries an explicit type and bypasses guessType, so the
- * full type space is reachable rather than only the guessType fixed points. Kept
- * under max_dynamic_types (default 32): the distinct-type count per Dynamic
- * column is bounded by the pool size regardless of element/row count, so each
- * type gets its own discriminator rather than spilling into the shared-data path
- * (which the codec does not implement).
+ * Types the isGeneratable probe falls back on for a Dynamic leaf inside a
+ * candidate. generateRandomStructure never emits Dynamic, so this only keeps the
+ * probe from crashing on a hypothetical Dynamic-bearing candidate; the real
+ * per-iteration fuzzing pool comes from buildDynamicTypePool.
  */
-const FULL_DYNAMIC_TYPE_POOL = [
-  "Int8",
-  "Int32",
-  "Int64",
-  "Int128",
-  "UInt8",
-  "UInt64",
-  "Float32",
-  "Float64",
-  "Bool",
-  "String",
-  "FixedString(16)",
-  "UUID",
-  "Date",
-  "DateTime",
-  "DateTime64(9)",
-  "Decimal(18, 4)",
-  "IPv4",
-  "IPv6",
-  "Array(Int64)",
-  "Array(String)",
-];
+const PROBE_DYNAMIC_TYPES = ["Int64", "String", "Float64", "Bool"];
+
+/**
+ * Upper bound on a Dynamic column's distinct-type pool. Stays under
+ * max_dynamic_types (default 32) so every type gets its own discriminator rather
+ * than spilling into the shared-data path (which the codec does not implement).
+ */
+const DYNAMIC_POOL_SIZE = 24;
 
 /**
  * mulberry32 PRNG: deterministic, seedable, fast. The seed comes from the
@@ -184,7 +166,7 @@ function isGeneratable(type: string, rng: Rng): boolean {
     // Probe a few draws: a single draw may take an empty-container branch and
     // skip an unimplemented leaf codec.
     for (let i = 0; i < 4; i++) {
-      codec.generate(makeContext(rng, MAX_DEPTH, FULL_DYNAMIC_TYPE_POOL));
+      codec.generate(makeContext(rng, MAX_DEPTH, PROBE_DYNAMIC_TYPES));
     }
     return true;
   } catch {
@@ -247,6 +229,45 @@ async function fetchRandomStructureType(
   const match = structure.match(/^\S+\s+(.+)$/);
   if (!match) return null;
   return match[1].replace(/\\'/g, "'");
+}
+
+/**
+ * Whether a type is a legal Dynamic subtype. Dynamic is stored as a Variant
+ * internally, so a subtype must be a legal Variant arm: CH forbids a Nullable (or
+ * LowCardinality(Nullable)) arm since the discriminator already encodes absence.
+ * The rule is on the arm's top-level constructor, so Array(Nullable(T)) etc. stay
+ * legal. Extended as the INSERT oracle surfaces further restrictions.
+ */
+function dynamicArmAllowed(type: string): boolean {
+  return !type.startsWith("Nullable") && !type.startsWith("LowCardinality(Nullable");
+}
+
+/**
+ * Build the pool of types one Dynamic column may hold this iteration, drawn from
+ * CH's generateRandomStructure and filtered to what our codecs can generate. This
+ * replaces a hand-maintained constant: CH owns "what types exist", isGeneratable
+ * owns "what we can decode". Bounded by DYNAMIC_POOL_SIZE. The pool gets its own
+ * seeded rng so it stays deterministic for replay without perturbing per-row gen.
+ */
+async function buildDynamicTypePool(rng: Rng, sessionId: string, conn: Conn): Promise<string[]> {
+  const pool: string[] = [];
+  const seen = new Set<string>();
+  for (
+    let attempt = 0;
+    attempt < DYNAMIC_POOL_SIZE * 4 && pool.length < DYNAMIC_POOL_SIZE;
+    attempt++
+  ) {
+    const type = await fetchRandomStructureType(rng, sessionId, conn);
+    if (type === null || seen.has(type)) continue;
+    seen.add(type);
+    // Permissive: admit anything our codecs can generate and CH allows as a
+    // Dynamic arm. Restrictions are discovered from INSERT rejections and encoded
+    // in dynamicArmAllowed.
+    if (isGeneratable(type, rng) && dynamicArmAllowed(type)) {
+      pool.push(type);
+    }
+  }
+  return pool.length > 0 ? pool : PROBE_DYNAMIC_TYPES;
 }
 
 /** Ask CH for a random column type matching one of the requested kinds. */
@@ -485,9 +506,15 @@ function selectorsForShape(
  * the shape scheduler so discriminator runs/all-null/alternation are covered;
  * other kinds draw each cell i.i.d. via the column codec's generate().
  */
-function generateCells(kind: Kind, canonicalType: string, rng: Rng, rowCount: number): unknown[] {
+function generateCells(
+  kind: Kind,
+  canonicalType: string,
+  rng: Rng,
+  rowCount: number,
+  dynamicTypePool: string[],
+): unknown[] {
   const cells = new Array<unknown>(rowCount);
-  const ctx = () => makeContext(rng, MAX_DEPTH, FULL_DYNAMIC_TYPE_POOL);
+  const ctx = () => makeContext(rng, MAX_DEPTH, dynamicTypePool);
   const shape = SHAPES[rng.int(0, SHAPES.length - 1)];
 
   if (kind === "variant") {
@@ -506,18 +533,20 @@ function generateCells(kind: Kind, canonicalType: string, rng: Rng, rowCount: nu
     // are distributed across rows (runs, alternation, all-null, uniform mix).
     // DynamicValue carries the explicit type so guessType is bypassed and the
     // full type space round-trips, not just guessType fixed points.
-    const pool = FULL_DYNAMIC_TYPE_POOL;
-    const poolCodecs = pool.map((t) => getCodec(t));
+    const poolCodecs = dynamicTypePool.map((t) => getCodec(t));
     const selectors = selectorsForShape(shape, rowCount, poolCodecs.length, rng);
     for (let r = 0; r < rowCount; r++) {
       const sel = selectors[r];
-      cells[r] = sel === null ? null : new DynamicValue(pool[sel], poolCodecs[sel].generate(ctx()));
+      cells[r] =
+        sel === null
+          ? null
+          : new DynamicValue(dynamicTypePool[sel], poolCodecs[sel].generate(ctx()));
     }
     return cells;
   }
 
   if (kind === "json") {
-    return generateJsonCells(canonicalType, rng, rowCount);
+    return generateJsonCells(canonicalType, rng, rowCount, dynamicTypePool);
   }
 
   const codec = getCodec(canonicalType);
@@ -577,8 +606,13 @@ function dynamicPathMasks(
  * (Nullable typed paths, so null omits the path). Dynamic paths (`dp_0..`) carry
  * bare Dynamic values whose per-row presence follows a scheduled column shape.
  */
-function generateJsonCells(canonicalType: string, rng: Rng, rowCount: number): unknown[] {
-  const ctx = () => makeContext(rng, MAX_DEPTH, FULL_DYNAMIC_TYPE_POOL);
+function generateJsonCells(
+  canonicalType: string,
+  rng: Rng,
+  rowCount: number,
+  dynamicTypePool: string[],
+): unknown[] {
+  const ctx = () => makeContext(rng, MAX_DEPTH, dynamicTypePool);
   const json = getCodec(canonicalType) as JsonCodec;
   const dynCodec = getCodec("Dynamic");
 
@@ -625,6 +659,8 @@ async function runColumn(opts: {
   sessionId: string;
   insertSessionId: string;
   table: string;
+  /** Types a Dynamic column may hold this iteration (built from CH). */
+  dynamicTypePool: string[];
   /** Variant rolls arrive with a CH-canonicalized table already created; reuse it. */
   preCreated?: boolean;
 }): Promise<void> {
@@ -656,7 +692,7 @@ async function runColumn(opts: {
   const schema: ColumnDef[] = [{ name: "v", type: canonicalType }];
 
   const rng = makeRng(seed);
-  const cells = generateCells(kind, canonicalType, rng, rowCount);
+  const cells = generateCells(kind, canonicalType, rng, rowCount, opts.dynamicTypePool);
   const rows: unknown[][] = cells.map((c) => [c]);
 
   const encoded = encodeNative(batchFromRows(schema, rows));
@@ -754,6 +790,13 @@ describe("Native client-generated Fuzz Tests", { timeout: 600000 }, () => {
             `[generated fuzz ${i + 1}/${N} compression=${compression}] ${kind} ${columnType} seed=${seed}`,
           );
 
+          // Only Dynamic-bearing kinds sample the pool; building it for the rest
+          // would spend CH round-trips no cell ever reads.
+          const dynamicTypePool =
+            kind === "dynamic" || kind === "json"
+              ? await buildDynamicTypePool(makeRng(seed ^ 0x2545f491), sessionId, { baseUrl, auth })
+              : PROBE_DYNAMIC_TYPES;
+
           try {
             await runColumn({
               kind,
@@ -766,6 +809,7 @@ describe("Native client-generated Fuzz Tests", { timeout: 600000 }, () => {
               sessionId,
               insertSessionId,
               table,
+              dynamicTypePool,
               preCreated: rolled.table !== undefined,
             });
           } catch (err) {
