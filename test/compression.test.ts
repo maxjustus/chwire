@@ -24,7 +24,7 @@ describe("Compression", () => {
   describe("LZ4 compression", () => {
     it("should compress and decompress data correctly", () => {
       const data = encoder.encode("Hello, World! This is a test.");
-      const compressed = encodeBlock(data, Method.LZ4);
+      const compressed = encodeBlock(data, "lz4");
       const decompressed = decodeBlock(compressed);
 
       assert.strictEqual(decoder.decode(decompressed), decoder.decode(data));
@@ -32,7 +32,7 @@ describe("Compression", () => {
 
     it("should handle empty data", () => {
       const data = encoder.encode("");
-      const compressed = encodeBlock(data, Method.None);
+      const compressed = encodeBlock(data, false);
       const decompressed = decodeBlock(compressed);
 
       assert.strictEqual(decoder.decode(decompressed), "");
@@ -40,7 +40,7 @@ describe("Compression", () => {
 
     it("should handle large repetitive data efficiently", () => {
       const data = encoder.encode("A".repeat(10000));
-      const compressed = encodeBlock(data, Method.LZ4);
+      const compressed = encodeBlock(data, "lz4");
       const decompressed = decodeBlock(compressed);
 
       assert.strictEqual(decoder.decode(decompressed), decoder.decode(data));
@@ -50,7 +50,7 @@ describe("Compression", () => {
   describe("ZSTD compression", () => {
     it("should compress and decompress data correctly", () => {
       const data = encoder.encode("Hello, World! This is a ZSTD test.");
-      const compressed = encodeBlock(data, Method.ZSTD);
+      const compressed = encodeBlock(data, "zstd");
       const decompressed = decodeBlock(compressed);
 
       assert.strictEqual(decoder.decode(decompressed), decoder.decode(data));
@@ -58,7 +58,7 @@ describe("Compression", () => {
 
     it("should accept an explicit compression level", () => {
       const data = encoder.encode("zstd-level-test".repeat(1000));
-      const compressed = encodeBlock(data, Method.ZSTD, 6);
+      const compressed = encodeBlock(data, { method: "zstd", level: 6 });
       const decompressed = decodeBlock(compressed);
 
       assert.strictEqual(decoder.decode(decompressed), decoder.decode(data));
@@ -67,8 +67,8 @@ describe("Compression", () => {
     it("should achieve better compression than LZ4 for repetitive data", () => {
       const data = encoder.encode("ABCD".repeat(1000));
 
-      const lz4Compressed = encodeBlock(data, Method.LZ4);
-      const zstdCompressed = encodeBlock(data, Method.ZSTD);
+      const lz4Compressed = encodeBlock(data, "lz4");
+      const zstdCompressed = encodeBlock(data, "zstd");
 
       const lz4Decompressed = decodeBlock(lz4Compressed);
       const zstdDecompressed = decodeBlock(zstdCompressed);
@@ -87,9 +87,9 @@ describe("Compression", () => {
       const data2 = encoder.encode("Second block data");
       const data3 = encoder.encode("Third block data");
 
-      const block1 = encodeBlock(data1, Method.LZ4);
-      const block2 = encodeBlock(data2, Method.LZ4);
-      const block3 = encodeBlock(data3, Method.LZ4);
+      const block1 = encodeBlock(data1, "lz4");
+      const block2 = encodeBlock(data2, "lz4");
+      const block3 = encodeBlock(data3, "lz4");
 
       const combined = concat([block1, block2, block3]);
       const decompressed = decodeBlocks(combined);
@@ -103,9 +103,9 @@ describe("Compression", () => {
       const data2 = encoder.encode("ZSTD compressed block");
       const data3 = encoder.encode("Uncompressed block");
 
-      const block1 = encodeBlock(data1, Method.LZ4);
-      const block2 = encodeBlock(data2, Method.ZSTD);
-      const block3 = encodeBlock(data3, Method.None);
+      const block1 = encodeBlock(data1, "lz4");
+      const block2 = encodeBlock(data2, "zstd");
+      const block3 = encodeBlock(data3, false);
 
       const combined = concat([block1, block2, block3]);
       const decompressed = decodeBlocks(combined);
@@ -118,7 +118,7 @@ describe("Compression", () => {
   describe("Partial block handling", () => {
     it("should handle block split across chunks", async () => {
       const data = encoder.encode("Test data for partial block handling");
-      const compressed = encodeBlock(data, Method.LZ4);
+      const compressed = encodeBlock(data, "lz4");
 
       // Simulate the decompression logic with partial chunks
       async function processChunks(chunks: Uint8Array[]) {
@@ -196,7 +196,7 @@ describe("Compression", () => {
         const data = encoder.encode("X".repeat(size));
 
         // LZ4 round-trip
-        const lz4Compressed = encodeBlock(data, Method.LZ4);
+        const lz4Compressed = encodeBlock(data, "lz4");
         const lz4Decompressed = decodeBlock(lz4Compressed);
         assert.strictEqual(
           lz4Decompressed.length,
@@ -206,7 +206,7 @@ describe("Compression", () => {
         assert.deepStrictEqual(lz4Decompressed, data, `LZ4 data mismatch for ${size} bytes`);
 
         // ZSTD round-trip
-        const zstdCompressed = encodeBlock(data, Method.ZSTD);
+        const zstdCompressed = encodeBlock(data, "zstd");
         const zstdDecompressed = decodeBlock(zstdCompressed);
         assert.strictEqual(
           zstdDecompressed.length,
@@ -219,7 +219,7 @@ describe("Compression", () => {
 
     it("should produce valid ClickHouse block format", () => {
       const data = encoder.encode("Test data for ClickHouse");
-      const compressed = encodeBlock(data, Method.LZ4);
+      const compressed = encodeBlock(data, "lz4");
 
       // Verify block structure
       assert.ok(compressed.length >= 25, "Block should be at least 25 bytes");

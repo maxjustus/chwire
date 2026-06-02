@@ -3,7 +3,7 @@ import { gunzip, gzip, zstdCompressSync, zstdDecompressSync } from "node:zlib";
 import * as bokuweb from "@bokuweb/zstd-wasm";
 import { compressFrame, decompressFrame } from "lz4-napi";
 import { compress as zstdNativeCompress, decompress as zstdNativeDecompress } from "zstd-napi";
-import { decodeBlock, encodeBlock, init, Method, usingNativeZstd } from "../compression.ts";
+import { decodeBlock, encodeBlock, init, usingNativeZstd } from "../compression.ts";
 import { benchAsync, readBenchOptions, reportEnvironment } from "./harness.ts";
 
 const gzipAsync = promisify(gzip);
@@ -164,7 +164,7 @@ function getMethods(): CompressionMethod[] {
   return [
     {
       name: "LZ4 wasm",
-      compress: async (d) => encodeBlock(d, Method.LZ4),
+      compress: async (d) => encodeBlock(d, "lz4"),
       decompress: async (d) => decodeBlock(d),
     },
     {
@@ -174,7 +174,7 @@ function getMethods(): CompressionMethod[] {
     },
     {
       name: "ZSTD chwire",
-      compress: async (d) => encodeBlock(d, Method.ZSTD),
+      compress: async (d) => encodeBlock(d, "zstd"),
       decompress: async (d) => decodeBlock(d),
     },
     {

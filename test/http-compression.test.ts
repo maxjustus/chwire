@@ -4,7 +4,7 @@
 
 import assert from "node:assert/strict";
 import { after, before, describe, it } from "node:test";
-import { collectJsonEachRow, init, query } from "../client.ts";
+import { collectJsonEachRow, init, query, type QueryOptions } from "../client.ts";
 import { startClickHouse, stopClickHouse } from "./setup.ts";
 import { generateSessionId } from "./test_utils.ts";
 
@@ -25,10 +25,7 @@ describe("HTTP query body compression", { timeout: 60000 }, () => {
     await stopClickHouse();
   });
 
-  const assertSuccessfulQuery = async (
-    compressQuery: "lz4" | "zstd" | undefined,
-    zstdLevel?: number,
-  ) => {
+  const assertSuccessfulQuery = async (compressQuery: QueryOptions["compressQuery"]) => {
     // Large query with many values to make compression worthwhile
     const values = Array(500)
       .fill(0)
@@ -42,7 +39,6 @@ describe("HTTP query body compression", { timeout: 60000 }, () => {
         auth,
         compression: "zstd",
         compressQuery,
-        zstdLevel,
       }),
     );
 
@@ -50,13 +46,13 @@ describe("HTTP query body compression", { timeout: 60000 }, () => {
     assert.strictEqual(rows.length, 500);
   };
 
-  for (const compression of ["zstd", "lz4", undefined]) {
+  for (const compression of ["zstd", "lz4", undefined] as const) {
     it(`runs query when compressQuery is set to '${compression}'`, async () => {
-      await assertSuccessfulQuery(compression as any);
+      await assertSuccessfulQuery(compression);
     });
   }
 
   it("sends zstd-compressed query body with a custom compression level", async () => {
-    await assertSuccessfulQuery("zstd", 6);
+    await assertSuccessfulQuery({ method: "zstd", level: 6 });
   });
 });

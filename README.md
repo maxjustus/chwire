@@ -106,7 +106,7 @@ const result = await collectText(query("SELECT 42 as value", sessionId, {
 ```
 
 The transport keys `baseUrl`, `auth`, `compression`, `compressQuery`, `signal`, `timeout`,
-`clientVersion`, `settings`, `params`, `externalTables`, `queryId`, and `zstdLevel` are reserved
+`clientVersion`, `settings`, `params`, `externalTables`, and `queryId` are reserved
 and are not forwarded as raw URL params.
 
 ## Streaming Large Inserts
@@ -126,8 +126,7 @@ await insert(
   streamEncodeJsonEachRow(generateRows()),
   "session123",
   {
-    compression: "zstd",
-    zstdLevel: 6,
+    compression: { method: "zstd", level: 6 },
     onProgress: (p) => console.log(`${p.bytesUncompressed} bytes`),
   },
 );
@@ -438,8 +437,7 @@ const client = new TcpClient({
   database: "default",
   user: "default",
   password: "",
-  compression: "lz4", // 'lz4' | 'zstd' | false
-  zstdLevel: 6, // optional, only used with ZSTD request compression
+  compression: "lz4", // 'lz4' | 'zstd' | false | { method: 'zstd', level: 6 }
   connectTimeout: 10000, // ms
   queryTimeout: 30000, // ms
   tls: true, // or tls.ConnectionOptions
@@ -774,8 +772,7 @@ Set `compression` in options:
 - `"lz4"` - fast, uses native bindings when available with WASM fallback (default)
 - `"zstd"` - ~2x better compression, uses native bindings when available with WASM fallback
 - `false` - no compression
-
-Use `zstdLevel` to override the default ZSTD level for request compression.
+- `{ method: "zstd", level }` - ZSTD with an explicit level (1-22, default: 3)
 
 ZSTD and LZ4 use native bindings in Node.js/Bun when available, falling back to WASM in browsers and Deno.
 

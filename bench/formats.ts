@@ -4,7 +4,7 @@
 
 import { promisify } from "node:util";
 import { gzip } from "node:zlib";
-import { encodeBlock, init, Method } from "../compression.ts";
+import { encodeBlock, init } from "../compression.ts";
 import {
   batchFromCols,
   batchFromRows,
@@ -182,11 +182,11 @@ async function runScenario(
   console.log(formatResult(nativeDec, rows));
 
   // Compression comparison (LZ4, ZSTD, gzip)
-  const jsonLz4 = encodeBlock(jsonEncoded, Method.LZ4);
-  const jsonZstd = encodeBlock(jsonEncoded, Method.ZSTD);
+  const jsonLz4 = encodeBlock(jsonEncoded, "lz4");
+  const jsonZstd = encodeBlock(jsonEncoded, "zstd");
   const jsonGzip = new Uint8Array(await gzipAsync(jsonEncoded));
-  const nativeLz4 = encodeBlock(nativeEncoded, Method.LZ4);
-  const nativeZstd = encodeBlock(nativeEncoded, Method.ZSTD);
+  const nativeLz4 = encodeBlock(nativeEncoded, "lz4");
+  const nativeZstd = encodeBlock(nativeEncoded, "zstd");
   const nativeGzip = new Uint8Array(await gzipAsync(nativeEncoded));
 
   console.log("\nCompressed sizes:");
@@ -201,26 +201,26 @@ async function runScenario(
   console.log("\nFull path (encode + compress):");
   const jsonLz4Full = benchSync(
     "JSONEachRow + LZ4",
-    () => encodeBlock(encodeJsonEachRow(scenario.jsonData), Method.LZ4),
+    () => encodeBlock(encodeJsonEachRow(scenario.jsonData), "lz4"),
     { ...benchOptions, iterations },
   );
   console.log(formatResult(jsonLz4Full, rows));
   const nativeLz4Full = benchSync(
     "Native + LZ4",
-    () => encodeBlock(encodeNativeRows(scenario.columns, scenario.rowsArray), Method.LZ4),
+    () => encodeBlock(encodeNativeRows(scenario.columns, scenario.rowsArray), "lz4"),
     { ...benchOptions, iterations },
   );
   console.log(formatResult(nativeLz4Full, rows));
 
   const jsonZstdFull = benchSync(
     "JSONEachRow + ZSTD",
-    () => encodeBlock(encodeJsonEachRow(scenario.jsonData), Method.ZSTD),
+    () => encodeBlock(encodeJsonEachRow(scenario.jsonData), "zstd"),
     { ...benchOptions, iterations },
   );
   console.log(formatResult(jsonZstdFull, rows));
   const nativeZstdFull = benchSync(
     "Native + ZSTD",
-    () => encodeBlock(encodeNativeRows(scenario.columns, scenario.rowsArray), Method.ZSTD),
+    () => encodeBlock(encodeNativeRows(scenario.columns, scenario.rowsArray), "zstd"),
     { ...benchOptions, iterations },
   );
   console.log(formatResult(nativeZstdFull, rows));

@@ -7,7 +7,7 @@ release includes the unreleased changes since `@maxjustus/chttp@1.15.0`.
 
 ### Added
 
-- Added `zstdLevel` for configurable ZSTD request compression.
+- Added configurable ZSTD compression level via `compression: { method: "zstd", level }`.
 - Added exported `ClickHouseException` support for structured ClickHouse server errors.
 - Added TCP TLS coverage in the test suite.
 

@@ -1,5 +1,5 @@
 import { BlockInfoField, BufferWriter } from "@maxjustus/chwire/native";
-import { encodeBlock, Method, type MethodCode } from "../compression.ts";
+import { type Compression, encodeBlock } from "../compression.ts";
 import { serializeParams, SQL_NULL } from "../params.ts";
 import {
   CLIENT_VERSION,
@@ -191,8 +191,7 @@ export class StreamingWriter {
     columns: { name: string; type: string; data: Uint8Array }[],
     revision: bigint,
     compress: boolean = false,
-    method: MethodCode = Method.LZ4,
-    zstdLevel?: number,
+    compression: Compression = "lz4",
   ): Uint8Array {
     if (compress) {
       this.writeVarInt(ClientPacketId.Data);
@@ -200,7 +199,7 @@ export class StreamingWriter {
       const headerBytes = this.flush();
 
       const payload = this.encodeDataBlockContent(rowsCount, columns, revision);
-      const compressed = encodeBlock(payload, method, zstdLevel);
+      const compressed = encodeBlock(payload, compression);
 
       const result = new Uint8Array(headerBytes.length + compressed.length);
       result.set(headerBytes, 0);

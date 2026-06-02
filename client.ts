@@ -1,4 +1,5 @@
 import {
+  compressionLevel,
   concat,
   decodeBlock,
   decodeBlocks,
@@ -6,7 +7,6 @@ import {
   readUInt32LE,
   init,
   lz4CompressFrame,
-  toMethodCode,
   type Compression,
   zstdCompressRaw,
 } from "./compression.ts";
@@ -401,7 +401,10 @@ function splitStreamException(
 
 export interface InsertOptions {
   baseUrl?: string;
-  /** Compression method: "lz4" (default), "zstd", or false */
+  /**
+   * Compression method: "lz4" (default), "zstd", or false.
+   * Use `{ method: "zstd", level }` to set an explicit ZSTD level (1-22, default: 3).
+   */
   compression?: Compression;
   /** Size in bytes for the compression buffer (default: 1MB) */
   bufferSize?: number;
@@ -419,8 +422,6 @@ export interface InsertOptions {
   params?: QueryParams;
   /** Custom query ID for tracking in system.query_log and KILL QUERY */
   queryId?: string;
-  /** ZSTD compression level (1-22, default: 3) */
-  zstdLevel?: number;
 }
 
 type InsertData = Uint8Array | Uint8Array[] | AsyncIterable<Uint8Array> | Iterable<Uint8Array>;
@@ -438,9 +439,7 @@ async function insert(
     bufferSize = 1024 * 1024,
     threshold = bufferSize - 2048,
     onProgress = null,
-    zstdLevel,
   } = options;
-  const method = toMethodCode(compression);
 
   const params: Record<string, string> = {
     session_id: sessionId,
@@ -473,7 +472,7 @@ async function insert(
         let flushPromise: Promise<void> | null = null;
 
         const flush = async (buf: Uint8Array, len: number) => {
-          const compressed = encodeBlock(buf.subarray(0, len), method, zstdLevel);
+          const compressed = encodeBlock(buf.subarray(0, len), compression);
           controller.enqueue(compressed);
           blocksSent++;
           totalCompressed += compressed.length;
@@ -610,7 +609,6 @@ const HTTP_QUERY_OPTION_RESERVED = new Set([
   "params",
   "externalTables",
   "queryId",
-  "zstdLevel",
 ]);
 
 function mergeRawHttpQueryOptions(target: Record<string, string>, options: QueryOptions): void {
@@ -629,23 +627,25 @@ function mergeRawHttpQueryOptions(target: Record<string, string>, options: Query
  *
  * Reserved transport keys are not forwarded: `baseUrl`, `auth`, `compression`,
  * `compressQuery`, `signal`, `timeout`, `clientVersion`, `settings`, `params`,
- * `externalTables`, `queryId`, and `zstdLevel`.
+ * `externalTables`, and `queryId`.
  */
 export interface QueryOptions {
   [key: string]: unknown;
   baseUrl?: string;
   auth?: AuthConfig;
-  /** Compression method for response: "lz4" (default), "zstd", or false */
+  /**
+   * Compression method for response: "lz4" (default), "zstd", or false.
+   * Use `{ method: "zstd", level }` to set an explicit ZSTD level (1-22, default: 3).
+   */
   compression?: Compression;
   /**
    * Compress query body using HTTP Content-Encoding.
    * - "zstd": ZSTD compression (recommended, works with native and WASM)
    * - "lz4": LZ4 frame compression (requires lz4-napi, not available in WASM builds)
+   * - `{ method: "zstd", level }`: ZSTD with an explicit level (1-22, default: 3)
    * Requires server setting: enable_http_compression=1
    */
-  compressQuery?: "zstd" | "lz4";
-  /** ZSTD compression level for zstd-compressed query bodies (1-22, default: 3) */
-  zstdLevel?: number;
+  compressQuery?: "lz4" | "zstd" | { method: "zstd"; level?: number };
   /** AbortSignal for manual cancellation */
   signal?: AbortSignal;
   /** Request timeout in milliseconds */
@@ -843,11 +843,15 @@ async function* queryImpl(
     let body: string | Uint8Array = sql;
     if (options.compressQuery) {
       const queryBytes = encoder.encode(sql);
+      const method =
+        typeof options.compressQuery === "object"
+          ? options.compressQuery.method
+          : options.compressQuery;
       body =
-        options.compressQuery === "lz4"
+        method === "lz4"
           ? lz4CompressFrame(queryBytes)
-          : zstdCompressRaw(queryBytes, options.zstdLevel);
-      headers["Content-Encoding"] = options.compressQuery;
+          : zstdCompressRaw(queryBytes, compressionLevel(options.compressQuery));
+      headers["Content-Encoding"] = method;
     }
     response = await fetch(url.toString(), {
       method: "POST",

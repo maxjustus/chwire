@@ -142,9 +142,12 @@ export const Method = {
 
 export type MethodCode = (typeof Method)[keyof typeof Method];
 
-export type Compression = "lz4" | "zstd" | false;
+export type Compression = false | "lz4" | "zstd" | { method: "zstd"; level?: number };
 
 export function toMethodCode(compression: Compression): MethodCode {
+  if (typeof compression === "object") {
+    return Method.ZSTD;
+  }
   switch (compression) {
     case "lz4":
       return Method.LZ4;
@@ -153,6 +156,11 @@ export function toMethodCode(compression: Compression): MethodCode {
     case false:
       return Method.None;
   }
+}
+
+/** ZSTD compression level, defined only for the `{ method: "zstd", level }` form. */
+export function compressionLevel(compression: Compression): number | undefined {
+  return typeof compression === "object" ? compression.level : undefined;
 }
 
 export function cityHash128LE(bytes: Uint8Array): Uint8Array {
@@ -214,15 +222,11 @@ function zstdDecompress(compressed: Uint8Array): Uint8Array {
 /**
  * Encode a block with ClickHouse native compression format.
  * @param raw - Uncompressed data
- * @param mode - Compression method
- * @param zstdLevel - ZSTD compression level (only used when mode is ZSTD)
+ * @param compression - Compression method; the `{ method: "zstd", level }` form carries a ZSTD level
  * @returns Compressed block with checksum header
  */
-export function encodeBlock(
-  raw: Uint8Array,
-  mode: MethodCode = Method.LZ4,
-  zstdLevel?: number,
-): Uint8Array {
+export function encodeBlock(raw: Uint8Array, compression: Compression = "lz4"): Uint8Array {
+  const mode = toMethodCode(compression);
   let compressed: Uint8Array;
 
   switch (mode) {
@@ -230,7 +234,7 @@ export function encodeBlock(
       compressed = lz4CompressRaw(raw);
       break;
     case Method.ZSTD:
-      compressed = zstdCompressRaw(raw, zstdLevel);
+      compressed = zstdCompressRaw(raw, compressionLevel(compression));
       break;
     case Method.None:
       compressed = raw;
