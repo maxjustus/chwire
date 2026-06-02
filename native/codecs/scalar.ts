@@ -219,6 +219,9 @@ function randomBigIntInRange(rng: Rng, min: bigint, max: bigint): bigint {
   }
 }
 
+/** Random element of a non-empty array. */
+const pick = <T>(rng: Rng, arr: readonly T[]): T => arr[rng.int(0, arr.length - 1)];
+
 /**
  * Half the time, pick one of the symbolic width boundaries and clamp it into
  * [min, max] (e.g. -1 is out of range for unsigned types, min+1 may exceed max
@@ -228,7 +231,7 @@ function randomBigIntInRange(rng: Rng, min: bigint, max: bigint): bigint {
  */
 function clampPick<T extends number | bigint>(rng: Rng, boundaries: T[], min: T, max: T): T | null {
   if (rng.int(0, 1) !== 0) return null;
-  const v = boundaries[rng.int(0, boundaries.length - 1)];
+  const v = pick(rng, boundaries);
   return v < min ? min : v > max ? max : v;
 }
 
@@ -330,14 +333,14 @@ function adversarialString(rng: Rng): string {
       return "";
     case 1: {
       // Multi-KB string of a repeated unit (exercises large length varints).
-      const unit = UNICODE_SAMPLES[rng.int(0, UNICODE_SAMPLES.length - 1)];
+      const unit = pick(rng, UNICODE_SAMPLES);
       return unit.repeat(rng.int(1024, 4096));
     }
     case 2: {
       // Mixed pile of control + multi-plane characters.
       const len = rng.int(1, 64);
       let s = "";
-      for (let i = 0; i < len; i++) s += UNICODE_SAMPLES[rng.int(0, UNICODE_SAMPLES.length - 1)];
+      for (let i = 0; i < len; i++) s += pick(rng, UNICODE_SAMPLES);
       return s;
     }
     default:
@@ -451,10 +454,10 @@ export class NumericCodec<T extends TypedArray> extends BaseCodec {
         // Oversample the IEEE-754 specials (NaN/Inf/-0/subnormal/max), each
         // fround-exact, then fall back to fround-rounded random so the 32-bit
         // round-trip stays lossless.
-        if (rng.int(0, 1) === 0) return FLOAT32_SPECIALS[rng.int(0, FLOAT32_SPECIALS.length - 1)];
+        if (rng.int(0, 1) === 0) return pick(rng, FLOAT32_SPECIALS);
         return Math.fround((rng.next() - 0.5) * 2 ** rng.int(0, 60));
       case "Float64":
-        if (rng.int(0, 1) === 0) return FLOAT64_SPECIALS[rng.int(0, FLOAT64_SPECIALS.length - 1)];
+        if (rng.int(0, 1) === 0) return pick(rng, FLOAT64_SPECIALS);
         return (rng.next() - 0.5) * 2 ** rng.int(0, 200);
       case "Int64":
         return adversarialBigInt(rng, INT64_MIN, INT64_MAX);
@@ -572,8 +575,7 @@ export class EnumCodec extends BaseCodec {
   }
 
   generate(ctx: GenContext): string {
-    const names = [...this.mapping.valueToName.values()];
-    return names[ctx.rng.int(0, names.length - 1)];
+    return pick(ctx.rng, [...this.mapping.valueToName.values()]);
   }
 }
 
