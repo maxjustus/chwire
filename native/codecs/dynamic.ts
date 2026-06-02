@@ -31,9 +31,14 @@ export type CodecResolver = (type: string) => Codec;
  * structurally. Shared by `DynamicCodec.compare` and the dynamic-path branch of
  * `JsonCodec.compare`.
  */
+/** Strip the explicit-type wrapper a generated Dynamic cell may carry. */
+function unwrapDynamic(x: unknown): unknown {
+  return x instanceof DynamicValue ? x.value : x;
+}
+
 function compareDynamicCell(resolve: CodecResolver, a: unknown, b: unknown): boolean {
-  const av = a instanceof DynamicValue ? a.value : a;
-  const bv = b instanceof DynamicValue ? b.value : b;
+  const av = unwrapDynamic(a);
+  const bv = unwrapDynamic(b);
   if (av == null || bv == null) return av === bv;
   const type = a instanceof DynamicValue ? a.type : b instanceof DynamicValue ? b.type : null;
   return type ? resolve(type).compare(av, bv) : deepCompare(av, bv);
@@ -588,8 +593,8 @@ export class JsonCodec implements Codec {
       const rawB = bo[key] ?? null;
       const typedCodec = typedCodecs.get(key);
       if (typedCodec) {
-        const av = rawA instanceof DynamicValue ? rawA.value : rawA;
-        const bv = rawB instanceof DynamicValue ? rawB.value : rawB;
+        const av = unwrapDynamic(rawA);
+        const bv = unwrapDynamic(rawB);
         if (av === null || bv === null) {
           if (av !== bv) return false;
           continue;
