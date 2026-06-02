@@ -24,6 +24,21 @@ import {
 
 export type CodecResolver = (type: string) => Codec;
 
+/**
+ * Compare one Dynamic cell: `a` may be a generated `DynamicValue` carrying an
+ * explicit type; `b` is the bare decoded value. Unwrap both, null-check, then
+ * compare via the declared type's codec when either side is type-tagged, else
+ * structurally. Shared by `DynamicCodec.compare` and the dynamic-path branch of
+ * `JsonCodec.compare`.
+ */
+function compareDynamicCell(resolve: CodecResolver, a: unknown, b: unknown): boolean {
+  const av = a instanceof DynamicValue ? a.value : a;
+  const bv = b instanceof DynamicValue ? b.value : b;
+  if (av == null || bv == null) return av === bv;
+  const type = a instanceof DynamicValue ? a.type : b instanceof DynamicValue ? b.type : null;
+  return type ? resolve(type).compare(av, bv) : deepCompare(av, bv);
+}
+
 function decodeGroups(
   reader: BufferReader,
   codecs: Codec[],
@@ -379,16 +394,11 @@ export class DynamicCodec implements Codec {
 
   /**
    * `a` is the generated value (possibly a DynamicValue carrying an explicit
-   * type); `b` is the decoded bare value. Unwrap and compare via the declared
-   * type's codec when known, else structurally — the inner values are in the
-   * canonical representation `DynamicColumn.get` returns.
+   * type); `b` is the decoded bare value. The inner values are in the canonical
+   * representation `DynamicColumn.get` returns.
    */
   compare(a: unknown, b: unknown): boolean {
-    const av = a instanceof DynamicValue ? a.value : a;
-    const bv = b instanceof DynamicValue ? b.value : b;
-    if (av == null || bv == null) return av === bv;
-    const type = a instanceof DynamicValue ? a.type : b instanceof DynamicValue ? b.type : null;
-    return type ? this.resolveCodec(type).compare(av, bv) : deepCompare(av, bv);
+    return compareDynamicCell(this.resolveCodec, a, b);
   }
 }
 
@@ -576,21 +586,18 @@ export class JsonCodec implements Codec {
     for (const key of new Set([...Object.keys(ao), ...Object.keys(bo)])) {
       const rawA = ao[key] ?? null;
       const rawB = bo[key] ?? null;
-      const av = rawA instanceof DynamicValue ? rawA.value : rawA;
-      const bv = rawB instanceof DynamicValue ? rawB.value : rawB;
-      if (av === null || bv === null) {
-        if (av !== bv) return false;
-        continue;
-      }
       const typedCodec = typedCodecs.get(key);
       if (typedCodec) {
+        const av = rawA instanceof DynamicValue ? rawA.value : rawA;
+        const bv = rawB instanceof DynamicValue ? rawB.value : rawB;
+        if (av === null || bv === null) {
+          if (av !== bv) return false;
+          continue;
+        }
         if (!typedCodec.compare(av, bv)) return false;
         continue;
       }
-      const dynType =
-        rawA instanceof DynamicValue ? rawA.type : rawB instanceof DynamicValue ? rawB.type : null;
-      const ok = dynType ? this.resolveCodec(dynType).compare(av, bv) : deepCompare(av, bv);
-      if (!ok) return false;
+      if (!compareDynamicCell(this.resolveCodec, rawA, rawB)) return false;
     }
     return true;
   }
