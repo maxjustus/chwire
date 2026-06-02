@@ -441,6 +441,17 @@ function rollPathCount(rng: Rng): number {
 }
 
 /**
+ * A JSON path name with a unique root (so no two paths prefix-collide) and 0-2
+ * nested segments, e.g. `tp_3`, `tp_3.s0`, `tp_3.s0.s1`. CH stores dotted paths
+ * as flat positional sub-columns, which JsonColumn round-trips as dotted keys.
+ */
+function jsonPathName(prefix: string, index: number, rng: Rng): string {
+  const segs = [`${prefix}_${index}`];
+  for (let d = 0, depth = rng.int(0, 2); d < depth; d++) segs.push(`s${d}`);
+  return segs.join(".");
+}
+
+/**
  * CH serializes a JSON sub-column Map as an object, so a Map in a typed path must
  * have a String key. Detects Map(<non-String>, ...) at any depth. (Dynamic paths
  * are Variant-wrapped, not JSON-native, so this restriction does not apply there.)
@@ -476,7 +487,7 @@ async function rollJsonType(rng: Rng, sessionId: string, conn: Conn): Promise<st
     const type = await fetchRandomStructureType(rng, sessionId, conn);
     if (type === null || !isGeneratable(type, rng) || hasNonStringMapKey(type)) continue;
     const declared = isComposite(type) ? type : `Nullable(${type})`;
-    defs.push(`tp_${defs.length} ${declared}`);
+    defs.push(`${jsonPathName("tp", defs.length, rng)} ${declared}`);
   }
   return defs.length > 0 ? `JSON(${defs.join(", ")})` : "JSON";
 }
@@ -644,6 +655,7 @@ function generateJsonCells(
   const pathCount = rollPathCount(rng);
   const shape = JSON_SHAPES[rng.int(0, JSON_SHAPES.length - 1)];
   const masks = dynamicPathMasks(shape, pathCount, rowCount, rng);
+  const pathNames = Array.from({ length: pathCount }, (_, p) => jsonPathName("dp", p, rng));
 
   const cells = new Array<Record<string, unknown>>(rowCount);
   for (let r = 0; r < rowCount; r++) {
@@ -651,7 +663,7 @@ function generateJsonCells(
     for (let p = 0; p < pathCount; p++) {
       if (!masks[p][r]) continue;
       const v = dynCodec.generate(ctx());
-      if (v !== null) obj[`dp_${p}`] = v;
+      if (v !== null) obj[pathNames[p]] = v;
     }
     cells[r] = obj;
   }
