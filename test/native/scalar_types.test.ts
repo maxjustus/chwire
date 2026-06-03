@@ -318,6 +318,20 @@ describe("encodeNative", () => {
       /DateTime out of range/,
     );
   });
+
+  it("encodes timezone-qualified DateTime past the 2038 Int32 ceiling", async () => {
+    // Regression: encode's range selection matched the exact "DateTime" string, so
+    // DateTime('tz') fell through to Date32's INT32_MAX (~2038) ceiling and rejected
+    // values valid up to DateTime's 2106 max.
+    const columns: ColumnDef[] = [{ name: "dt", type: "DateTime('UTC')" }];
+    const datetime = new Date("2085-12-02T08:49:17Z");
+    const encoded = encodeNativeRows(columns, [[datetime]]);
+    const decoded = await decodeBatch(encoded);
+    const decodedRows = toArrayRows(decoded);
+
+    assert.ok(decodedRows[0][0] instanceof Date);
+    assert.strictEqual((decodedRows[0][0] as Date).getTime(), datetime.getTime());
+  });
 });
 
 describe("additional scalar types", () => {

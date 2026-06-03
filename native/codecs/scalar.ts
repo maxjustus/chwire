@@ -1151,12 +1151,16 @@ export class EpochCodec<T extends Uint16Array | Int32Array | Uint32Array> extend
     const arr = new this.Ctor(len);
     const type = this.type;
     const multiplier = this.multiplier;
+    // Match Date/Date32 exactly and let bare and timezone-qualified DateTime
+    // ("DateTime", "DateTime('UTC')") share the default Uint32 range — keying on
+    // the exact "DateTime" string instead would clamp DateTime('tz') to Date32's
+    // INT32_MAX (~2038) ceiling.
     const [minUnits, maxUnits] =
       type === "Date"
         ? [0, UINT16_MAX]
-        : type === "DateTime"
-          ? [0, UINT32_MAX]
-          : [INT32_MIN, INT32_MAX];
+        : type === "Date32"
+          ? [INT32_MIN, INT32_MAX]
+          : [0, UINT32_MAX];
     for (let i = 0; i < len; i++) {
       const v = col.get(i);
       const ms =
