@@ -36,6 +36,8 @@ import { batchFromRows } from "../native/table.ts";
 import { collectText, dataChunks, init, insert, type QueryPacket, query } from "../client.ts";
 import { startClickHouse, stopClickHouse } from "../test/setup.ts";
 import { type Compression, config, logConfig, logFuzzError, getIterationIndex } from "./config.ts";
+import { makeRng } from "./rng.ts";
+import { genType } from "./gen-type.ts";
 
 logConfig("generated");
 
@@ -85,26 +87,6 @@ const PROBE_DYNAMIC_TYPES = ["Int64", "String", "Float64", "Bool"];
  * discriminators, so it still round-trips.
  */
 const DYNAMIC_POOL_SIZE = 24;
-
-/**
- * mulberry32 PRNG: deterministic, seedable, fast. The seed comes from the
- * iteration index so failures replay.
- */
-function makeRng(seed: number): Rng {
-  let state = seed >>> 0;
-  const next = (): number => {
-    state = (state + 0x6d2b79f5) | 0;
-    let t = Math.imul(state ^ (state >>> 15), 1 | state);
-    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
-  return {
-    next,
-    int(min: number, max: number): number {
-      return min + Math.floor(next() * (max - min + 1));
-    },
-  };
-}
 
 /**
  * Generation depth budget for client-invented Dynamic/JSON nesting. Raised from
@@ -234,6 +216,53 @@ async function fetchRandomStructureType(
 }
 
 /**
+ * A source of random scalar/composite type strings. `ch` queries CH's
+ * generateRandomStructure — the independent type-grammar oracle that surfaces
+ * types our parser mishandles. `local` calls genType offline: no round-trip and
+ * parameters edge-targeted at the codec seams CH's generator rarely hits. Both
+ * feed the same isGeneratable + CREATE TABLE gates downstream, so the source only
+ * changes which types are proposed, never how they are validated.
+ */
+type TypeSource = (rng: Rng) => Promise<string | null>;
+
+function chTypeSource(sessionId: string, conn: Conn): TypeSource {
+  return (rng) => fetchRandomStructureType(rng, sessionId, conn);
+}
+
+const localTypeSource: TypeSource = (rng) => Promise.resolve(genType(rng));
+
+type TypeSourceMode = "ch" | "local" | "mix";
+
+/**
+ * Type-source selection from FUZZ_TYPE_SOURCE. Default `mix`: each iteration draws
+ * ch or local from its seed, so one run exercises both the CH discovery oracle and
+ * genType's edge types while staying replayable. `ch` keeps the original behavior;
+ * `local` runs fully offline for the per-type roll (data INSERT/SELECT still hit CH).
+ */
+function typeSourceMode(): TypeSourceMode {
+  const v = process.env.FUZZ_TYPE_SOURCE ?? "mix";
+  if (v === "ch" || v === "local" || v === "mix") return v;
+  throw new Error(`FUZZ_TYPE_SOURCE must be one of ch|local|mix, got "${v}"`);
+}
+
+/**
+ * Resolve the source for one iteration. In mix mode the ch/local choice is seeded
+ * so a failing iteration replays the same source via FUZZ_ITERATION_INDEX.
+ */
+function resolveTypeSource(
+  mode: TypeSourceMode,
+  seed: number,
+  sessionId: string,
+  conn: Conn,
+): { source: TypeSource; name: "ch" | "local" } {
+  const useLocal =
+    mode === "local" || (mode === "mix" && makeRng(seed ^ 0x7f4a7c15).int(0, 1) === 0);
+  return useLocal
+    ? { source: localTypeSource, name: "local" }
+    : { source: chTypeSource(sessionId, conn), name: "ch" };
+}
+
+/**
  * Whether a type is a legal Dynamic subtype. Dynamic is stored as a Variant
  * internally, so a subtype must be a legal Variant arm: CH forbids a Nullable (or
  * LowCardinality(Nullable)) arm since the discriminator already encodes absence.
@@ -246,12 +275,11 @@ function dynamicArmAllowed(type: string): boolean {
 
 /**
  * Build the pool of types one Dynamic column may hold this iteration, drawn from
- * CH's generateRandomStructure and filtered to what our codecs can generate. This
- * replaces a hand-maintained constant: CH owns "what types exist", isGeneratable
- * owns "what we can decode". Bounded by DYNAMIC_POOL_SIZE. The pool gets its own
+ * the iteration's type source and filtered to what our codecs can generate and CH
+ * allows as a Dynamic arm. Bounded by DYNAMIC_POOL_SIZE. The pool gets its own
  * seeded rng so it stays deterministic for replay without perturbing per-row gen.
  */
-async function buildDynamicTypePool(rng: Rng, sessionId: string, conn: Conn): Promise<string[]> {
+async function buildDynamicTypePool(rng: Rng, source: TypeSource): Promise<string[]> {
   const pool: string[] = [];
   const seen = new Set<string>();
   for (
@@ -259,7 +287,7 @@ async function buildDynamicTypePool(rng: Rng, sessionId: string, conn: Conn): Pr
     attempt < DYNAMIC_POOL_SIZE * 4 && pool.length < DYNAMIC_POOL_SIZE;
     attempt++
   ) {
-    const type = await fetchRandomStructureType(rng, sessionId, conn);
+    const type = await source(rng);
     if (type === null || seen.has(type)) continue;
     seen.add(type);
     // Permissive: admit anything our codecs can generate and CH allows as a
@@ -272,10 +300,11 @@ async function buildDynamicTypePool(rng: Rng, sessionId: string, conn: Conn): Pr
   return pool.length > 0 ? pool : PROBE_DYNAMIC_TYPES;
 }
 
-/** Ask CH for a random column type matching one of the requested kinds. */
+/** Roll a random column type matching one of the requested kinds. */
 async function rollColumnType(
   kinds: Set<Kind>,
   rng: Rng,
+  source: TypeSource,
   sessionId: string,
   conn: Conn,
 ): Promise<{ kind: Kind; type: string; table?: string } | null> {
@@ -288,9 +317,9 @@ async function rollColumnType(
   const wantPlain = wantScalar || wantComposite;
   if (complexKinds.length > 0 && (!wantPlain || rng.int(0, 2) === 0)) {
     const kind = complexKinds[rng.int(0, complexKinds.length - 1)];
-    return rollComplexType(kind, rng, sessionId, conn);
+    return rollComplexType(kind, rng, source, sessionId, conn);
   }
-  return rollPlainType(wantScalar, wantComposite, rng, sessionId, conn);
+  return rollPlainType(wantScalar, wantComposite, rng, source);
 }
 
 /** Wrap a canonical Variant in a composite to exercise nested-Variant columns. */
@@ -328,11 +357,12 @@ function rollDynamicType(rng: Rng): string {
 async function rollComplexType(
   kind: Kind,
   rng: Rng,
+  source: TypeSource,
   sessionId: string,
   conn: Conn,
 ): Promise<{ kind: Kind; type: string; table?: string } | null> {
   if (kind === "variant") {
-    const v = await rollVariantType(rng, sessionId, conn);
+    const v = await rollVariantType(rng, source, sessionId, conn);
     if (v === null) return null;
     // 1/3 of the time nest the canonical Variant in a composite. The oracle table
     // holds a top-level Variant column, so the wrapped column needs a fresh table:
@@ -350,7 +380,7 @@ async function rollComplexType(
     return { kind, type: v.type, table: v.table };
   }
   if (kind === "dynamic") return { kind, type: rollDynamicType(rng) };
-  return { kind, type: await rollJsonType(rng, sessionId, conn) };
+  return { kind, type: await rollJsonType(rng, source) };
 }
 
 /**
@@ -362,12 +392,11 @@ async function rollPlainType(
   wantScalar: boolean,
   wantComposite: boolean,
   rng: Rng,
-  sessionId: string,
-  conn: Conn,
+  source: TypeSource,
 ): Promise<{ kind: Kind; type: string } | null> {
   let scalarLeaf: string | null = null;
   for (let attempt = 0; attempt < 8; attempt++) {
-    const type = await fetchRandomStructureType(rng, sessionId, conn);
+    const type = await source(rng);
     if (type === null || !isGeneratable(type, rng)) continue;
     if (isComposite(type)) {
       if (wantComposite) return { kind: "composite", type };
@@ -400,7 +429,7 @@ function isTopLevelNullableArm(arm: string): boolean {
 }
 
 /**
- * Compose a Variant from arms drawn via CH's generateRandomStructure, then let
+ * Compose a Variant from arms drawn from the iteration's type source, then let
  * CH canonicalize and dedup the arm set.
  *
  * CH sorts Variant arms by their canonical type string and silently collapses
@@ -415,13 +444,14 @@ function isTopLevelNullableArm(arm: string): boolean {
  */
 async function rollVariantType(
   rng: Rng,
+  source: TypeSource,
   sessionId: string,
   conn: Conn,
 ): Promise<{ type: string; table: string } | null> {
   const armCount = rng.int(2, 5);
   const arms: string[] = [];
   for (let attempt = 0; arms.length < armCount && attempt < armCount * 4; attempt++) {
-    const arm = await fetchRandomStructureType(rng, sessionId, conn);
+    const arm = await source(rng);
     if (arm === null) continue;
     if (isTopLevelNullableArm(arm)) continue;
     if (!isGeneratable(arm, rng)) continue;
@@ -520,18 +550,18 @@ function hasNonStringMapKey(type: string): boolean {
 }
 
 /**
- * Compose a JSON type with typed paths whose types come from CH's
- * generateRandomStructure (matching fuzz/http.ts:216). Scalars are wrapped in
+ * Compose a JSON type with typed paths whose types come from the iteration's
+ * type source. Scalars are wrapped in
  * Nullable so an absent path round-trips as omitted; composites are declared bare
  * (Nullable(Array/Map/Tuple) is illegal and they are always materialized, so
  * there is no absent-default ambiguity). A bare `JSON` (no typed paths) is also
  * rolled to exercise the all-dynamic-path path.
  */
-async function rollJsonType(rng: Rng, sessionId: string, conn: Conn): Promise<string> {
+async function rollJsonType(rng: Rng, source: TypeSource): Promise<string> {
   const numTypedPaths = rollPathCount(rng);
   const defs: string[] = [];
   for (let p = 0; defs.length < numTypedPaths && p < numTypedPaths * 4 + 4; p++) {
-    const type = await fetchRandomStructureType(rng, sessionId, conn);
+    const type = await source(rng);
     if (type === null || !isGeneratable(type, rng) || hasNonStringMapKey(type)) continue;
     const declared = isComposite(type) ? type : `Nullable(${type})`;
     defs.push(`${jsonPathName("tp", defs.length, rng)} ${declared}`);
@@ -859,6 +889,8 @@ describe("Native client-generated Fuzz Tests", { timeout: 600000 }, () => {
         const N = config.iterations;
         const iterations = iterationIndex !== null ? 1 : N;
         const startIdx = iterationIndex ?? 0;
+        const conn: Conn = { baseUrl, auth };
+        const mode = typeSourceMode();
 
         for (let i = startIdx; i < startIdx + iterations; i++) {
           const rowCount = config.rows;
@@ -867,12 +899,19 @@ describe("Native client-generated Fuzz Tests", { timeout: 600000 }, () => {
           const sessionId = `generated_fuzz_${compression}_${suffix}`;
           const insertSessionId = `${sessionId}_insert`;
 
+          // ch (CH discovery oracle) or local (offline genType, edge-targeted),
+          // chosen per-seed in mix mode so the run covers both and replays.
+          const { source, name: sourceName } = resolveTypeSource(mode, seed, sessionId, conn);
+
           // Roll the column type with its own seeded rng so the per-row
           // generation rng (re-seeded inside runColumn) stays deterministic.
-          const rolled = await rollColumnType(kinds, makeRng(seed ^ 0x5bd1e995), sessionId, {
-            baseUrl,
-            auth,
-          });
+          const rolled = await rollColumnType(
+            kinds,
+            makeRng(seed ^ 0x5bd1e995),
+            source,
+            sessionId,
+            conn,
+          );
           if (!rolled) {
             console.log(`[generated fuzz ${i + 1}/${N}] no generatable type rolled, skipping`);
             continue;
@@ -882,14 +921,14 @@ describe("Native client-generated Fuzz Tests", { timeout: 600000 }, () => {
           const table = rolled.table ?? `generated_fuzz_${suffix}`;
 
           console.log(
-            `[generated fuzz ${i + 1}/${N} compression=${compression}] ${kind} ${columnType} seed=${seed}`,
+            `[generated fuzz ${i + 1}/${N} compression=${compression}] ${sourceName} ${kind} ${columnType} seed=${seed}`,
           );
 
           // Only Dynamic-bearing kinds sample the pool; building it for the rest
-          // would spend CH round-trips no cell ever reads.
+          // would spend round-trips no cell ever reads.
           const dynamicTypePool =
             kind === "dynamic" || kind === "json"
-              ? await buildDynamicTypePool(makeRng(seed ^ 0x2545f491), sessionId, { baseUrl, auth })
+              ? await buildDynamicTypePool(makeRng(seed ^ 0x2545f491), source)
               : PROBE_DYNAMIC_TYPES;
 
           try {
@@ -915,7 +954,7 @@ describe("Native client-generated Fuzz Tests", { timeout: 600000 }, () => {
                 totalIterations: N,
                 compression: compression as Compression,
                 rows: rowCount,
-                structure: `${kind} ${columnType} seed=${seed}`,
+                structure: `${sourceName} ${kind} ${columnType} seed=${seed}`,
               },
               err,
             );

@@ -16,6 +16,9 @@
  * Environment:
  *   FUZZ_ITERATIONS - number of iterations (default: 25)
  *   FUZZ_ROWS - row count for integration tests (default: 10000)
+ *   FUZZ_TYPE_SOURCE - generated-suite type source: ch | local | mix (default: mix).
+ *                      ch = CH generateRandomStructure; local = offline genType;
+ *                      mix = per-seed choice of either.
  *
  * Examples:
  *   tsx fuzz/parallel.ts --all
