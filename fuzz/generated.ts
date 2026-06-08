@@ -18,43 +18,22 @@
  */
 
 import { describe, it } from "node:test";
-import {
-  type ColumnDef,
-  DynamicValue,
-  encodeNative,
-  getCodec,
-  streamDecodeNative,
-} from "../native/index.ts";
+import { collectText, init, query } from "../client.ts";
 import {
   extractTypeArgs,
   type GenContext,
   parseTypeList,
   type Rng,
 } from "../native/codecs/base.ts";
-import { JsonCodec } from "../native/codecs/dynamic.ts";
-import { batchFromRows } from "../native/table.ts";
-import { collectText, dataChunks, init, insert, type QueryPacket, query } from "../client.ts";
+import type { JsonCodec } from "../native/codecs/dynamic.ts";
+import { DynamicValue, getCodec } from "../native/index.ts";
 import { startClickHouse, stopClickHouse } from "../test/setup.ts";
-import { type Compression, config, logConfig, logFuzzError, getIterationIndex } from "./config.ts";
-import { makeRng } from "./rng.ts";
+import { type Compression, config, getIterationIndex, logConfig, logFuzzError } from "./config.ts";
 import { genType } from "./gen-type.ts";
+import { makeRng } from "./rng.ts";
+import { COMPLEX_TYPE_SETTINGS, type Conn, consume, roundTripCells } from "./round-trip.ts";
 
 logConfig("generated");
-
-// Settings required for experimental/complex types in CREATE/INSERT/SELECT.
-const COMPLEX_TYPE_SETTINGS = {
-  use_variant_as_common_type: true,
-  allow_experimental_variant_type: true,
-  allow_suspicious_variant_types: true,
-  allow_experimental_dynamic_type: true,
-  allow_experimental_json_type: true,
-  output_format_native_use_flattened_dynamic_and_json_serialization: true,
-  // The Nested codec implements the Array(Tuple) representation. The default
-  // flatten_nested=1 expands a top-level Nested into separate v.<field> Array
-  // columns, which a single Nested column cannot round-trip; flatten_nested=0
-  // stores it as the Array(Tuple) the codec produces.
-  flatten_nested: false,
-};
 
 /** Column kinds the type roll can produce, gated by FUZZ_KINDS. */
 type Kind = "scalar" | "composite" | "variant" | "dynamic" | "json";
@@ -184,11 +163,6 @@ const COMPOSITE_PREFIXES = [
 
 function isComposite(type: string): boolean {
   return COMPOSITE_PREFIXES.some((p) => type.startsWith(p));
-}
-
-interface Conn {
-  baseUrl: string;
-  auth: { username: string; password: string };
 }
 
 /**
@@ -758,20 +732,10 @@ function generateJsonCells(
   return cells;
 }
 
-async function consume(input: AsyncIterable<QueryPacket>): Promise<void> {
-  for await (const _ of input) {
-  }
-}
-
-interface Mismatch {
-  rowIndex: number;
-  expected: string;
-  actual: string;
-}
-
 /**
  * Run the Tier-1 oracle for a single generated column and assert compare()
- * holds for every row. Throws on the first mismatch with replay context.
+ * holds for every row. Generates the per-row cells for the rolled kind, then
+ * delegates the CREATE/INSERT/SELECT/compare round-trip to roundTripCells.
  */
 async function runColumn(opts: {
   kind: Kind;
@@ -789,18 +753,7 @@ async function runColumn(opts: {
   /** Variant rolls arrive with a CH-canonicalized table already created; reuse it. */
   preCreated?: boolean;
 }): Promise<void> {
-  const { kind, columnType, seed, rowCount, compression, baseUrl, auth } = opts;
-
-  if (!opts.preCreated) {
-    await consume(
-      query(`CREATE TABLE ${opts.table} (v ${columnType}) ENGINE = Memory`, opts.sessionId, {
-        baseUrl,
-        auth,
-        compression: false,
-        settings: COMPLEX_TYPE_SETTINGS,
-      }),
-    );
-  }
+  const { kind, columnType, seed, rowCount } = opts;
 
   // VariantCodec reorders arms into ClickHouse's canonical (sorted) order, so
   // codec.type is the type CH actually stores. Build, encode, and compare
@@ -814,64 +767,22 @@ async function runColumn(opts: {
   // sub-second DateTime64. Declaring the typed type makes it an identity insert.
   const codec = getCodec(columnType);
   const canonicalType = kind === "json" ? columnType : codec.type;
-  const schema: ColumnDef[] = [{ name: "v", type: canonicalType }];
 
   const rng = makeRng(seed);
   const cells = generateCells(kind, canonicalType, rng, rowCount, opts.dynamicTypePool);
-  const rows: unknown[][] = cells.map((c) => [c]);
 
-  const encoded = encodeNative(batchFromRows(schema, rows));
-
-  // Zeroth check: a malformed stream is rejected here.
-  await insert(`INSERT INTO ${opts.table} FORMAT Native`, encoded, opts.insertSessionId, {
-    baseUrl,
-    auth,
-    settings: COMPLEX_TYPE_SETTINGS,
+  await roundTripCells({
+    declaredType: canonicalType,
+    codec,
+    cells,
+    compression: opts.compression,
+    conn: { baseUrl: opts.baseUrl, auth: opts.auth },
+    sessionId: opts.sessionId,
+    insertSessionId: opts.insertSessionId,
+    table: opts.table,
+    preCreated: opts.preCreated,
+    replayHint: `requested ${columnType}, seed=${seed}`,
   });
-
-  const queryResult = query(`SELECT v FROM ${opts.table} FORMAT Native`, opts.sessionId, {
-    baseUrl,
-    auth,
-    compression,
-    settings: COMPLEX_TYPE_SETTINGS,
-  });
-
-  const decoded: unknown[] = [];
-  for await (const block of streamDecodeNative(dataChunks(queryResult), { mapAsArray: true })) {
-    for (const row of block.columnData[0]) {
-      decoded.push(row);
-    }
-  }
-
-  if (decoded.length !== rows.length) {
-    throw new Error(
-      `Row count mismatch for ${canonicalType}: expected ${rows.length}, got ${decoded.length}`,
-    );
-  }
-
-  const mismatches: Mismatch[] = [];
-  for (let r = 0; r < rows.length; r++) {
-    const expected = rows[r][0];
-    const actual = decoded[r];
-    if (!codec.compare(expected, actual)) {
-      mismatches.push({ rowIndex: r, expected: stringify(expected), actual: stringify(actual) });
-      if (mismatches.length >= 5) break;
-    }
-  }
-
-  if (mismatches.length > 0) {
-    const detail = mismatches
-      .map((m) => `  row ${m.rowIndex} col 0: expected ${m.expected}, actual ${m.actual}`)
-      .join("\n");
-    throw new Error(
-      `compare mismatch for ${canonicalType} (requested ${columnType}, seed=${seed}):\n${detail}`,
-    );
-  }
-}
-
-/** Serialize a value for error output, including bigint. */
-function stringify(value: unknown): string {
-  return JSON.stringify(value, (_k, v) => (typeof v === "bigint" ? `${v}n` : v)) ?? String(value);
 }
 
 describe("Native client-generated Fuzz Tests", { timeout: 600000 }, () => {
