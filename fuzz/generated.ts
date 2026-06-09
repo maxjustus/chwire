@@ -106,6 +106,24 @@ function seedFor(iterationIndex: number): number {
 }
 
 /**
+ * Distinct salts for the per-iteration RNG substreams. Each purpose XORs in its
+ * own salt so its draws are decorrelated from the per-row stream (seeded with the
+ * bare seed) and from each other. The values are arbitrary fixed constants; only
+ * their distinctness matters, and they must not change or recorded failing
+ * iterations would replay a different stream.
+ */
+const SUBSTREAM_SALT = {
+  "source-choice": 0x7f4a7c15,
+  "type-roll": 0x5bd1e995,
+  "dynamic-pool": 0x2545f491,
+} as const;
+
+/** A deterministic RNG substream derived from an iteration seed for one purpose. */
+function subStream(seed: number, purpose: keyof typeof SUBSTREAM_SALT): Rng {
+  return makeRng(seed ^ SUBSTREAM_SALT[purpose]);
+}
+
+/**
  * Types that contain a leaf we cannot yet generate standalone, or that need
  * their own kind. Reject when any appears anywhere in the type tree.
  */
@@ -230,7 +248,7 @@ function resolveTypeSource(
   conn: Conn,
 ): { source: TypeSource; name: "ch" | "local" } {
   const useLocal =
-    mode === "local" || (mode === "mix" && makeRng(seed ^ 0x7f4a7c15).int(0, 1) === 0);
+    mode === "local" || (mode === "mix" && subStream(seed, "source-choice").int(0, 1) === 0);
   return useLocal
     ? { source: localTypeSource, name: "local" }
     : { source: chTypeSource(sessionId, conn), name: "ch" };
@@ -818,7 +836,7 @@ describe("Native client-generated Fuzz Tests", { timeout: 600000 }, () => {
           // generation rng (re-seeded inside runColumn) stays deterministic.
           const rolled = await rollColumnType(
             kinds,
-            makeRng(seed ^ 0x5bd1e995),
+            subStream(seed, "type-roll"),
             source,
             sessionId,
             conn,
@@ -839,7 +857,7 @@ describe("Native client-generated Fuzz Tests", { timeout: 600000 }, () => {
           // would spend round-trips no cell ever reads.
           const dynamicTypePool =
             kind === "dynamic" || kind === "json"
-              ? await buildDynamicTypePool(makeRng(seed ^ 0x2545f491), source)
+              ? await buildDynamicTypePool(subStream(seed, "dynamic-pool"), source)
               : PROBE_DYNAMIC_TYPES;
 
           try {
