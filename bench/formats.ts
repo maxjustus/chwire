@@ -381,9 +381,11 @@ function generateVariantData(count: number): {
   const json: Record<string, unknown>[] = [];
   const rows: unknown[][] = [];
   for (let i = 0; i < count; i++) {
-    // Rotate through the variant types
-    const variant =
-      i % 3 === 0 ? [0, `str_${i}`] : i % 3 === 1 ? [1, BigInt(i * 100)] : [2, Math.random() * 100];
+    // Rotate through the variant types. Raw values disambiguate naturally
+    // (string -> String, bigint -> Int64, number -> Float64); explicit
+    // [disc, value] tuples would need canonical (sorted-arm) indices since
+    // ClickHouse canonicalizes Variant arms alphabetically.
+    const variant = i % 3 === 0 ? `str_${i}` : i % 3 === 1 ? BigInt(i * 100) : Math.random() * 100;
     // JSON representation uses the raw value
     const jsonVal = i % 3 === 0 ? `str_${i}` : i % 3 === 1 ? i * 100 : Math.random() * 100;
     json.push({ id: i, v: jsonVal });
