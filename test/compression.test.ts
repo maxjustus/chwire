@@ -47,6 +47,20 @@ describe("Compression", () => {
     });
   });
 
+  describe("None method", () => {
+    it("returns a buffer independent of the input block", () => {
+      const data = encoder.encode("must survive input mutation");
+      const block = encodeBlock(data, false);
+      const decompressed = decodeBlock(block);
+
+      // Streaming callers recycle the block's underlying buffer (StreamBuffer
+      // compaction); the decoded payload must not alias it.
+      block.fill(0);
+
+      assert.strictEqual(decoder.decode(decompressed), decoder.decode(data));
+    });
+  });
+
   describe("ZSTD compression", () => {
     it("should compress and decompress data correctly", () => {
       const data = encoder.encode("Hello, World! This is a ZSTD test.");

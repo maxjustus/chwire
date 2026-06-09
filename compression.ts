@@ -294,7 +294,9 @@ export function decodeBlock(block: Uint8Array): Uint8Array {
 
   switch (mode) {
     case Method.None:
-      return compressed;
+      // Copy: callers may recycle the block's underlying buffer (e.g. StreamBuffer
+      // compaction) after decode, and LZ4/ZSTD branches already return fresh buffers.
+      return compressed.slice();
     case Method.LZ4:
       return lz4Decompress(compressed, uncompressedSize);
     case Method.ZSTD:
