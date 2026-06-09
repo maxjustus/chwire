@@ -5,7 +5,7 @@ export type DiscriminatorArray = Uint8Array | Uint16Array | Uint32Array;
 
 const MAX_SAFE_INDEX_BIGINT = BigInt(Number.MAX_SAFE_INTEGER);
 
-function assertOffsetsFitInJsNumber(offsets: BigUint64Array, context: string): void {
+export function assertOffsetsFitInJsNumber(offsets: BigUint64Array, context: string): void {
   if (offsets.length === 0) return;
   const last = offsets[offsets.length - 1];
   if (last > MAX_SAFE_INDEX_BIGINT) {

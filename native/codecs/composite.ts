@@ -1,5 +1,6 @@
 import {
   ArrayColumn,
+  assertOffsetsFitInJsNumber,
   type Column,
   DataColumn,
   MapColumn,
@@ -25,6 +26,22 @@ import {
   readKindsMany,
   SQL_NULL,
 } from "./base.ts";
+
+/**
+ * Read an Array/Map offsets column and the total child-element count.
+ * Asserts the total fits in a JS number BEFORE any child decode runs, so a
+ * corrupt offset fails here instead of after misreading child columns.
+ */
+function readOffsets(
+  reader: BufferReader,
+  rows: number,
+  context: string,
+): { offsets: BigUint64Array; total: number } {
+  const offsets = reader.readTypedArray(BigUint64Array, rows);
+  assertOffsetsFitInJsNumber(offsets, context);
+  const total = rows > 0 ? Number(offsets[rows - 1]) : 0;
+  return { offsets, total };
+}
 
 /**
  * Container length, oversampling 0, 1, and a large count (16-64) so
@@ -89,9 +106,8 @@ export class ArrayCodec extends BaseCodec {
   }
 
   decodeDense(reader: BufferReader, rows: number, state: DeserializerState): Column {
-    const offsets = reader.readTypedArray(BigUint64Array, rows);
-    const totalCount = rows > 0 ? Number(offsets[rows - 1]) : 0;
-    const inner = this.inner.decode(reader, totalCount, childState(state, 0));
+    const { offsets, total } = readOffsets(reader, rows, "ArrayColumn");
+    const inner = this.inner.decode(reader, total, childState(state, 0));
     return new ArrayColumn(this.type, offsets, inner);
   }
 
@@ -478,8 +494,7 @@ export class MapCodec extends BaseCodec {
   }
 
   decodeDense(reader: BufferReader, rows: number, state: DeserializerState): Column {
-    const offsets = reader.readTypedArray(BigUint64Array, rows);
-    const total = rows > 0 ? Number(offsets[rows - 1]) : 0;
+    const { offsets, total } = readOffsets(reader, rows, "MapColumn");
     const keys = this.keyCodec.decode(reader, total, childState(state, 0));
     const vals = this.valCodec.decode(reader, total, childState(state, 1));
     return new MapColumn(this.type, offsets, keys, vals, reader.options?.mapAsArray ?? false);

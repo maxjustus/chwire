@@ -737,6 +737,8 @@ export class FixedStringCodec extends BaseCodec {
     reader.ensureAvailable(rows * this.len);
     const values: Uint8Array[] = new Array(rows);
     for (let i = 0; i < rows; i++) {
+      // slice (copy), not subarray: these bytes are retained in the column,
+      // and a view would pin the whole block buffer for its lifetime.
       values[i] = reader.buffer.slice(reader.offset, reader.offset + this.len);
       reader.offset += this.len;
     }
