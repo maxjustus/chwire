@@ -494,7 +494,9 @@ export class TcpClient {
       | AsyncIterable<RecordBatch | Record<string, unknown>>,
     options: InsertOptions = {},
   ): AsyncGenerator<Packet> {
-    this.ensureConnected();
+    // See queryImpl: deferred callbacks guard on the socket they started
+    // with so a stale operation never touches a successor connection.
+    const { socket: startSocket } = this.ensureConnected();
     const signal = options.signal;
     const batchSize = options.batchSize ?? 10000;
     if (signal?.aborted) throw createAbortError("Insert aborted before start");
@@ -508,9 +510,9 @@ export class TcpClient {
     let sentDataDelimiter = false; // Track if we've finished sending data
 
     const abortHandler = () => {
-      if (!cancelled && this.socket) {
+      if (!cancelled && this.socket === startSocket) {
         cancelled = true;
-        this.socket!.write(this.writer.encodeCancel());
+        startSocket.write(this.writer.encodeCancel());
       }
     };
     const throwIfAborted = () => {
@@ -715,7 +717,7 @@ export class TcpClient {
     } finally {
       // If generator was abandoned early, drain remaining packets
       // But only if we've sent the delimiter - otherwise server is waiting for data, not sending responses
-      if (!reachedEndOfStream && !receivedException && this.socket && this.reader) {
+      if (!reachedEndOfStream && !receivedException && this.socket === startSocket && this.reader) {
         if (sentDataDelimiter || cancelled) {
           try {
             if (!cancelled) {
@@ -727,7 +729,7 @@ export class TcpClient {
             this.log(
               `[insert] drain failed, closing connection: ${err instanceof Error ? err.message : err}`,
             );
-            this.close();
+            if (this.socket === startSocket) this.close();
           }
         } else {
           // We're in the middle of sending data - can't drain, must close
@@ -735,7 +737,7 @@ export class TcpClient {
           this.close();
         }
       }
-      this.busy = false;
+      if (this.socket === startSocket) this.busy = false;
       signal?.removeEventListener("abort", abortHandler);
     }
   }
@@ -1072,7 +1074,11 @@ export class TcpClient {
   }
 
   private async *queryImpl(sql: string, options: QueryOptions = {}): AsyncGenerator<Packet> {
-    this.ensureConnected();
+    // Deferred callbacks (timeout/grace timers, abort handler, the finally
+    // drain) fire after awaits, by which point teardown may have run and a
+    // reconnect may have replaced this.socket. Each guards on the socket it
+    // started with so a stale operation never touches a successor connection.
+    const { socket: startSocket } = this.ensureConnected();
     const { settings = {}, signal } = options;
     if (signal?.aborted) throw createAbortError("Query aborted before start");
     if (this.busy)
@@ -1096,14 +1102,14 @@ export class TcpClient {
         timeoutId = setTimeout(() => {
           timedOut = true;
           // First try graceful cancel
-          if (this.socket && !cancelled) {
+          if (this.socket === startSocket && !cancelled) {
             cancelled = true;
-            this.socket!.write(this.writer.encodeCancel());
+            startSocket.write(this.writer.encodeCancel());
           }
           // Give server grace period to respond, then force close
           graceTimeoutId = setTimeout(() => {
-            if (timedOut) {
-              this.socket?.destroy();
+            if (timedOut && this.socket === startSocket) {
+              startSocket.destroy();
             }
           }, cancelGracePeriod);
         }, queryTimeout);
@@ -1122,9 +1128,9 @@ export class TcpClient {
     };
 
     const abortHandler = () => {
-      if (!cancelled && this.socket) {
+      if (!cancelled && this.socket === startSocket) {
         cancelled = true;
-        this.socket!.write(this.writer.encodeCancel());
+        startSocket.write(this.writer.encodeCancel());
       }
     };
 
@@ -1293,7 +1299,7 @@ export class TcpClient {
       // If generator was abandoned early (before EndOfStream), drain remaining packets
       // to keep the connection in a clean state for subsequent queries.
       // Skip draining if we received an exception - server sends nothing after exception.
-      if (!reachedEndOfStream && !receivedException && this.socket && this.reader) {
+      if (!reachedEndOfStream && !receivedException && this.socket === startSocket && this.reader) {
         try {
           if (!cancelled) {
             cancelled = true;
@@ -1305,10 +1311,10 @@ export class TcpClient {
           this.log(
             `[query] drain failed, closing connection: ${err instanceof Error ? err.message : err}`,
           );
-          this.close();
+          if (this.socket === startSocket) this.close();
         }
       }
-      this.busy = false;
+      if (this.socket === startSocket) this.busy = false;
       clearQueryTimeout();
       signal?.removeEventListener("abort", abortHandler);
     }
@@ -1367,9 +1373,12 @@ export class TcpClient {
 
   /** Drain remaining packets until EndOfStream or Exception. Used when query is abandoned early. */
   private async drainPackets(useCompression: boolean): Promise<void> {
-    if (!this.reader) return;
+    const socket = this.socket;
+    if (!socket || !this.reader) return;
+    // Destroy the socket we started draining, not whatever this.socket
+    // points at when the timer fires (a reconnect may have replaced it).
     const timer = setTimeout(() => {
-      this.socket?.destroy(new Error("Drain timeout"));
+      socket.destroy(new Error("Drain timeout"));
     }, this.options.drainTimeoutMs ?? 5000);
     try {
       while (true) {

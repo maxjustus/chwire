@@ -161,6 +161,51 @@ describe("TCP Client Reliability", () => {
       assert.strictEqual(result, 1, "Connection should remain reusable after early exit");
     }));
 
+  test("stale generator finalized after reconnect does not disturb the new connection", async () => {
+    const client = new TcpClient(toClientOptions(options));
+    await client.connect();
+    try {
+      // Suspend a query mid-stream, then kill the connection out from
+      // under it (simulates server hangup while the caller is busy).
+      const staleQuery = client.query("SELECT number FROM numbers(1000)");
+      await staleQuery.next();
+      (client as any).socket.destroy();
+
+      // Wait for the close event to run teardown (it resets busy/socket).
+      const deadline = Date.now() + 2000;
+      while ((client as any).socket !== null) {
+        assert.ok(Date.now() < deadline, "teardown should run on socket close");
+        await new Promise((r) => setTimeout(r, 5));
+      }
+
+      // Reconnect and start a new query; finalize the stale generator while
+      // the new query is mid-stream. Its finally must not send Cancel into,
+      // drain packets from, or release the busy flag of the new connection.
+      await client.connect();
+      const newQuery = client.query("SELECT number FROM numbers(100)");
+      let firstData = await newQuery.next();
+      while (!firstData.done && firstData.value.type !== "Data") {
+        firstData = await newQuery.next();
+      }
+
+      await staleQuery.return(undefined);
+      assert.strictEqual((client as any).busy, true, "stale finalizer must not clear busy");
+
+      let rows = 0;
+      let sawEndOfStream = false;
+      assert.ok(!firstData.done && firstData.value.type === "Data");
+      rows += firstData.value.batch.rowCount;
+      for await (const packet of newQuery) {
+        if (packet.type === "Data") rows += packet.batch.rowCount;
+        if (packet.type === "EndOfStream") sawEndOfStream = true;
+      }
+      assert.strictEqual(rows, 100, "new query should stream all rows undisturbed");
+      assert.ok(sawEndOfStream, "new query should reach EndOfStream");
+    } finally {
+      client.close();
+    }
+  });
+
   test("should timeout query that takes too long", async () => {
     const client = new TcpClient({
       ...toClientOptions(options),
