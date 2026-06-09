@@ -25,6 +25,14 @@ import {
 export type CodecResolver = (type: string) => Codec;
 
 /**
+ * Order strings the way ClickHouse orders Variant arms and JSON sub-columns:
+ * by raw code-unit value (`tp_10` before `tp_2`), never locale-aware. These
+ * columns are serialized positionally with no name on the wire, so our encode
+ * order must match the server's sort exactly or the streams desync on decode.
+ */
+const byteOrder = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
+
+/**
  * Compare one Dynamic cell: `a` may be a generated `DynamicValue` carrying an
  * explicit type; `b` is the bare decoded value. Unwrap both, null-check, then
  * compare via the declared type's codec when either side is type-tagged, else
@@ -81,9 +89,7 @@ export class VariantCodec implements Codec {
     // against its own sorted arms, corrupting the round-trip.
     const order = typeStrings
       .map((_, i) => i)
-      .sort((a, b) =>
-        typeStrings[a] < typeStrings[b] ? -1 : typeStrings[a] > typeStrings[b] ? 1 : 0,
-      );
+      .sort((a, b) => byteOrder(typeStrings[a], typeStrings[b]));
     this.typeStrings = order.map((i) => typeStrings[i]);
     this.codecs = order.map((i) => codecs[i]);
     this.type = `Variant(${this.typeStrings.join(", ")})`;
@@ -423,7 +429,7 @@ export class JsonCodec implements Codec {
     // byte-order sort (e.g. `tp_10` before `tp_2`).
     this.typedPaths = typedPaths
       .map((p) => ({ name: p.name, type: p.type, codec: resolveCodec(p.type) }))
-      .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+      .sort((a, b) => byteOrder(a.name, b.name));
     this.typedPathNames = new Set(this.typedPaths.map((tp) => tp.name));
   }
 
@@ -539,7 +545,7 @@ export class JsonCodec implements Codec {
         }
       }
     }
-    return [...paths].sort();
+    return [...paths].sort(byteOrder);
   }
 
   zeroValue() {
