@@ -7,7 +7,9 @@ import {
   type TcpConfig,
   withClient as withClientBase,
 } from "../../test/test_utils.ts";
-import { ClickHouseException, TcpClient } from "@maxjustus/chwire/tcp";
+// Import from source, not the dist package: withClient (test_utils) constructs
+// the source TcpClient, and instanceof checks fail across the two identities.
+import { ClickHouseException, TcpClient } from "../index.ts";
 
 describe("TCP Client Stress Tests", () => {
   let options: TcpConfig;
