@@ -53,8 +53,8 @@ describe("Compression", () => {
       const block = encodeBlock(data, false);
       const decompressed = decodeBlock(block);
 
-      // Streaming callers recycle the block's underlying buffer (StreamBuffer
-      // compaction); the decoded payload must not alias it.
+      // Streaming callers recycle the block's underlying buffer;
+      // the decoded payload must not alias it.
       block.fill(0);
 
       assert.strictEqual(decoder.decode(decompressed), decoder.decode(data));

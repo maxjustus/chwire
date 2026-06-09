@@ -11,7 +11,7 @@
 import { getCodec } from "./codecs.ts";
 import { type Column, DataColumn, EnumColumn } from "./columns.ts";
 import { BlockInfoField } from "./constants.ts";
-import { BufferReader, BufferUnderflowError, BufferWriter } from "./io.ts";
+import { BlockBuffer, BufferReader, BufferUnderflowError, BufferWriter } from "./io.ts";
 import { collectRows, rows } from "./rows.ts";
 import {
   DEFAULT_DENSE_NODE,
@@ -48,11 +48,11 @@ export { getCodec } from "./codecs.ts";
 export { BlockInfoField, Compression } from "./constants.ts";
 // Re-export IO utilities needed by tcp_client
 export {
+  BlockBuffer,
   BufferReader,
   BufferUnderflowError,
   BufferWriter,
   readVarInt64,
-  StreamBuffer,
 } from "./io.ts";
 
 export interface Block {
@@ -93,57 +93,6 @@ export class BlockUnderflowError extends BufferUnderflowError {
     super(message);
     this.name = "BlockUnderflowError";
     this.partial = partial;
-  }
-}
-
-class StableNativeBlockBuffer {
-  private buffer: Uint8Array;
-  private length = 0;
-  private initialSize: number;
-
-  constructor(initialSize: number) {
-    this.initialSize = initialSize;
-    this.buffer = new Uint8Array(initialSize);
-  }
-
-  get available(): number {
-    return this.length;
-  }
-
-  get view(): Uint8Array {
-    return this.buffer.subarray(0, this.length);
-  }
-
-  append(chunk: Uint8Array): void {
-    if (chunk.length === 0) return;
-    this.ensureCapacity(this.length + chunk.length);
-    this.buffer.set(chunk, this.length);
-    this.length += chunk.length;
-  }
-
-  startNextBlock(bytesConsumed: number): void {
-    if (bytesConsumed < 0 || bytesConsumed > this.length) {
-      throw new RangeError(`Invalid Native block consume length: ${bytesConsumed}`);
-    }
-    const trailingLength = this.length - bytesConsumed;
-    const nextCapacity = Math.max(this.initialSize, trailingLength);
-    const next = new Uint8Array(nextCapacity);
-    if (trailingLength > 0) {
-      next.set(this.buffer.subarray(bytesConsumed, this.length));
-    }
-    this.buffer = next;
-    this.length = trailingLength;
-  }
-
-  private ensureCapacity(minCapacity: number): void {
-    if (minCapacity <= this.buffer.length) return;
-    let nextCapacity = this.buffer.length;
-    while (nextCapacity < minCapacity) {
-      nextCapacity = Math.max(nextCapacity * 2, minCapacity);
-    }
-    const next = new Uint8Array(nextCapacity);
-    next.set(this.buffer.subarray(0, this.length));
-    this.buffer = next;
   }
 }
 
@@ -331,7 +280,7 @@ export async function* streamDecodeNative(
   options?: DecodeOptions & { debug?: boolean; minBufferSize?: number },
 ): AsyncGenerator<RecordBatch> {
   const minBuffer = options?.minBufferSize ?? 2 * 1024 * 1024;
-  const blockBuffer = new StableNativeBlockBuffer(minBuffer);
+  const blockBuffer = new BlockBuffer(minBuffer);
   let columns: ColumnDef[] = [];
   let totalBytesReceived = 0;
   let blocksDecoded = 0;

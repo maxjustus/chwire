@@ -56,61 +56,62 @@ const BufferSize: {
  * Growable buffer for streaming decode. Replaces chunk array + flattenChunks().
  * Amortized O(n) vs O(n²) for many small chunks.
  */
-export class StreamBuffer {
+/**
+ * Growable byte buffer for framing blocks out of a chunked stream.
+ *
+ * Stability contract: finishing a block (`startNextBlock`) moves the unread
+ * remainder into a freshly allocated backing buffer instead of compacting in
+ * place, so zero-copy views handed out while decoding earlier blocks (typed
+ * array columns, string/UUID subarrays) are never mutated afterwards.
+ */
+export class BlockBuffer {
   private buffer: Uint8Array;
-  private readOffset = 0;
-  private writeOffset = 0;
+  private length = 0;
+  private initialSize: number;
 
   constructor(initialSize = 2 * 1024 * 1024) {
+    this.initialSize = initialSize;
     this.buffer = new Uint8Array(initialSize);
   }
 
   get available(): number {
-    return this.writeOffset - this.readOffset;
-  }
-
-  append(chunk: Uint8Array): void {
-    const needed = this.writeOffset + chunk.length;
-    if (needed > this.buffer.length) {
-      this.grow(needed);
-    }
-    this.buffer.set(chunk, this.writeOffset);
-    this.writeOffset += chunk.length;
+    return this.length;
   }
 
   get view(): Uint8Array {
-    return this.buffer.subarray(this.readOffset, this.writeOffset);
+    return this.buffer.subarray(0, this.length);
   }
 
-  consume(bytes: number): void {
-    this.readOffset += bytes;
-    // Compact when >50% consumed
-    if (this.readOffset > this.buffer.length / 2) {
-      this.compact();
-    }
+  append(chunk: Uint8Array): void {
+    if (chunk.length === 0) return;
+    this.ensureCapacity(this.length + chunk.length);
+    this.buffer.set(chunk, this.length);
+    this.length += chunk.length;
   }
 
-  private compact(): void {
-    const remaining = this.writeOffset - this.readOffset;
-    if (remaining > 0 && this.readOffset > 0) {
-      this.buffer.copyWithin(0, this.readOffset, this.writeOffset);
+  startNextBlock(bytesConsumed: number): void {
+    if (bytesConsumed < 0 || bytesConsumed > this.length) {
+      throw new RangeError(`Invalid block consume length: ${bytesConsumed}`);
     }
-    this.writeOffset = remaining;
-    this.readOffset = 0;
+    const trailingLength = this.length - bytesConsumed;
+    const nextCapacity = Math.max(this.initialSize, trailingLength);
+    const next = new Uint8Array(nextCapacity);
+    if (trailingLength > 0) {
+      next.set(this.buffer.subarray(bytesConsumed, this.length));
+    }
+    this.buffer = next;
+    this.length = trailingLength;
   }
 
-  private grow(minCapacity: number): void {
-    if (this.readOffset > 0) {
-      this.compact();
-      if (this.buffer.length >= minCapacity) return;
+  private ensureCapacity(minCapacity: number): void {
+    if (minCapacity <= this.buffer.length) return;
+    let nextCapacity = this.buffer.length;
+    while (nextCapacity < minCapacity) {
+      nextCapacity = Math.max(nextCapacity * 2, minCapacity);
     }
-    let newSize = this.buffer.length;
-    while (newSize < minCapacity) {
-      newSize = Math.min(newSize * 2, newSize + 64 * 1024 * 1024);
-    }
-    const newBuffer = new Uint8Array(newSize);
-    newBuffer.set(this.buffer.subarray(0, this.writeOffset));
-    this.buffer = newBuffer;
+    const next = new Uint8Array(nextCapacity);
+    next.set(this.buffer.subarray(0, this.length));
+    this.buffer = next;
   }
 }
 

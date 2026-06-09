@@ -26,7 +26,7 @@ export {
   streamEncodeNative,
 } from "@maxjustus/chwire/native";
 import { encodeNative, type ExternalTableData, RecordBatch } from "@maxjustus/chwire/native";
-import { StreamBuffer } from "./native/io.ts";
+import { BlockBuffer } from "./native/io.ts";
 import { type CollectableAsyncGenerator, collectable } from "./util.ts";
 import { serializeParams, extractParamTypes, SQL_NULL } from "./params.ts";
 
@@ -927,7 +927,7 @@ async function* queryImpl(
         pending = combined.subarray(emitLen);
       }
     } else {
-      const streamBuffer = new StreamBuffer(64 * 1024);
+      const streamBuffer = new BlockBuffer(64 * 1024);
 
       while (true) {
         const { done, value } = await reader.read();
@@ -956,7 +956,7 @@ async function* queryImpl(
             const decompressedMatch = detectStreamExceptions
               ? splitStreamException(decompressed)
               : null;
-            streamBuffer.consume(blockSize);
+            streamBuffer.startNextBlock(blockSize);
 
             if (decompressedMatch) {
               if (decompressedMatch.prefix.length > 0) {

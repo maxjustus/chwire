@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import * as net from "node:net";
 import * as tls from "node:tls";
 import {
+  BlockBuffer,
   BlockUnderflowError,
   BufferReader,
   BufferUnderflowError,
@@ -105,41 +106,6 @@ function createAbortError(message: string): Error {
   const err = new Error(message);
   err.name = "AbortError";
   return err;
-}
-
-class NativePayloadBuffer {
-  private buffer: Uint8Array;
-  private length = 0;
-
-  constructor(initialCapacity = 2 * 1024 * 1024) {
-    this.buffer = new Uint8Array(initialCapacity);
-  }
-
-  get available(): number {
-    return this.length;
-  }
-
-  get view(): Uint8Array {
-    return this.buffer.subarray(0, this.length);
-  }
-
-  append(chunk: Uint8Array): void {
-    if (chunk.length === 0) return;
-    this.ensureCapacity(this.length + chunk.length);
-    this.buffer.set(chunk, this.length);
-    this.length += chunk.length;
-  }
-
-  private ensureCapacity(minCapacity: number): void {
-    if (minCapacity <= this.buffer.length) return;
-    let nextCapacity = this.buffer.length;
-    while (nextCapacity < minCapacity) {
-      nextCapacity = Math.max(nextCapacity * 2, minCapacity);
-    }
-    const next = new Uint8Array(nextCapacity);
-    next.set(this.buffer.subarray(0, this.length));
-    this.buffer = next;
-  }
 }
 
 /** Validates that expected schema matches server schema exactly. */
@@ -936,7 +902,7 @@ export class TcpClient {
   ): Promise<RecordBatch> {
     const debug = this.options.debug;
     const start = debug ? performance.now() : 0;
-    const buffer = new NativePayloadBuffer();
+    const buffer = new BlockBuffer();
     const reader = new BufferReader(buffer.view, 0, options);
     let partial: PartialBlockState | undefined;
     let chunksRead = 0;
