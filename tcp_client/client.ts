@@ -79,6 +79,8 @@ export interface TcpClientOptions {
   tls?: boolean | tls.ConnectionOptions;
   /** Grace period in ms after sending CANCEL before forceful socket close (default: 2000) */
   cancelGracePeriodMs?: number;
+  /** Max time in ms to drain remaining packets after an abandoned query/insert (default: 5000) */
+  drainTimeoutMs?: number;
   /** Default settings applied to all queries and inserts (can be overridden per-call) */
   settings?: ClickHouseSettings;
 }
@@ -204,11 +206,24 @@ export class TcpClient {
     reader: StreamingReader;
     serverHello: ServerHello;
   } {
-    if (this.busy && this.socket?.destroyed) {
-      this.busy = false;
-    }
     if (!this.socket || !this.reader || !this._serverHello) throw new Error("Not connected");
     return { socket: this.socket, reader: this.reader, serverHello: this._serverHello };
+  }
+
+  /**
+   * Reset all connection state. The socket's close event routes here too,
+   * so a socket destroyed from anywhere (timeout, abort, server hangup,
+   * drain timeout) leaves the client cleanly disconnected. Idempotent.
+   */
+  private teardown(): void {
+    const socket = this.socket;
+    this.socket = null;
+    this.reader = null;
+    this._serverHello = null;
+    this.sessionTimezone = null;
+    this.currentSchema = null;
+    this.busy = false;
+    socket?.destroy();
   }
 
   /** Session timezone, updated by server TimezoneUpdate packets */
@@ -250,7 +265,7 @@ export class TcpClient {
       if (!settled) {
         const rejectAbort = abortRejectFn;
         cleanup();
-        this.socket?.destroy();
+        this.teardown();
         rejectAbort?.();
       }
     };
@@ -285,12 +300,18 @@ export class TcpClient {
         this.socket.on("connect", onConnected);
       }
 
-      this.socket.on("error", (err) => reject(err));
+      const socket = this.socket;
+      socket.on("error", (err) => reject(err));
+      // Route any destruction (timeout, abort, server hangup, drain timeout)
+      // through teardown so the client is left cleanly disconnected.
+      socket.once("close", () => {
+        if (this.socket === socket) this.teardown();
+      });
     });
 
     const timeoutPromise = new Promise<void>((_, reject) => {
       timeoutId = setTimeout(() => {
-        this.socket?.destroy();
+        this.teardown();
         reject(new Error(`Connection timeout after ${timeout}ms`));
       }, timeout);
     });
@@ -306,6 +327,9 @@ export class TcpClient {
       await Promise.race(
         signal ? [connectPromise, timeoutPromise, abortPromise] : [connectPromise, timeoutPromise],
       );
+    } catch (err) {
+      this.teardown();
+      throw err;
     } finally {
       cleanup();
     }
@@ -1342,7 +1366,7 @@ export class TcpClient {
     if (!this.reader) return;
     const timer = setTimeout(() => {
       this.socket?.destroy(new Error("Drain timeout"));
-    }, 5000);
+    }, this.options.drainTimeoutMs ?? 5000);
     try {
       while (true) {
         const packet = await this.readServerPacket(useCompression);
@@ -1389,9 +1413,7 @@ export class TcpClient {
   }
 
   close() {
-    this.busy = false;
-    this.socket?.destroy();
-    this.socket = null;
+    this.teardown();
   }
 
   /**
