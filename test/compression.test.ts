@@ -47,18 +47,22 @@ describe("Compression", () => {
     });
   });
 
-  describe("None method", () => {
-    it("returns a buffer independent of the input block", () => {
-      const data = encoder.encode("must survive input mutation");
-      const block = encodeBlock(data, false);
-      const decompressed = decodeBlock(block);
+  describe("decoded buffer independence", () => {
+    // Streaming callers recycle the block's underlying buffer in place
+    // (BlockBuffer.consume in the HTTP framing loop relies on this), so
+    // every decode method must return a buffer that does not alias the
+    // input block.
+    for (const method of [false, "lz4", "zstd"] as const) {
+      it(`${method || "none"}: returns a buffer independent of the input block`, () => {
+        const data = encoder.encode("must survive input mutation".repeat(10));
+        const block = encodeBlock(data, method);
+        const decompressed = decodeBlock(block);
 
-      // Streaming callers recycle the block's underlying buffer;
-      // the decoded payload must not alias it.
-      block.fill(0);
+        block.fill(0);
 
-      assert.strictEqual(decoder.decode(decompressed), decoder.decode(data));
-    });
+        assert.strictEqual(decoder.decode(decompressed), decoder.decode(data));
+      });
+    }
   });
 
   describe("ZSTD compression", () => {
