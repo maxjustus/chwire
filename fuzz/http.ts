@@ -12,6 +12,7 @@ import { type ColumnDef, encodeNative, streamDecodeNative } from "../native/inde
 import { startClickHouse, stopClickHouse } from "../test/setup.ts";
 import { type Compression } from "./config.ts";
 import { defineIntegrationFuzz, type FuzzTransport, type TransportHandle } from "./integration.ts";
+import { consume, uniqueSuffix } from "./util.ts";
 
 let server: { baseUrl: string; auth: { username: string; password: string } } | null = null;
 
@@ -31,7 +32,7 @@ defineIntegrationFuzz({
 
   async openTransport(iter: number, compression: Compression): Promise<TransportHandle> {
     const { baseUrl, auth } = server!;
-    const suffix = `${Date.now()}_${iter}_${Math.random().toString(36).slice(2)}`;
+    const suffix = uniqueSuffix(iter);
     const sessionId = `native_fuzz_${compression}_${suffix}`;
     const insertSessionId = `${sessionId}_insert`;
 
@@ -41,8 +42,7 @@ defineIntegrationFuzz({
       },
 
       async exec(sql: string): Promise<void> {
-        // collectText drains the stream; DDL / INSERT … SELECT return no rows.
-        await collectText(query(sql, sessionId, { baseUrl, auth, compression: false }));
+        await consume(query(sql, sessionId, { baseUrl, auth, compression: false }));
       },
 
       async roundtrip(selectSql: string, dstTable: string): Promise<ColumnDef[]> {

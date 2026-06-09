@@ -31,7 +31,8 @@ import { startClickHouse, stopClickHouse } from "../test/setup.ts";
 import { type Compression, config, getIterationIndex, logConfig, logFuzzError } from "./config.ts";
 import { genType } from "./gen-type.ts";
 import { makeRng } from "./rng.ts";
-import { COMPLEX_TYPE_SETTINGS, type Conn, consume, roundTripCells } from "./round-trip.ts";
+import { COMPLEX_TYPE_SETTINGS, type Conn, roundTripCells } from "./round-trip.ts";
+import { consume, unTsvEscape, uniqueSuffix } from "./util.ts";
 
 logConfig("generated");
 
@@ -204,7 +205,7 @@ async function fetchRandomStructureType(
   ).trim();
   const match = structure.match(/^\S+\s+(.+)$/);
   if (!match) return null;
-  return match[1].replace(/\\'/g, "'");
+  return unTsvEscape(match[1]);
 }
 
 /**
@@ -458,7 +459,7 @@ async function rollVariantType(
   // Dropped here only on the reject/collapse paths; on success the caller drops it.
   // Math.random (not the seeded rng) so parallel jobs that share an iteration
   // seed across compressions get distinct names instead of colliding on one table.
-  const table = `variant_canon_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+  const table = `variant_canon_${uniqueSuffix()}`;
   const drop = () =>
     consume(
       query(`DROP TABLE IF EXISTS ${table} SYNC`, sessionId, {
@@ -478,17 +479,17 @@ async function rollVariantType(
         settings: COMPLEX_TYPE_SETTINGS,
       }),
     );
-    canonical = (
-      await collectText(
-        query(
-          `SELECT type FROM system.columns WHERE database = currentDatabase() AND table = '${table}' AND name = 'v' FORMAT TabSeparated`,
-          sessionId,
-          { baseUrl: conn.baseUrl, auth: conn.auth },
-        ),
-      )
-    )
-      .trim()
-      .replace(/\\'/g, "'");
+    canonical = unTsvEscape(
+      (
+        await collectText(
+          query(
+            `SELECT type FROM system.columns WHERE database = currentDatabase() AND table = '${table}' AND name = 'v' FORMAT TabSeparated`,
+            sessionId,
+            { baseUrl: conn.baseUrl, auth: conn.auth },
+          ),
+        )
+      ).trim(),
+    );
   } catch {
     // An illegal arm set (e.g. a Nullable that slipped the filter) errors here;
     // treat it as a skipped roll rather than crashing the iteration.
@@ -611,6 +612,27 @@ function selectorsForShape(
 }
 
 /**
+ * Map a shape's per-row selectors to cells: null where the shape drops the row,
+ * else `make(sel)`. Shared by the Variant and Dynamic branches of generateCells,
+ * which differ only in how a selected cell is constructed.
+ */
+function shapedCells(
+  shape: Shape,
+  rowCount: number,
+  labelCount: number,
+  rng: Rng,
+  make: (sel: number) => unknown,
+): unknown[] {
+  const selectors = selectorsForShape(shape, rowCount, labelCount, rng);
+  const cells = new Array<unknown>(rowCount);
+  for (let r = 0; r < rowCount; r++) {
+    const sel = selectors[r];
+    cells[r] = sel === null ? null : make(sel);
+  }
+  return cells;
+}
+
+/**
  * Generate the cells for one column. Variant and Dynamic columns route through
  * the shape scheduler so discriminator runs/all-null/alternation are covered;
  * other kinds draw each cell i.i.d. via the column codec's generate().
@@ -622,7 +644,6 @@ function generateCells(
   rowCount: number,
   dynamicTypePool: string[],
 ): unknown[] {
-  const cells = new Array<unknown>(rowCount);
   const ctx = () => makeContext(rng, MAX_DEPTH, dynamicTypePool);
   const shape = SHAPES[rng.int(0, SHAPES.length - 1)];
 
@@ -630,14 +651,11 @@ function generateCells(
   // composite (Array(Variant) etc.) falls through to the generic recursive
   // generate below, where VariantCodec.generate emits each [disc, value] cell.
   if (kind === "variant" && canonicalType.startsWith("Variant")) {
-    const arms = parseTypeList(extractTypeArgs(canonicalType));
-    const armCodecs = arms.map((t) => getCodec(t));
-    const selectors = selectorsForShape(shape, rowCount, arms.length, rng);
-    for (let r = 0; r < rowCount; r++) {
-      const sel = selectors[r];
-      cells[r] = sel === null ? null : [sel, armCodecs[sel].generate(ctx())];
-    }
-    return cells;
+    const armCodecs = parseTypeList(extractTypeArgs(canonicalType)).map((t) => getCodec(t));
+    return shapedCells(shape, rowCount, armCodecs.length, rng, (sel) => [
+      sel,
+      armCodecs[sel].generate(ctx()),
+    ]);
   }
 
   // Top-level Dynamic (bare or capped) routes through the shape scheduler; a
@@ -650,15 +668,13 @@ function generateCells(
     // DynamicValue carries the explicit type so guessType is bypassed and the
     // full type space round-trips, not just guessType fixed points.
     const poolCodecs = dynamicTypePool.map((t) => getCodec(t));
-    const selectors = selectorsForShape(shape, rowCount, poolCodecs.length, rng);
-    for (let r = 0; r < rowCount; r++) {
-      const sel = selectors[r];
-      cells[r] =
-        sel === null
-          ? null
-          : new DynamicValue(dynamicTypePool[sel], poolCodecs[sel].generate(ctx()));
-    }
-    return cells;
+    return shapedCells(
+      shape,
+      rowCount,
+      poolCodecs.length,
+      rng,
+      (sel) => new DynamicValue(dynamicTypePool[sel], poolCodecs[sel].generate(ctx())),
+    );
   }
 
   if (kind === "json") {
@@ -666,6 +682,7 @@ function generateCells(
   }
 
   const codec = getCodec(canonicalType);
+  const cells = new Array<unknown>(rowCount);
   for (let r = 0; r < rowCount; r++) cells[r] = codec.generate(ctx());
   return cells;
 }
@@ -824,7 +841,7 @@ describe("Native client-generated Fuzz Tests", { timeout: 600000 }, () => {
         for (let i = startIdx; i < startIdx + iterations; i++) {
           const rowCount = config.rows;
           const seed = seedFor(i);
-          const suffix = `${Date.now()}_${i}_${Math.random().toString(36).slice(2)}`;
+          const suffix = uniqueSuffix(i);
           const sessionId = `generated_fuzz_${compression}_${suffix}`;
           const insertSessionId = `${sessionId}_insert`;
 

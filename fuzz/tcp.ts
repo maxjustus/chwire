@@ -12,6 +12,7 @@ import { TcpClient } from "../tcp_client/client.ts";
 import { startClickHouse, stopClickHouse } from "../test/setup.ts";
 import { type Compression } from "./config.ts";
 import { defineIntegrationFuzz, type FuzzTransport, type TransportHandle } from "./integration.ts";
+import { consume } from "./util.ts";
 
 let ch: Awaited<ReturnType<typeof startClickHouse>> | null = null;
 
@@ -52,9 +53,7 @@ defineIntegrationFuzz({
       },
 
       async exec(sql: string): Promise<void> {
-        for await (const _packet of client.query(sql)) {
-          /* drain */
-        }
+        await consume(client.query(sql));
       },
 
       async roundtrip(selectSql: string, dstTable: string): Promise<ColumnDef[]> {

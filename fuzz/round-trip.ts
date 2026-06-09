@@ -14,11 +14,12 @@
  * they choose the type and generate the cells.
  */
 
-import { dataChunks, insert, type QueryPacket, query } from "../client.ts";
+import { dataChunks, insert, query } from "../client.ts";
 import type { Codec } from "../native/codecs/base.ts";
 import { type ColumnDef, encodeNative, streamDecodeNative } from "../native/index.ts";
 import { batchFromRows } from "../native/table.ts";
 import type { Compression } from "./config.ts";
+import { consume } from "./util.ts";
 
 /** Settings required for experimental/complex types in CREATE/INSERT/SELECT. */
 export const COMPLEX_TYPE_SETTINGS = {
@@ -38,12 +39,6 @@ export const COMPLEX_TYPE_SETTINGS = {
 export interface Conn {
   baseUrl: string;
   auth: { username: string; password: string };
-}
-
-/** Drain a query result stream, discarding packets (used for DDL/DROP). */
-export async function consume(input: AsyncIterable<QueryPacket>): Promise<void> {
-  for await (const _ of input) {
-  }
 }
 
 /** Serialize a value for error output, including bigint. */

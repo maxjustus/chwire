@@ -15,6 +15,7 @@
 import { describe, it } from "node:test";
 import type { ColumnDef } from "../native/index.ts";
 import { type Compression, config, getIterationIndex, logConfig, logFuzzError } from "./config.ts";
+import { sqlQuote, uniqueSuffix, unTsvEscape } from "./util.ts";
 
 const randomInt = (min: number, max: number) => Math.floor(Math.random() * (max - min + 1)) + min;
 
@@ -76,7 +77,7 @@ async function dropTables(transport: FuzzTransport, ...tables: string[]): Promis
 /** Round-trip ClickHouse-generated random data and verify with cityHash64. */
 async function randomDataIteration(transport: FuzzTransport, ctx: IterationContext): Promise<void> {
   const { testType, iter, totalIterations: N, compression, rowCount } = ctx;
-  const suffix = `${Date.now()}_${iter}_${Math.random().toString(36).slice(2)}`;
+  const suffix = uniqueSuffix(iter);
   const srcTable = `${testType}_fuzz_src_${suffix}`;
   const dstTable = `${testType}_fuzz_dst_${suffix}`;
   let structure = "";
@@ -85,7 +86,7 @@ async function randomDataIteration(transport: FuzzTransport, ctx: IterationConte
     structure = (await transport.scalar(`SELECT generateRandomStructure()`)).trim();
     console.log(`[${testType} fuzz ${iter + 1}/${N} compression=${compression}] ${structure}`);
 
-    const escapedStructure = structure.replace(/\\'/g, "'").replace(/'/g, "''");
+    const escapedStructure = sqlQuote(unTsvEscape(structure));
     await transport.exec(
       `CREATE TABLE ${srcTable} ENGINE = MergeTree ORDER BY tuple() AS SELECT * FROM generateRandom('${escapedStructure}') LIMIT ${rowCount}`,
     );
@@ -144,7 +145,7 @@ async function randomDataIteration(transport: FuzzTransport, ctx: IterationConte
 /** Round-trip a JSON column with 1-3 random typed paths and verify with cityHash64. */
 async function jsonPathsIteration(transport: FuzzTransport, ctx: IterationContext): Promise<void> {
   const { testType, iter, totalIterations: N, compression, rowCount } = ctx;
-  const suffix = `${Date.now()}_${iter}_${Math.random().toString(36).slice(2)}`;
+  const suffix = uniqueSuffix(iter);
   const srcTable = `${testType}_json_src_${suffix}`;
   const dstTable = `${testType}_json_dst_${suffix}`;
   let jsonType = "";
@@ -174,7 +175,7 @@ async function jsonPathsIteration(transport: FuzzTransport, ctx: IterationContex
     await transport.exec(`CREATE TABLE ${srcTable} (id UInt64, data ${jsonType}) ENGINE = Memory`);
     await transport.exec(
       `INSERT INTO ${srcTable} SELECT rowNumberInAllBlocks() as id, map(${pathSelect})::${jsonType} as data ` +
-        `FROM generateRandom('${helperCols.replace(/'/g, "''")}') LIMIT ${rowCount}`,
+        `FROM generateRandom('${sqlQuote(helperCols)}') LIMIT ${rowCount}`,
     );
     await transport.exec(`CREATE TABLE ${dstTable} (id UInt64, data ${jsonType}) ENGINE = Memory`);
 
