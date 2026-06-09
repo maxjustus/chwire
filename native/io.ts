@@ -57,16 +57,25 @@ const BufferSize: {
  * Amortized O(n) vs O(n²) for many small chunks.
  */
 /**
- * Growable byte buffer for framing blocks out of a chunked stream.
+ * Growable byte buffer for framing blocks out of a chunked stream, with two
+ * consumption modes for two ownership contracts:
  *
- * Stability contract: finishing a block (`startNextBlock`) moves the unread
- * remainder into a freshly allocated backing buffer instead of compacting in
- * place, so zero-copy views handed out while decoding earlier blocks (typed
- * array columns, string/UUID subarrays) are never mutated afterwards.
+ * - `startNextBlock(bytes)` — stable: moves the unread remainder into a
+ *   freshly allocated backing buffer, so zero-copy views handed out while
+ *   decoding earlier blocks (typed array columns, string/UUID subarrays)
+ *   are never mutated afterwards. Use when decoded views escape the loop.
+ *
+ * - `consume(bytes)` — amortized in-place: advances a read offset and
+ *   compacts with copyWithin past 50% waste. No allocation in steady state,
+ *   but ONLY safe when nothing that aliases this buffer outlives the call.
+ *
+ * Growth always allocates a fresh buffer (never compacts in place), so
+ * escaped views stay valid across `append` in either mode.
  */
 export class BlockBuffer {
   private buffer: Uint8Array;
-  private length = 0;
+  private readOffset = 0;
+  private writeOffset = 0;
   private initialSize: number;
 
   constructor(initialSize = 2 * 1024 * 1024) {
@@ -75,32 +84,50 @@ export class BlockBuffer {
   }
 
   get available(): number {
-    return this.length;
+    return this.writeOffset - this.readOffset;
   }
 
   get view(): Uint8Array {
-    return this.buffer.subarray(0, this.length);
+    return this.buffer.subarray(this.readOffset, this.writeOffset);
   }
 
   append(chunk: Uint8Array): void {
     if (chunk.length === 0) return;
-    this.ensureCapacity(this.length + chunk.length);
-    this.buffer.set(chunk, this.length);
-    this.length += chunk.length;
+    this.ensureCapacity(this.writeOffset + chunk.length);
+    this.buffer.set(chunk, this.writeOffset);
+    this.writeOffset += chunk.length;
   }
 
+  /** In-place consume. Only safe when no views into this buffer outlive the call. */
+  consume(bytes: number): void {
+    if (bytes < 0 || bytes > this.available) {
+      throw new RangeError(`Invalid block consume length: ${bytes}`);
+    }
+    this.readOffset += bytes;
+    if (this.readOffset > this.buffer.length / 2) {
+      const remaining = this.writeOffset - this.readOffset;
+      if (remaining > 0) {
+        this.buffer.copyWithin(0, this.readOffset, this.writeOffset);
+      }
+      this.readOffset = 0;
+      this.writeOffset = remaining;
+    }
+  }
+
+  /** Stable consume: remainder moves to a fresh buffer so escaped views stay valid. */
   startNextBlock(bytesConsumed: number): void {
-    if (bytesConsumed < 0 || bytesConsumed > this.length) {
+    if (bytesConsumed < 0 || bytesConsumed > this.available) {
       throw new RangeError(`Invalid block consume length: ${bytesConsumed}`);
     }
-    const trailingLength = this.length - bytesConsumed;
-    const nextCapacity = Math.max(this.initialSize, trailingLength);
-    const next = new Uint8Array(nextCapacity);
+    const start = this.readOffset + bytesConsumed;
+    const trailingLength = this.writeOffset - start;
+    const next = new Uint8Array(Math.max(this.initialSize, trailingLength));
     if (trailingLength > 0) {
-      next.set(this.buffer.subarray(bytesConsumed, this.length));
+      next.set(this.buffer.subarray(start, this.writeOffset));
     }
     this.buffer = next;
-    this.length = trailingLength;
+    this.readOffset = 0;
+    this.writeOffset = trailingLength;
   }
 
   private ensureCapacity(minCapacity: number): void {
@@ -110,8 +137,10 @@ export class BlockBuffer {
       nextCapacity = Math.max(nextCapacity * 2, minCapacity);
     }
     const next = new Uint8Array(nextCapacity);
-    next.set(this.buffer.subarray(0, this.length));
+    next.set(this.buffer.subarray(this.readOffset, this.writeOffset));
     this.buffer = next;
+    this.writeOffset -= this.readOffset;
+    this.readOffset = 0;
   }
 }
 

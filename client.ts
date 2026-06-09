@@ -956,7 +956,10 @@ async function* queryImpl(
             const decompressedMatch = detectStreamExceptions
               ? splitStreamException(decompressed)
               : null;
-            streamBuffer.startNextBlock(blockSize);
+            // In-place consume is safe here: nothing aliasing streamBuffer
+            // escapes this loop — decodeBlock always returns an independent
+            // buffer (including the None method, which copies).
+            streamBuffer.consume(blockSize);
 
             if (decompressedMatch) {
               if (decompressedMatch.prefix.length > 0) {
