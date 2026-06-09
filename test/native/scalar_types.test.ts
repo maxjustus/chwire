@@ -1,7 +1,8 @@
 import assert from "node:assert";
 import { describe, it } from "node:test";
+import { createCodec } from "../../native/codecs.ts";
 import { type ColumnDef, RecordBatch } from "../../native/index.ts";
-import { parseEnumDefinition } from "../../native/types.ts";
+import { ClickHouseDateTime64, parseEnumDefinition } from "../../native/types.ts";
 import { decodeBatch, encodeNativeRows, toArrayRows } from "../test_utils.ts";
 
 describe("encodeNative", () => {
@@ -968,6 +969,31 @@ describe("DateTime64 precision edge cases", () => {
     assert.strictEqual(
       dt.toClosestDate().getTime(),
       new Date("2024-01-15T10:30:00.000Z").getTime(),
+    );
+  });
+});
+
+describe("DateTime64 literal formatting", () => {
+  const codec = createCodec("DateTime64(9)");
+
+  it("formats positive sub-second ticks", () => {
+    assert.strictEqual(codec.toLiteral(new ClickHouseDateTime64(5n, 9)), "0.000000005");
+  });
+
+  it("formats whole negative seconds without fraction", () => {
+    assert.strictEqual(codec.toLiteral(new ClickHouseDateTime64(-3_000_000_000n, 9)), "-3");
+  });
+
+  it("preserves sign for negative values below one second", () => {
+    // BigInt division truncates toward zero: -5n / 10^9 = 0n, and String(0n)
+    // carries no sign, so the "-" must come from the ticks themselves.
+    assert.strictEqual(codec.toLiteral(new ClickHouseDateTime64(-5n, 9)), "-0.000000005");
+  });
+
+  it("formats negative seconds with fraction", () => {
+    assert.strictEqual(
+      codec.toLiteral(new ClickHouseDateTime64(-1_500_000_000n, 9)),
+      "-1.500000000",
     );
   });
 });

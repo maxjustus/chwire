@@ -1093,11 +1093,17 @@ export class DateTime64Codec extends BaseCodec {
   }
 
   private formatTicks(ticks: bigint): string {
-    const seconds = ticks / this.fullScale;
-    const frac = ticks % this.fullScale;
-    if (frac === 0n) return String(seconds);
-    const fracStr = String(frac < 0n ? -frac : frac).padStart(this.precision, "0");
-    return `${seconds}.${fracStr}`;
+    // Work on the absolute value: BigInt division truncates toward zero, so for
+    // ticks in (-fullScale, 0) the seconds part is 0n and String(0n) would drop
+    // the sign. The "-" must come from the original ticks.
+    const neg = ticks < 0n;
+    const abs = neg ? -ticks : ticks;
+    const seconds = abs / this.fullScale;
+    const frac = abs % this.fullScale;
+    const sign = neg ? "-" : "";
+    if (frac === 0n) return `${sign}${seconds}`;
+    const fracStr = String(frac).padStart(this.precision, "0");
+    return `${sign}${seconds}.${fracStr}`;
   }
 
   serializeLiteral(value: unknown): string {
