@@ -23,6 +23,7 @@ import { StreamingReader } from "./reader.ts";
 import { transposeRowObjectsToColumns } from "./row_object_insert.ts";
 import {
   type AccumulatedProgress,
+  assertNotChunkedCompatible,
   DBMS_TCP_PROTOCOL_VERSION,
   type LogEntry,
   type Packet,
@@ -385,10 +386,9 @@ export class TcpClient {
         : effectiveRevision;
 
     if (effectiveRevision >= REVISIONS.DBMS_MIN_PROTOCOL_VERSION_WITH_CHUNKED_PACKETS) {
-      // Server sends its chunked mode preferences - read and discard
-      // We always use notchunked since chunked requires server config
-      await this.reader.readString(); // server send preference
-      await this.reader.readString(); // server recv preference
+      const serverSend = await this.reader.readString();
+      const serverRecv = await this.reader.readString();
+      assertNotChunkedCompatible(serverSend, serverRecv);
     }
 
     if (effectiveRevision >= REVISIONS.DBMS_MIN_REVISION_WITH_EXOTIC_STUFF) {

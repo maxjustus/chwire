@@ -40,6 +40,26 @@ export const ServerPacketId = {
   TimezoneUpdate: 17,
 } as const;
 
+/**
+ * This client only speaks the unchunked wire format. Stock servers default to
+ * an optional mode, so notchunked always negotiates; a server configured with
+ * a mandatory "chunked" preference for either direction would silently desync
+ * after the handshake, so fail fast with a clear error instead.
+ * Mirrors the mandatory-mismatch case of ClickHouse's is_chunked negotiation.
+ */
+export function assertNotChunkedCompatible(serverSend: string, serverRecv: string): void {
+  for (const [direction, mode] of [
+    ["send", serverSend],
+    ["recv", serverRecv],
+  ] as const) {
+    if (mode === "chunked") {
+      throw new Error(
+        `Server requires chunked protocol (${direction}=${mode}); this client only supports notchunked`,
+      );
+    }
+  }
+}
+
 export interface ServerHello {
   serverName: string;
   major: bigint;
