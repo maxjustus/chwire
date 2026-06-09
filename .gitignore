@@ -4,3 +4,6 @@ clickhouse-rs
 dist/
 reference/
 settings-versions.json
+.crush/
+.tmp/
+reference-clickhouse-arrow-rs/
