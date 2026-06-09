@@ -1,8 +1,6 @@
 /**
  * Offline checks for the random type generator (fuzz/gen-type.ts). No server:
  * these assert genType's output is internally consistent with our own parser.
- * The live red/blue check (genType -> CREATE TABLE -> system.columns) runs in the
- * fuzz harness against a real ClickHouse.
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
