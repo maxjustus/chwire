@@ -32,6 +32,7 @@ import {
   REVISIONS,
   type ServerHello,
   ServerPacketId,
+  serverPacketName,
 } from "./types.ts";
 import { StreamingWriter } from "./writer.ts";
 
@@ -707,6 +708,7 @@ export class TcpClient {
           default:
             // Data echoes and other packet types carry nothing the insert
             // caller needs; payloads were already consumed off the wire.
+            this.log(`[insert] ignoring ${serverPacketName(packet.id)} packet`);
             break;
         }
       }
@@ -787,7 +789,9 @@ export class TcpClient {
         case ServerPacketId.Exception:
           throw packet.exception;
         default:
-          throw new Error(`Unexpected packet while waiting for insert header: ${packet.id}`);
+          throw new Error(
+            `Unexpected packet while waiting for insert header: ${serverPacketName(packet.id)}`,
+          );
       }
     }
   }
@@ -1271,7 +1275,7 @@ export class TcpClient {
             this.log(`[query] timezone updated to: ${packet.timezone}`);
             break;
           default:
-            throw new Error(`Unexpected packet ID during query: ${packet.id}`);
+            throw new Error(`Unexpected packet during query: ${serverPacketName(packet.id)}`);
         }
       }
     } catch (err: any) {

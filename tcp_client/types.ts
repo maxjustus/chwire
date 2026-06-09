@@ -40,6 +40,15 @@ export const ServerPacketId = {
   TimezoneUpdate: 17,
 } as const;
 
+const SERVER_PACKET_NAMES = new Map<number, string>(
+  Object.entries(ServerPacketId).map(([name, id]) => [id, name]),
+);
+
+/** Human-readable packet name for diagnostics, e.g. "Totals (7)". */
+export function serverPacketName(id: number): string {
+  return `${SERVER_PACKET_NAMES.get(id) ?? "Unknown"} (${id})`;
+}
+
 /**
  * This client only speaks the unchunked wire format. Stock servers default to
  * an optional mode, so notchunked always negotiates; a server configured with
