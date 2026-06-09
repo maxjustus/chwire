@@ -1,5 +1,4 @@
 import assert from "node:assert";
-import type { QueryPacket } from "../client.ts";
 import {
   batchFromRows,
   type ColumnDef,
@@ -12,11 +11,9 @@ import { TcpClient } from "../tcp_client/client.ts";
 import { BufferWriter } from "../native/io.ts";
 import { BlockInfoField } from "../native/constants.ts";
 
-// Async iterable helpers
-export async function consume(input: AsyncIterable<QueryPacket>): Promise<void> {
-  for await (const _ of input) {
-  }
-}
+// Async iterable helpers. consume lives in the fuzz harness; re-export it so the
+// test suite shares one drain implementation.
+export { consume } from "../fuzz/util.ts";
 
 export async function collect<T>(gen: AsyncIterable<T>): Promise<T[]> {
   const results: T[] = [];
