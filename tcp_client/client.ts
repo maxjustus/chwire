@@ -15,6 +15,7 @@ import {
   RecordBatch,
 } from "@maxjustus/chwire/native";
 import { type Compression, init as initCompression } from "../compression.ts";
+import type { ClickHouseException } from "../errors.ts";
 import type { ClickHouseSettings } from "../settings.ts";
 import type { QueryParamValue } from "../types.ts";
 import { type CollectableAsyncGenerator, collectable } from "../util.ts";
@@ -35,6 +36,26 @@ import { StreamingWriter } from "./writer.ts";
 
 export type { QueryParamValue } from "../types.ts";
 export type { CollectableAsyncGenerator } from "../util.ts";
+
+/**
+ * One server packet with its payload fully consumed off the wire.
+ * Parsing lives in a single place (readServerPacket) so every consumer
+ * loop stays in sync: a packet type one consumer ignores is still read,
+ * and the stream cannot desync.
+ */
+type WirePacket =
+  | { id: typeof ServerPacketId.Data; batch: RecordBatch }
+  | { id: typeof ServerPacketId.Totals; batch: RecordBatch }
+  | { id: typeof ServerPacketId.Extremes; batch: RecordBatch }
+  | { id: typeof ServerPacketId.ProfileEvents; batch: RecordBatch }
+  | { id: typeof ServerPacketId.Log; batch: RecordBatch }
+  | { id: typeof ServerPacketId.Progress; progress: Progress }
+  | { id: typeof ServerPacketId.ProfileInfo; info: ProfileInfo }
+  | { id: typeof ServerPacketId.Exception; exception: ClickHouseException }
+  | { id: typeof ServerPacketId.TimezoneUpdate; timezone: string }
+  | { id: typeof ServerPacketId.TableColumns }
+  | { id: typeof ServerPacketId.EndOfStream }
+  | { id: typeof ServerPacketId.Pong };
 
 export interface TcpClientOptions {
   host: string;
@@ -611,13 +632,26 @@ export class TcpClient {
       // Read response packets until EndOfStream
       while (true) {
         throwIfAborted();
-        const packetId = Number(await this.reader!.readVarint());
+        const packet = await this.readServerPacket(useCompression);
 
-        switch (packetId) {
+        // Terminal packets win over a concurrently-fired abort: the server
+        // already finished (or failed) the insert, so report that outcome.
+        if (packet.id === ServerPacketId.EndOfStream) {
+          reachedEndOfStream = true;
+          this.log(`Successfully inserted ${totalInserted} rows.`);
+          yield { type: "EndOfStream" };
+          return;
+        }
+        if (packet.id === ServerPacketId.Exception) {
+          receivedException = true;
+          throw packet.exception;
+        }
+        throwIfAborted();
+
+        switch (packet.id) {
           case ServerPacketId.Progress: {
-            const progress = await this.readProgress();
+            const progress = packet.progress;
             this.accumulateProgress(progress, progressAccumulated);
-            throwIfAborted();
             yield {
               type: "Progress",
               progress,
@@ -625,38 +659,31 @@ export class TcpClient {
             };
             break;
           }
-          case ServerPacketId.ProfileInfo: {
-            throwIfAborted();
-            yield { type: "ProfileInfo", info: await this.readProfileInfo() };
+          case ServerPacketId.ProfileInfo:
+            yield { type: "ProfileInfo", info: packet.info };
             break;
-          }
           case ServerPacketId.ProfileEvents: {
-            const batch = await this.readBlock(false);
-            this.processProfileEventsBlock(batch, profileEventsAccumulated, progressAccumulated);
-            throwIfAborted();
-            yield { type: "ProfileEvents", batch, accumulated: new Map(profileEventsAccumulated) };
+            this.processProfileEventsBlock(
+              packet.batch,
+              profileEventsAccumulated,
+              progressAccumulated,
+            );
+            yield {
+              type: "ProfileEvents",
+              batch: packet.batch,
+              accumulated: new Map(profileEventsAccumulated),
+            };
             break;
           }
-          case ServerPacketId.Data:
-            await this.readBlock(useCompression);
-            break;
-          case ServerPacketId.Log: {
-            const batch = await this.readBlock(false);
-            if (batch.rowCount > 0) {
-              throwIfAborted();
-              yield { type: "Log", entries: this.parseLogBlock(batch) };
+          case ServerPacketId.Log:
+            if (packet.batch.rowCount > 0) {
+              yield { type: "Log", entries: this.parseLogBlock(packet.batch) };
             }
             break;
-          }
-          case ServerPacketId.EndOfStream:
-            reachedEndOfStream = true;
-            this.log(`Successfully inserted ${totalInserted} rows.`);
-            yield { type: "EndOfStream" };
-            return;
-          case ServerPacketId.Exception: {
-            receivedException = true;
-            throw await this.reader!.readException();
-          }
+          default:
+            // Data echoes and other packet types carry nothing the insert
+            // caller needs; payloads were already consumed off the wire.
+            break;
         }
       }
     } finally {
@@ -723,28 +750,20 @@ export class TcpClient {
       if (isCancelled()) {
         throw createAbortError("Insert aborted");
       }
-      const packetId = Number(await this.reader!.readVarint());
+      const packet = await this.readServerPacket(useCompression);
 
-      switch (packetId) {
-        case ServerPacketId.Data: {
-          const block = await this.readBlock(useCompression);
-          this.currentSchema = block.columns.map((c) => ({ name: c.name, type: c.type }));
+      switch (packet.id) {
+        case ServerPacketId.Data:
+          this.currentSchema = packet.batch.columns.map((c) => ({ name: c.name, type: c.type }));
           return this.currentSchema;
-        }
         case ServerPacketId.Progress:
-          await this.readProgress();
-          break;
         case ServerPacketId.Log:
-          await this.readBlock(false);
-          break;
         case ServerPacketId.TableColumns:
-          await this.reader!.readString();
-          await this.reader!.readString();
           break;
         case ServerPacketId.Exception:
-          throw await this.reader!.readException();
+          throw packet.exception;
         default:
-          throw new Error(`Unexpected packet while waiting for insert header: ${packetId}`);
+          throw new Error(`Unexpected packet while waiting for insert header: ${packet.id}`);
       }
     }
   }
@@ -980,6 +999,45 @@ export class TcpClient {
     );
   }
 
+  /** Read one server packet, fully consuming its payload off the wire. */
+  private async readServerPacket(useCompression: boolean): Promise<WirePacket> {
+    const id = Number(await this.reader!.readVarint());
+    switch (id) {
+      case ServerPacketId.Data:
+        return { id: ServerPacketId.Data, batch: await this.readBlock(useCompression) };
+      case ServerPacketId.Totals:
+        return { id: ServerPacketId.Totals, batch: await this.readBlock(useCompression) };
+      case ServerPacketId.Extremes:
+        return { id: ServerPacketId.Extremes, batch: await this.readBlock(useCompression) };
+      case ServerPacketId.ProfileEvents:
+        // Always uncompressed (diagnostic metadata)
+        return { id: ServerPacketId.ProfileEvents, batch: await this.readBlock(false) };
+      case ServerPacketId.Log:
+        // Always uncompressed (diagnostic metadata)
+        return { id: ServerPacketId.Log, batch: await this.readBlock(false) };
+      case ServerPacketId.Progress:
+        return { id: ServerPacketId.Progress, progress: await this.readProgress() };
+      case ServerPacketId.ProfileInfo:
+        return { id: ServerPacketId.ProfileInfo, info: await this.readProfileInfo() };
+      case ServerPacketId.Exception:
+        return { id: ServerPacketId.Exception, exception: await this.reader!.readException() };
+      case ServerPacketId.TimezoneUpdate: {
+        this.sessionTimezone = await this.reader!.readString();
+        return { id: ServerPacketId.TimezoneUpdate, timezone: this.sessionTimezone };
+      }
+      case ServerPacketId.TableColumns:
+        await this.reader!.readString();
+        await this.reader!.readString();
+        return { id: ServerPacketId.TableColumns };
+      case ServerPacketId.EndOfStream:
+        return { id: ServerPacketId.EndOfStream };
+      case ServerPacketId.Pong:
+        return { id: ServerPacketId.Pong };
+      default:
+        throw new Error(`Unknown packet ID: ${id}. Cannot proceed.`);
+    }
+  }
+
   // TODO: we should make the use flattened v3 setting automatically enabled until we support the other dynamic encodings
   query(sql: string, options: QueryOptions = {}): CollectableAsyncGenerator<Packet> {
     return collectable(this.queryImpl(sql, options));
@@ -1110,28 +1168,37 @@ export class TcpClient {
       while (true) {
         throwIfAborted();
         throwIfTimedOut();
-        this.log(`[query] reading packet id...`);
-        const packetId = Number(await this.reader!.readVarint());
-        this.log(`[query] packetId=${packetId}, useCompression=${useCompression}`);
+        const packet = await this.readServerPacket(useCompression);
+        this.log(`[query] packetId=${packet.id}, useCompression=${useCompression}`);
 
-        switch (packetId) {
+        // Terminal packets win over a concurrently-fired abort: the server
+        // already finished (or failed) the query, so report that outcome.
+        if (packet.id === ServerPacketId.EndOfStream) {
+          reachedEndOfStream = true;
+          yield { type: "EndOfStream" };
+          return;
+        }
+        if (packet.id === ServerPacketId.Exception) {
+          receivedException = true;
+          throw packet.exception;
+        }
+        throwIfAborted();
+        throwIfTimedOut();
+
+        switch (packet.id) {
           case ServerPacketId.Data: {
-            // With compression=1, ALL Data blocks from server are compressed
-            this.log(`[query] reading Data block (compressed=${useCompression})...`);
-            const batch = await this.readBlock(useCompression);
+            const batch = packet.batch;
             this.log(`[query] got Data block with ${batch.rowCount} rows`);
             if (this.currentSchema === null) {
               this.currentSchema = batch.columns.map((c) => ({ name: c.name, type: c.type }));
             }
             if (batch.rowCount > 0) {
-              throwIfAborted();
-              throwIfTimedOut();
               yield { type: "Data", batch };
             }
             break;
           }
           case ServerPacketId.Progress: {
-            const progress = await this.readProgress();
+            const progress = packet.progress;
             this.accumulateProgress(progress, progressAccumulated);
             // Calculate percent for queries (based on read progress)
             const progressDenom =
@@ -1142,8 +1209,6 @@ export class TcpClient {
               progressDenom > 0n
                 ? Number((progressAccumulated.readRows * 100n) / progressDenom)
                 : 0;
-            throwIfAborted();
-            throwIfTimedOut();
             yield {
               type: "Progress",
               progress,
@@ -1151,63 +1216,38 @@ export class TcpClient {
             };
             break;
           }
-          case ServerPacketId.ProfileInfo: {
-            const info = await this.readProfileInfo();
-            throwIfAborted();
-            throwIfTimedOut();
-            yield { type: "ProfileInfo", info };
+          case ServerPacketId.ProfileInfo:
+            yield { type: "ProfileInfo", info: packet.info };
             break;
-          }
           case ServerPacketId.ProfileEvents: {
-            const batch = await this.readBlock(false);
-            this.processProfileEventsBlock(batch, profileEventsAccumulated, progressAccumulated);
-            throwIfAborted();
-            throwIfTimedOut();
+            this.processProfileEventsBlock(
+              packet.batch,
+              profileEventsAccumulated,
+              progressAccumulated,
+            );
             yield {
               type: "ProfileEvents",
-              batch,
+              batch: packet.batch,
               accumulated: new Map(profileEventsAccumulated),
             };
             break;
           }
-          case ServerPacketId.Totals: {
-            const batch = await this.readBlock(useCompression);
-            throwIfAborted();
-            throwIfTimedOut();
-            yield { type: "Totals", batch };
+          case ServerPacketId.Totals:
+            yield { type: "Totals", batch: packet.batch };
             break;
-          }
-          case ServerPacketId.Extremes: {
-            const batch = await this.readBlock(useCompression);
-            throwIfAborted();
-            throwIfTimedOut();
-            yield { type: "Extremes", batch };
+          case ServerPacketId.Extremes:
+            yield { type: "Extremes", batch: packet.batch };
             break;
-          }
-          case ServerPacketId.Log: {
-            // Log blocks are always uncompressed (diagnostic metadata)
-            const batch = await this.readBlock(false);
-            if (batch.rowCount > 0) {
-              throwIfAborted();
-              throwIfTimedOut();
-              yield { type: "Log", entries: this.parseLogBlock(batch) };
+          case ServerPacketId.Log:
+            if (packet.batch.rowCount > 0) {
+              yield { type: "Log", entries: this.parseLogBlock(packet.batch) };
             }
             break;
-          }
           case ServerPacketId.TimezoneUpdate:
-            this.sessionTimezone = await this.reader!.readString();
-            this.log(`[query] timezone updated to: ${this.sessionTimezone}`);
+            this.log(`[query] timezone updated to: ${packet.timezone}`);
             break;
-          case ServerPacketId.EndOfStream:
-            reachedEndOfStream = true;
-            yield { type: "EndOfStream" };
-            return;
-          case ServerPacketId.Exception: {
-            receivedException = true;
-            throw await this.reader!.readException();
-          }
           default:
-            throw new Error(`Unknown packet ID: ${packetId}. Cannot proceed.`);
+            throw new Error(`Unexpected packet ID during query: ${packet.id}`);
         }
       }
     } catch (err: any) {
@@ -1305,41 +1345,13 @@ export class TcpClient {
     }, 5000);
     try {
       while (true) {
-        const packetId = Number(await this.reader.readVarint());
-        switch (packetId) {
-          case ServerPacketId.Data:
-            await this.readBlock(useCompression);
-            break;
-          case ServerPacketId.Progress:
-            await this.readProgress();
-            break;
-          case ServerPacketId.ProfileInfo:
-            await this.readProfileInfo();
-            break;
-          case ServerPacketId.ProfileEvents:
-            await this.readBlock(false);
-            break;
-          case ServerPacketId.Totals:
-          case ServerPacketId.Extremes:
-            await this.readBlock(useCompression);
-            break;
-          case ServerPacketId.Log:
-            await this.readBlock(false);
-            break;
-          case ServerPacketId.TimezoneUpdate:
-            await this.reader.readString();
-            break;
-          case ServerPacketId.EndOfStream:
-            return;
-          case ServerPacketId.Exception: {
-            const ex = await this.reader.readException();
-            this.log(`Exception during drain: ${ex.message}`);
-            return;
-          }
-          default:
-            // Unknown packet - can't continue safely
-            return;
+        const packet = await this.readServerPacket(useCompression);
+        if (packet.id === ServerPacketId.EndOfStream) return;
+        if (packet.id === ServerPacketId.Exception) {
+          this.log(`Exception during drain: ${packet.exception.message}`);
+          return;
         }
+        // All other packets: payload already consumed, keep draining.
       }
     } finally {
       clearTimeout(timer);
@@ -1358,9 +1370,9 @@ export class TcpClient {
     this.busy = true;
     try {
       await this.writeWithBackpressure(this.writer.encodePing());
-      const packetId = Number(await this.reader!.readVarint());
-      if (packetId !== ServerPacketId.Pong) {
-        throw new Error(`Expected Pong (4), got packet ${packetId}`);
+      const packet = await this.readServerPacket(false);
+      if (packet.id !== ServerPacketId.Pong) {
+        throw new Error(`Expected Pong (4), got packet ${packet.id}`);
       }
     } finally {
       this.busy = false;
