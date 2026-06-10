@@ -867,6 +867,37 @@ describe("ClickHouse Integration Tests", { timeout: 60000 }, () => {
       assert.strictEqual(parsed.data[0].v, null);
     });
 
+    it("response body is released when query generator is abandoned early", async () => {
+      // Repeat early-exit many times. If reader.cancel() is not called on abandon,
+      // HTTP connections stay checked out of the pool; eventually new queries queue
+      // and the test times out. 20 iterations is well above typical pool-per-origin
+      // defaults observed with undici's global fetch dispatcher.
+      const ITERATIONS = 20;
+      for (let i = 0; i < ITERATIONS; i++) {
+        // Use a unique session per iteration to avoid ClickHouse session locking
+        // (the server keeps a session locked until the query finishes on its side).
+        const iterSession = generateSessionId(`abandon_${i}`);
+        const gen = query(`SELECT number FROM numbers(100000)`, iterSession, {
+          baseUrl,
+          auth,
+          compression: false,
+        });
+        // Pull one packet then abandon the rest.
+        await gen.next();
+        await gen.return(undefined);
+      }
+
+      // If connections leaked, this would hang until the test timeout.
+      const result = await collectText(
+        query("SELECT 42 FORMAT JSONEachRow", generateSessionId("abandon_final"), {
+          baseUrl,
+          auth,
+          compression: false,
+        }),
+      );
+      assert.ok(result.includes("42"));
+    });
+
     it("should handle DateTime with timezone param", async () => {
       const testDate = new Date("2024-06-15T10:30:45Z");
       const result = await collectText(

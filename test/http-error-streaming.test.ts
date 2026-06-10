@@ -128,7 +128,7 @@ describe("createSignal", () => {
     const reason = new Error("already aborted");
     controller.abort(reason);
 
-    const combined = createSignal(controller.signal, 1_000, undefined);
+    const combined = createSignal(controller.signal, 1_000);
 
     assert.strictEqual(combined, controller.signal);
     assert.ok(combined?.aborted);

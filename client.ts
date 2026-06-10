@@ -37,38 +37,12 @@ import type { QueryParams } from "./types.ts";
 
 export type { Compression };
 
-function createSignal(
-  signal?: AbortSignal,
-  timeout?: number,
-  abortSignalAny: ((signals: AbortSignal[]) => AbortSignal) | undefined = typeof (
-    AbortSignal as any
-  ).any === "function"
-    ? (AbortSignal as any).any.bind(AbortSignal)
-    : undefined,
-): AbortSignal | undefined {
+function createSignal(signal?: AbortSignal, timeout?: number): AbortSignal | undefined {
   if (!signal && !timeout) return undefined;
   if (signal?.aborted) return signal;
   if (signal && !timeout) return signal;
   if (!signal && timeout) return AbortSignal.timeout(timeout);
-  if (abortSignalAny) {
-    return abortSignalAny([signal!, AbortSignal.timeout(timeout!)]);
-  }
-
-  const timeoutSignal = AbortSignal.timeout(timeout!);
-  if (timeoutSignal.aborted) return timeoutSignal;
-
-  const controller = new AbortController();
-  const onSignalAbort = () => {
-    timeoutSignal.removeEventListener("abort", onTimeoutAbort);
-    controller.abort(signal!.reason);
-  };
-  const onTimeoutAbort = () => {
-    signal!.removeEventListener("abort", onSignalAbort);
-    controller.abort(timeoutSignal.reason);
-  };
-  signal!.addEventListener("abort", onSignalAbort, { once: true });
-  timeoutSignal.addEventListener("abort", onTimeoutAbort, { once: true });
-  return controller.signal;
+  return AbortSignal.any([signal!, AbortSignal.timeout(timeout!)]);
 }
 
 const encoder = new TextEncoder();
@@ -888,114 +862,120 @@ async function* queryImpl(
   const detectStreamExceptions = isTextFormat(extractResponseFormat(sql, options));
 
   async function* createStream(): AsyncGenerator<Uint8Array, void, unknown> {
-    if (!compressed) {
-      if (!detectStreamExceptions) {
+    try {
+      if (!compressed) {
+        if (!detectStreamExceptions) {
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            yield value;
+          }
+          return;
+        }
+
+        // Keep a small tail so a framed exception preamble split across reads
+        // is validated before we emit those bytes to the caller.
+        let pending = new Uint8Array(0);
+
         while (true) {
           const { done, value } = await reader.read();
-          if (done) break;
-          yield value;
-        }
-        return;
-      }
+          const chunk = value ?? new Uint8Array(0);
+          const combined = pending.length === 0 ? chunk : concat([pending, chunk]);
+          const match = splitStreamException(combined);
 
-      // Keep a small tail so a framed exception preamble split across reads
-      // is validated before we emit those bytes to the caller.
-      let pending = new Uint8Array(0);
-
-      while (true) {
-        const { done, value } = await reader.read();
-        const chunk = value ?? new Uint8Array(0);
-        const combined = pending.length === 0 ? chunk : concat([pending, chunk]);
-        const match = splitStreamException(combined);
-
-        if (match) {
-          pending = new Uint8Array(0);
-          if (match.prefix.length > 0) {
-            yield match.prefix;
-          }
-          throw match.error;
-        }
-
-        if (done) {
-          if (combined.length > 0) yield combined;
-          break;
-        }
-
-        const keep = Math.min(combined.length, EXCEPTION_SCAN_TAIL_BYTES);
-        const emitLen = combined.length - keep;
-        if (emitLen > 0) yield combined.subarray(0, emitLen);
-        pending = combined.subarray(emitLen);
-      }
-    } else {
-      const streamBuffer = new BlockBuffer(64 * 1024);
-
-      while (true) {
-        const { done, value } = await reader.read();
-
-        if (value) streamBuffer.append(value);
-
-        // process complete blocks
-        while (streamBuffer.available >= 25) {
-          const bufferView = streamBuffer.view;
-
-          // Check for raw __exception__ in the buffer (uncompressed injection)
-          const rawMatch = detectStreamExceptions ? splitStreamException(bufferView) : null;
-          if (rawMatch && rawMatch.prefix.length === 0) {
-            throw rawMatch.error;
-          }
-
-          const compressedSize = readUInt32LE(bufferView, 17);
-          const blockSize = 16 + compressedSize;
-
-          if (streamBuffer.available < blockSize) break;
-
-          const block = bufferView.subarray(0, blockSize);
-
-          try {
-            const decompressed = decodeBlock(block);
-            const decompressedMatch = detectStreamExceptions
-              ? splitStreamException(decompressed)
-              : null;
-            // In-place consume is safe here: nothing aliasing streamBuffer
-            // escapes this loop — decodeBlock always returns an independent
-            // buffer (including the None method, which copies).
-            streamBuffer.consume(blockSize);
-
-            if (decompressedMatch) {
-              if (decompressedMatch.prefix.length > 0) {
-                yield decompressedMatch.prefix;
-              }
-              throw decompressedMatch.error;
+          if (match) {
+            pending = new Uint8Array(0);
+            if (match.prefix.length > 0) {
+              yield match.prefix;
             }
-
-            yield decompressed;
-          } catch (err: unknown) {
-            if (err instanceof ClickHouseException) throw err;
-            const fallbackMatch = detectStreamExceptions
-              ? splitStreamException(streamBuffer.view)
-              : null;
-            if (fallbackMatch && fallbackMatch.prefix.length === 0) {
-              throw fallbackMatch.error;
-            }
-            const message = err instanceof Error ? err.message : String(err);
-            throw new Error(`Block decompression failed: ${message}`);
+            throw match.error;
           }
-        }
 
-        if (done) {
-          if (streamBuffer.available > 0) {
-            const rawMatch = detectStreamExceptions
-              ? splitStreamException(streamBuffer.view)
-              : null;
+          if (done) {
+            if (combined.length > 0) yield combined;
+            break;
+          }
+
+          const keep = Math.min(combined.length, EXCEPTION_SCAN_TAIL_BYTES);
+          const emitLen = combined.length - keep;
+          if (emitLen > 0) yield combined.subarray(0, emitLen);
+          pending = combined.subarray(emitLen);
+        }
+      } else {
+        const streamBuffer = new BlockBuffer(64 * 1024);
+
+        while (true) {
+          const { done, value } = await reader.read();
+
+          if (value) streamBuffer.append(value);
+
+          // process complete blocks
+          while (streamBuffer.available >= 25) {
+            const bufferView = streamBuffer.view;
+
+            // Check for raw __exception__ in the buffer (uncompressed injection)
+            const rawMatch = detectStreamExceptions ? splitStreamException(bufferView) : null;
             if (rawMatch && rawMatch.prefix.length === 0) {
               throw rawMatch.error;
             }
-            throw new Error("Incomplete block");
+
+            const compressedSize = readUInt32LE(bufferView, 17);
+            const blockSize = 16 + compressedSize;
+
+            if (streamBuffer.available < blockSize) break;
+
+            const block = bufferView.subarray(0, blockSize);
+
+            try {
+              const decompressed = decodeBlock(block);
+              const decompressedMatch = detectStreamExceptions
+                ? splitStreamException(decompressed)
+                : null;
+              // In-place consume is safe here: nothing aliasing streamBuffer
+              // escapes this loop — decodeBlock always returns an independent
+              // buffer (including the None method, which copies).
+              streamBuffer.consume(blockSize);
+
+              if (decompressedMatch) {
+                if (decompressedMatch.prefix.length > 0) {
+                  yield decompressedMatch.prefix;
+                }
+                throw decompressedMatch.error;
+              }
+
+              yield decompressed;
+            } catch (err: unknown) {
+              if (err instanceof ClickHouseException) throw err;
+              const fallbackMatch = detectStreamExceptions
+                ? splitStreamException(streamBuffer.view)
+                : null;
+              if (fallbackMatch && fallbackMatch.prefix.length === 0) {
+                throw fallbackMatch.error;
+              }
+              const message = err instanceof Error ? err.message : String(err);
+              throw new Error(`Block decompression failed: ${message}`);
+            }
           }
 
-          break;
+          if (done) {
+            if (streamBuffer.available > 0) {
+              const rawMatch = detectStreamExceptions
+                ? splitStreamException(streamBuffer.view)
+                : null;
+              if (rawMatch && rawMatch.prefix.length === 0) {
+                throw rawMatch.error;
+              }
+              throw new Error("Incomplete block");
+            }
+
+            break;
+          }
         }
       }
+    } finally {
+      // Cancel releases the lock on response.body so the HTTP connection
+      // can be returned to the pool. Safe to call on an already-done stream.
+      await reader.cancel().catch(() => {});
     }
   }
 
