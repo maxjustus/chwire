@@ -24,8 +24,8 @@ export {
   rows,
   streamDecodeNative,
   streamEncodeNative,
-} from "@maxjustus/chwire/native";
-import { encodeNative, type ExternalTableData, RecordBatch } from "@maxjustus/chwire/native";
+} from "./native/index.ts";
+import { encodeNative, type ExternalTableData, RecordBatch } from "./native/index.ts";
 import { BlockBuffer } from "./native/io.ts";
 import { type CollectableAsyncGenerator, collectable } from "./util.ts";
 import { serializeParams, extractParamTypes, SQL_NULL } from "./params.ts";

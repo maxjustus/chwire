@@ -1,4 +1,4 @@
-import type { RecordBatch } from "@maxjustus/chwire/native";
+import type { RecordBatch } from "../native/index.ts";
 
 // Modern revision. We rely on the default server settings for serialization.
 export const DBMS_TCP_PROTOCOL_VERSION = 54479n;

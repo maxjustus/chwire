@@ -1,10 +1,5 @@
 import type * as net from "node:net";
-import {
-  BufferUnderflowError,
-  Compression,
-  readVarInt64,
-  TEXT_DECODER,
-} from "@maxjustus/chwire/native";
+import { BufferUnderflowError, Compression, readVarInt64, TEXT_DECODER } from "../native/index.ts";
 import { decodeBlock } from "../compression.ts";
 import { ClickHouseException } from "./types.ts";
 

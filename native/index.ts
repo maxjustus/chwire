@@ -43,7 +43,7 @@ export {
 export { type Column, RecordBatch, type Row, type MaterializeOptions, EnumColumn };
 export { batchFromRows, batchFromCols, type ExternalTableData };
 export { rows, collectRows };
-export { getCodec } from "./codecs.ts";
+export { getCodec, SQL_NULL } from "./codecs.ts";
 // Re-export constants needed by tcp_client
 export { BlockInfoField, Compression } from "./constants.ts";
 // Re-export IO utilities needed by tcp_client

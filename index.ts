@@ -12,7 +12,7 @@ export {
   rows,
   streamDecodeNative,
   streamEncodeNative,
-} from "@maxjustus/chwire/native";
+} from "./native/index.ts";
 export {
   buildReqUrl,
   ClickHouseException,
