@@ -350,6 +350,28 @@ describe("TCP Client Integration", () => {
       await client.query(`DROP TABLE ${tableName}`);
     }));
 
+  test("JSON column with UInt64 value exceeding MAX_SAFE_INTEGER decodes as BigInt", () =>
+    withClient(async (client) => {
+      const largeValue = 18446744073709551615n; // UInt64 max
+      for await (const packet of client.query(
+        `SELECT map('big', toUInt64('18446744073709551615'))::JSON AS j`,
+        {
+          settings: {
+            allow_experimental_json_type: true,
+            output_format_native_use_flattened_dynamic_and_json_serialization: true,
+          },
+        },
+      )) {
+        if (packet.type === "Data") {
+          for (const row of packet.batch) {
+            const val = (row as any).j?.big;
+            assert.strictEqual(typeof val, "bigint");
+            assert.strictEqual(val, largeValue);
+          }
+        }
+      }
+    }));
+
   test("row objects with Array(UInt32) column", () =>
     withClient(async (client) => {
       const tableName = `test_array_uint32_${Date.now()}`;

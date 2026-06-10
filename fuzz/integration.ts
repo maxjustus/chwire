@@ -15,9 +15,16 @@
 import { describe, it } from "node:test";
 import type { ColumnDef } from "../native/index.ts";
 import { type Compression, config, getIterationIndex, logConfig, logFuzzError } from "./config.ts";
-import { sqlQuote, uniqueSuffix, unTsvEscape } from "./util.ts";
+import { randomInt, sqlQuote, uniqueSuffix, unTsvEscape } from "./util.ts";
 
-const randomInt = (min: number, max: number) => Math.floor(Math.random() * (max - min + 1)) + min;
+/**
+ * If FUZZ_STRUCTURE is set, returns that structure string for replay.
+ * Useful for re-running a specific failing structure without modifying test code.
+ */
+function replayStructure(): string | null {
+  const s = process.env.FUZZ_STRUCTURE?.trim();
+  return s && s.length > 0 ? s : null;
+}
 
 /**
  * The three transport-specific operations an integration fuzz iteration needs.
@@ -83,7 +90,8 @@ async function randomDataIteration(transport: FuzzTransport, ctx: IterationConte
   let structure = "";
 
   try {
-    structure = (await transport.scalar(`SELECT generateRandomStructure()`)).trim();
+    structure =
+      replayStructure() ?? (await transport.scalar(`SELECT generateRandomStructure()`)).trim();
     console.log(`[${testType} fuzz ${iter + 1}/${N} compression=${compression}] ${structure}`);
 
     const escapedStructure = sqlQuote(unTsvEscape(structure));

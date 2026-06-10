@@ -21,14 +21,13 @@ import {
 } from "../native/index.ts";
 import { decodeBatch, toArrayRows } from "../test/test_utils.ts";
 import { config, logConfig, getIterationIndex } from "./config.ts";
+import { randomInt } from "./util.ts";
 
 logConfig("unit");
 
 function encodeRows(columns: ColumnDef[], rows: unknown[][]): Uint8Array {
   return encodeNative(batchFromRows(columns, rows));
 }
-
-const randomInt = (min: number, max: number) => Math.floor(Math.random() * (max - min + 1)) + min;
 
 const randomString = (maxLen = 100) => {
   const len = randomInt(0, maxLen);

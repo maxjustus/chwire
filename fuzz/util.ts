@@ -1,5 +1,8 @@
 /** Small shared helpers for the fuzz harness. */
 
+export const randomInt = (min: number, max: number): number =>
+  Math.floor(Math.random() * (max - min + 1)) + min;
+
 /** Drain an async stream, discarding every item (DDL / DROP that returns nothing). */
 export async function consume<T>(input: AsyncIterable<T>): Promise<void> {
   for await (const _ of input) {

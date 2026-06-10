@@ -2,7 +2,11 @@ import assert from "node:assert";
 import { after, before, describe, test } from "node:test";
 import { batchFromCols, getCodec } from "@maxjustus/chwire/native";
 import { startClickHouse, stopClickHouse } from "../../test/setup.ts";
-import { toClientOptions, type TcpConfig } from "../../test/test_utils.ts";
+import {
+  toClientOptions,
+  withClient as withClientBase,
+  type TcpConfig,
+} from "../../test/test_utils.ts";
 import { ClickHouseException, TcpClient } from "@maxjustus/chwire/tcp";
 import { ServerPacketId } from "../types.ts";
 
@@ -23,16 +27,7 @@ describe("TCP Client Reliability", () => {
     await stopClickHouse();
   });
 
-  // Local wrapper - keeps original TcpClient instantiation pattern
-  async function withClient<T>(fn: (client: TcpClient) => Promise<T>): Promise<T> {
-    const client = new TcpClient(toClientOptions(options));
-    await client.connect();
-    try {
-      return await fn(client);
-    } finally {
-      client.close();
-    }
-  }
+  const withClient = <T>(fn: (client: TcpClient) => Promise<T>) => withClientBase(options, fn);
 
   async function withAbortOnPacket<T>(
     client: TcpClient,

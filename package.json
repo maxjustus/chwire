@@ -64,7 +64,6 @@
     "test:fuzz": "tsx fuzz/parallel.ts --all",
     "test:fuzz:verbose": "tsx fuzz/parallel.ts --all --verbose",
     "test:tcp": "NODE_OPTIONS=--conditions=development tsx --test tcp_client/test/*.test.ts",
-    "test:tcp:stress": "TCP_FUZZ_STRESS=1 QUERY_TIMEOUT=300000 NODE_OPTIONS=--conditions=development tsx --test tcp_client/test/fuzz.test.ts",
     "bench": "tsx bench/formats.ts",
     "bench:check": "tsc -p tsconfig.bench.json",
     "bench:compression": "tsx bench/compression.ts",
