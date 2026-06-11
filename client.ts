@@ -28,7 +28,7 @@ export {
 import { encodeNative, type ExternalTableData, RecordBatch } from "./native/index.ts";
 import { BlockBuffer } from "./native/io.ts";
 import { type CollectableAsyncGenerator, collectable } from "./util.ts";
-import { mapAsync, prepend } from "./iter.ts";
+import { mapAsync, prepend, toAsyncIterable } from "./iter.ts";
 import { serializeParams, extractParamTypes, SQL_NULL } from "./params.ts";
 
 export type { CollectableAsyncGenerator } from "./util.ts";
@@ -635,12 +635,14 @@ function buildMultipartBody(tables: Record<string, HttpExternalTable>): {
     (t) => typeof t.data === "object" && t.data !== null && Symbol.asyncIterator in t.data,
   );
 
+  const partHeader = (name: string) =>
+    `--${boundary}\r\nContent-Disposition: form-data; name="${name}"; filename="data"\r\n\r\n`;
+
   if (!hasAsync) {
     // Build complete body synchronously
     const parts: Uint8Array[] = [];
     for (const [name, table] of Object.entries(tables)) {
-      const header = `--${boundary}\r\nContent-Disposition: form-data; name="${name}"; filename="data"\r\n\r\n`;
-      parts.push(encoder.encode(header));
+      parts.push(encoder.encode(partHeader(name)));
       if (typeof table.data === "string") {
         parts.push(encoder.encode(table.data));
       } else {
@@ -652,69 +654,20 @@ function buildMultipartBody(tables: Record<string, HttpExternalTable>): {
     return { body: concat(parts), boundary };
   }
 
-  // Return streaming ReadableStream for async data
-  const entries = Object.entries(tables);
-  let entryIndex = 0;
-  let currentIterator: AsyncIterator<Uint8Array> | null = null;
-  let sentHeader = false;
-  let sentFooter = false;
+  async function* parts(): AsyncGenerator<Uint8Array> {
+    for (const [name, table] of Object.entries(tables)) {
+      yield encoder.encode(partHeader(name));
+      if (typeof table.data === "string") {
+        yield encoder.encode(table.data);
+      } else {
+        yield* toAsyncIterable(table.data as Uint8Array | AsyncIterable<Uint8Array>);
+      }
+      yield encoder.encode("\r\n");
+    }
+    yield encoder.encode(`--${boundary}--\r\n`);
+  }
 
-  return {
-    body: new ReadableStream<Uint8Array>({
-      async pull(controller) {
-        // Send headers and data for each table
-        while (entryIndex < entries.length) {
-          const [name, table] = entries[entryIndex];
-
-          if (!sentHeader) {
-            const header = `--${boundary}\r\nContent-Disposition: form-data; name="${name}"; filename="data"\r\n\r\n`;
-            controller.enqueue(encoder.encode(header));
-            sentHeader = true;
-
-            // For sync data, enqueue it all at once
-            if (typeof table.data === "string") {
-              controller.enqueue(encoder.encode(table.data));
-              controller.enqueue(encoder.encode("\r\n"));
-              sentHeader = false;
-              entryIndex++;
-              continue;
-            } else if (table.data instanceof Uint8Array) {
-              controller.enqueue(table.data);
-              controller.enqueue(encoder.encode("\r\n"));
-              sentHeader = false;
-              entryIndex++;
-              continue;
-            } else {
-              // Async iterable
-              currentIterator = (table.data as AsyncIterable<Uint8Array>)[Symbol.asyncIterator]();
-            }
-          }
-
-          // Stream async data
-          if (currentIterator) {
-            const { done, value } = await currentIterator.next();
-            if (!done) {
-              controller.enqueue(value);
-              return;
-            }
-            // Done with this async iterable
-            controller.enqueue(encoder.encode("\r\n"));
-            currentIterator = null;
-            sentHeader = false;
-            entryIndex++;
-          }
-        }
-
-        // All tables done, send closing boundary
-        if (!sentFooter) {
-          controller.enqueue(encoder.encode(`--${boundary}--\r\n`));
-          sentFooter = true;
-        }
-        controller.close();
-      },
-    }),
-    boundary,
-  };
+  return { body: ReadableStream.from(parts()), boundary };
 }
 
 function query(
