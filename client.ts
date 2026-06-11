@@ -1072,19 +1072,7 @@ async function* streamText(input: QueryInput): AsyncGenerator<string> {
  * const result = await decodeNative(data);
  */
 async function collectBytes(input: QueryInput): Promise<Uint8Array> {
-  const parts: Uint8Array[] = [];
-  let totalLen = 0;
-  for await (const chunk of dataChunks(input)) {
-    parts.push(chunk);
-    totalLen += chunk.length;
-  }
-  const result = new Uint8Array(totalLen);
-  let offset = 0;
-  for (const part of parts) {
-    result.set(part, offset);
-    offset += part.length;
-  }
-  return result;
+  return concat(await Array.fromAsync(dataChunks(input)));
 }
 
 /**
@@ -1095,11 +1083,7 @@ async function collectBytes(input: QueryInput): Promise<Uint8Array> {
  * const data = JSON.parse(json);
  */
 async function collectText(input: QueryInput): Promise<string> {
-  let result = "";
-  for await (const text of decodeText(dataChunks(input))) {
-    result += text;
-  }
-  return result;
+  return (await Array.fromAsync(decodeText(dataChunks(input)))).join("");
 }
 
 /**
@@ -1109,11 +1093,7 @@ async function collectText(input: QueryInput): Promise<string> {
  * const rows = await collectJsonEachRow<{ id: number }>(query("SELECT ...", session, config));
  */
 async function collectJsonEachRow<T = unknown>(input: QueryInput): Promise<T[]> {
-  const result: T[] = [];
-  for await (const row of streamDecodeJsonEachRow<T>(input)) {
-    result.push(row);
-  }
-  return result;
+  return Array.fromAsync(streamDecodeJsonEachRow<T>(input));
 }
 
 export { ClickHouseException } from "./errors.ts";

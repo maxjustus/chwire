@@ -10,11 +10,7 @@ export type CollectableAsyncGenerator<T> = AsyncGenerator<T, void, unknown> & Pr
 export function collectable<T>(
   gen: AsyncGenerator<T, void, unknown>,
 ): CollectableAsyncGenerator<T> {
-  const collect = async (): Promise<T[]> => {
-    const items: T[] = [];
-    for await (const item of gen) items.push(item);
-    return items;
-  };
+  const collect = () => Array.fromAsync(gen);
 
   return {
     [Symbol.asyncIterator]() {
