@@ -1,7 +1,7 @@
 import assert from "node:assert";
 import { after, before, describe, test } from "node:test";
-import { batchFromRows, type ColumnDef } from "@maxjustus/chwire/native";
-import { TcpClient } from "@maxjustus/chwire/tcp";
+import { batchFromRows, type ColumnDef } from "../../native/index.ts";
+import { TcpClient } from "../index.ts";
 import { startClickHouse, stopClickHouse } from "../../test/setup.ts";
 import {
   collectRows,
