@@ -59,41 +59,59 @@ describe("parseErrorText", () => {
 describe("findExceptionMarker", () => {
   it("should find marker at start of buffer", () => {
     const buf = encode("__exception__\r\nCode: 395. DB::Exception: error\r\n");
-    assert.strictEqual(findExceptionMarker(buf), 0);
+    assert.strictEqual(findExceptionMarker(buf, true), 0);
   });
 
   it("should find marker mid-buffer", () => {
-    const buf = encode("some data\n__exception__\r\nCode: 1\r\n");
-    assert.strictEqual(findExceptionMarker(buf), 10);
+    const buf = encode("some data\n__exception__\r\nCode: 1. DB::Exception: x\r\n");
+    assert.strictEqual(findExceptionMarker(buf, true), 10);
   });
 
   it("should return -1 when marker absent", () => {
     const buf = encode("normal data without any markers");
-    assert.strictEqual(findExceptionMarker(buf), -1);
+    assert.strictEqual(findExceptionMarker(buf, true), -1);
   });
 
   it("should return -1 for partial marker", () => {
     const buf = encode("__exceptio");
-    assert.strictEqual(findExceptionMarker(buf), -1);
+    assert.strictEqual(findExceptionMarker(buf, true), -1);
   });
 
-  it("should return -1 for inline payload text", () => {
+  it("should return -1 for inline payload text (text mode requires line start)", () => {
+    const buf = encode('{"message":"hello __exception__\\r\\nCode: 395. DB::Exception: x"}');
+    assert.strictEqual(findExceptionMarker(buf, true), -1);
+  });
+
+  it("should return -1 without the Code: <n>. preamble", () => {
+    // 'Code: 395' with no trailing period is not a real ClickHouse exception.
     const buf = encode('{"message":"hello __exception__\\r\\nCode: 395"}');
-    assert.strictEqual(findExceptionMarker(buf), -1);
+    assert.strictEqual(findExceptionMarker(buf, false), -1);
   });
 
   it("should return -1 without a ClickHouse error preamble", () => {
     const buf = encode("__exception__\r\nnot actually an exception\r\n");
-    assert.strictEqual(findExceptionMarker(buf), -1);
+    assert.strictEqual(findExceptionMarker(buf, false), -1);
   });
 
   it("should return -1 for empty buffer", () => {
-    assert.strictEqual(findExceptionMarker(new Uint8Array(0)), -1);
+    assert.strictEqual(findExceptionMarker(new Uint8Array(0), true), -1);
   });
 
   it("should find a line-start marker after preceding data", () => {
     const buf = encode("prefix\n__exception__\r\nCode: 1. DB::Exception: boom\r\n");
-    assert.strictEqual(findExceptionMarker(buf), 7);
+    assert.strictEqual(findExceptionMarker(buf, true), 7);
+  });
+
+  it("binary mode finds a marker preceded by non-newline block bytes", () => {
+    // Native trailer: the marker follows arbitrary block bytes (e.g. \0), never a
+    // newline. requireLineStart=false relies on the strict Code: <n>. preamble.
+    const buf = encode("\x00\x00__exception__\r\nCode: 5. DB::Exception: boom\r\n");
+    assert.strictEqual(findExceptionMarker(buf, false), 2);
+  });
+
+  it("text mode rejects the same non-line-start marker (inline-payload guard)", () => {
+    const buf = encode("\x00\x00__exception__\r\nCode: 5. DB::Exception: boom\r\n");
+    assert.strictEqual(findExceptionMarker(buf, true), -1);
   });
 });
 
@@ -269,5 +287,50 @@ describe("HTTP error handling (integration)", { timeout: 60000 }, () => {
           (thrownError as ClickHouseException).message.includes("FUNCTION_THROW_IF"),
       );
     });
+
+    // Native (binary) format: the __exception__ trailer is preceded by block
+    // bytes, not a newline, so detection relies on the strict Code: <n>. preamble
+    // rather than the line-start guard used for text formats.
+    for (const compression of [false, "lz4"] as const) {
+      it(`should throw ClickHouseException for mid-stream error in Native (compression=${compression})`, async () => {
+        const sql = `
+          SELECT number, randomPrintableASCII(5000) AS padding,
+                 throwIf(number >= 200, 'mid_stream_native_error') AS t
+          FROM numbers(400)
+          FORMAT Native
+          SETTINGS max_block_size = 10
+        `;
+
+        let dataChunksReceived = 0;
+        let thrownError: unknown = null;
+        try {
+          for await (const packet of query(sql, sessionId, { baseUrl, auth, compression })) {
+            if (packet.type === "Data") dataChunksReceived++;
+          }
+        } catch (err) {
+          thrownError = err;
+        }
+
+        assert.ok(thrownError, "Should have thrown");
+        assert.ok(
+          thrownError instanceof ClickHouseException,
+          `Expected ClickHouseException, got ${(thrownError as Error).constructor.name}: ${(thrownError as Error).message?.substring(0, 200)}`,
+        );
+        assert.ok(
+          (thrownError as ClickHouseException).message.includes("mid_stream_native_error") ||
+            (thrownError as ClickHouseException).message.includes("FUNCTION_THROW_IF"),
+        );
+        // Without compression CH commits headers and streams ~1MB of Native blocks
+        // before row 200 throws, so this must exercise the mid-stream (Case 2)
+        // binary detection path — not a clean Case 1 HTTP error. With lz4 the
+        // server may buffer enough to return Case 1, so only assert it there.
+        if (compression === false) {
+          assert.ok(
+            dataChunksReceived > 0,
+            `Expected Native data before the error (Case 2), got ${dataChunksReceived} chunks`,
+          );
+        }
+      });
+    }
   });
 });

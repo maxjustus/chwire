@@ -301,6 +301,17 @@ function isTextFormat(format: string): boolean {
   );
 }
 
+/**
+ * Validate a framed exception at `offset`: `__exception__` + newline + the full
+ * `Code: <digits>.` preamble ClickHouse always emits ("Code: 395. DB::Exception:
+ * ...").
+ *
+ * Requiring the digits-and-period is what lets binary-format detection work: a
+ * Native/RowBinary stream's exception trailer is preceded by arbitrary block
+ * bytes (e.g. \0), not a newline, so the line-start guard text relies on cannot
+ * apply — the strict preamble is the only thing distinguishing a real trailer
+ * from marker bytes that happen to appear in a column value.
+ */
 function isFramedExceptionAt(buf: Uint8Array, offset: number): boolean {
   if (offset + EXCEPTION_MARKER_BYTES.length > buf.length) return false;
 
@@ -308,29 +319,42 @@ function isFramedExceptionAt(buf: Uint8Array, offset: number): boolean {
     if (buf[offset + i] !== EXCEPTION_MARKER_BYTES[i]) return false;
   }
 
-  let codeOffset = offset + EXCEPTION_MARKER_BYTES.length;
-  if (codeOffset >= buf.length) return false;
-  if (buf[codeOffset] === 10) {
-    codeOffset += 1;
-  } else if (buf[codeOffset] === 13 && codeOffset + 1 < buf.length && buf[codeOffset + 1] === 10) {
-    codeOffset += 2;
+  let p = offset + EXCEPTION_MARKER_BYTES.length;
+  if (p >= buf.length) return false;
+  if (buf[p] === 10) {
+    p += 1;
+  } else if (buf[p] === 13 && p + 1 < buf.length && buf[p + 1] === 10) {
+    p += 2;
   } else {
     return false;
   }
 
-  if (codeOffset + EXCEPTION_CODE_BYTES.length > buf.length) return false;
+  if (p + EXCEPTION_CODE_BYTES.length > buf.length) return false;
   for (let i = 0; i < EXCEPTION_CODE_BYTES.length; i++) {
-    if (buf[codeOffset + i] !== EXCEPTION_CODE_BYTES[i]) return false;
+    if (buf[p + i] !== EXCEPTION_CODE_BYTES[i]) return false;
   }
-  return true;
+  p += EXCEPTION_CODE_BYTES.length;
+
+  while (p < buf.length && buf[p] === 32) p++; // optional spaces after "Code:"
+  const digitStart = p;
+  while (p < buf.length && buf[p] >= 48 && buf[p] <= 57) p++; // one or more digits
+  if (p === digitStart) return false;
+  return p < buf.length && buf[p] === 46; // trailing '.'
 }
 
-/** Find a framed __exception__ block in a text buffer, return offset or -1 */
-function findExceptionMarker(buf: Uint8Array): number {
+/**
+ * Find a framed __exception__ block, return its offset or -1.
+ *
+ * `requireLineStart` (text formats) demands the marker begin a line so a marker
+ * sitting inside a row value isn't mistaken for the real trailer. Binary formats
+ * pass false: the marker follows arbitrary block bytes, so isFramedExceptionAt's
+ * strict preamble is the only guard.
+ */
+function findExceptionMarker(buf: Uint8Array, requireLineStart: boolean): number {
   const first = EXCEPTION_MARKER_BYTES[0]; // '_'
   const len = EXCEPTION_MARKER_BYTES.length;
   for (let i = 0; i <= buf.length - len; i++) {
-    if (i > 0 && buf[i - 1] !== 10) continue;
+    if (requireLineStart && i > 0 && buf[i - 1] !== 10) continue;
     if (buf[i] !== first) continue;
     if (!isFramedExceptionAt(buf, i)) continue;
     return i;
@@ -348,8 +372,9 @@ function parseStreamException(buf: Uint8Array): ClickHouseException {
 
 function splitStreamException(
   buf: Uint8Array,
+  requireLineStart: boolean,
 ): { prefix: Uint8Array; error: ClickHouseException } | null {
-  const pos = findExceptionMarker(buf);
+  const pos = findExceptionMarker(buf, requireLineStart);
   if (pos < 0) return null;
   return {
     prefix: buf.subarray(0, pos),
@@ -796,23 +821,22 @@ async function* queryImpl(
   const summary = parseSummary(response);
   const queryId = response.headers.get("X-ClickHouse-Query-Id") || "";
   const reader = response.body.getReader();
-  const detectStreamExceptions = isTextFormat(extractResponseFormat(sql, options));
+  // ClickHouse appends a framed __exception__ trailer when a query errors after
+  // the response headers are committed — in every format, text and binary alike.
+  // Always scan for it; the format only decides the guard: text rows let us
+  // require the marker to start a line, binary cannot (see findExceptionMarker).
+  const requireLineStart = isTextFormat(extractResponseFormat(sql, options));
 
   async function* createStream(): AsyncGenerator<Uint8Array, void, unknown> {
     try {
       if (!compressed) {
-        if (!detectStreamExceptions) {
-          yield* readChunks(reader);
-          return;
-        }
-
         // Keep a small tail so a framed exception preamble split across reads
         // is validated before we emit those bytes to the caller.
         let pending: Uint8Array = new Uint8Array(0);
 
         for await (const value of readChunks(reader)) {
           const combined = pending.length === 0 ? value : concat([pending, value]);
-          const match = splitStreamException(combined);
+          const match = splitStreamException(combined, requireLineStart);
 
           if (match) {
             pending = new Uint8Array(0);
@@ -829,7 +853,7 @@ async function* queryImpl(
         // tail's offset 0 can match here even when it didn't mid-stream, since
         // findExceptionMarker drops the preceding-newline requirement at offset 0.
         if (pending.length > 0) {
-          const match = splitStreamException(pending);
+          const match = splitStreamException(pending, requireLineStart);
           if (match) {
             if (match.prefix.length > 0) yield match.prefix;
             throw match.error;
@@ -846,10 +870,11 @@ async function* queryImpl(
           while (streamBuffer.available >= 25) {
             const bufferView = streamBuffer.view;
 
-            // Check for raw __exception__ in the buffer (uncompressed injection)
-            const rawMatch = detectStreamExceptions ? splitStreamException(bufferView) : null;
-            if (rawMatch && rawMatch.prefix.length === 0) {
-              throw rawMatch.error;
+            // An uncompressed __exception__ trailer sits at the buffer start once
+            // every complete block ahead of it has been consumed. Offset 0 only,
+            // so the line-start guard is moot — check it directly and cheaply.
+            if (isFramedExceptionAt(bufferView, 0)) {
+              throw parseStreamException(bufferView);
             }
 
             const compressedSize = readUInt32LE(bufferView, 17);
@@ -861,9 +886,7 @@ async function* queryImpl(
 
             try {
               const decompressed = decodeBlock(block);
-              const decompressedMatch = detectStreamExceptions
-                ? splitStreamException(decompressed)
-                : null;
+              const decompressedMatch = splitStreamException(decompressed, requireLineStart);
               // In-place consume is safe here: nothing aliasing streamBuffer
               // escapes this loop — decodeBlock always returns an independent
               // buffer (including the None method, which copies).
@@ -879,11 +902,10 @@ async function* queryImpl(
               yield decompressed;
             } catch (err: unknown) {
               if (err instanceof ClickHouseException) throw err;
-              const fallbackMatch = detectStreamExceptions
-                ? splitStreamException(streamBuffer.view)
-                : null;
-              if (fallbackMatch && fallbackMatch.prefix.length === 0) {
-                throw fallbackMatch.error;
+              // A failed decode at the buffer start is usually the exception
+              // trailer being mistaken for a block — surface it as the real error.
+              if (isFramedExceptionAt(streamBuffer.view, 0)) {
+                throw parseStreamException(streamBuffer.view);
               }
               const message = err instanceof Error ? err.message : String(err);
               throw new Error(`Block decompression failed: ${message}`);
@@ -891,11 +913,11 @@ async function* queryImpl(
           }
         }
 
-        // after stream ends: any remaining bytes mean an incomplete compressed block
+        // after stream ends: any remaining bytes mean an incomplete compressed
+        // block, or the exception trailer left after the last complete block.
         if (streamBuffer.available > 0) {
-          const rawMatch = detectStreamExceptions ? splitStreamException(streamBuffer.view) : null;
-          if (rawMatch && rawMatch.prefix.length === 0) {
-            throw rawMatch.error;
+          if (isFramedExceptionAt(streamBuffer.view, 0)) {
+            throw parseStreamException(streamBuffer.view);
           }
           throw new Error("Incomplete block");
         }
