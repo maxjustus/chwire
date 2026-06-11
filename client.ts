@@ -71,7 +71,7 @@ async function normalizeExternalTable(input: HttpExternalTableInput): Promise<Ht
   }
 
   // Single RecordBatch
-  if (input instanceof RecordBatch) {
+  if (RecordBatch.isRecordBatch(input)) {
     return {
       structure: schemaToStructure(input),
       format: "Native",

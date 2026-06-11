@@ -594,7 +594,7 @@ export class TcpClient {
       };
 
       // Single RecordBatch - fast path
-      if (data instanceof RecordBatch) {
+      if (RecordBatch.isRecordBatch(data)) {
         await sendBatch(data);
       } else {
         // Get iterator (sync or async)
@@ -609,7 +609,7 @@ export class TcpClient {
         if (!firstResult.done) {
           const first = firstResult.value;
 
-          if (first instanceof RecordBatch) {
+          if (RecordBatch.isRecordBatch(first)) {
             // RecordBatch mode
             for await (const batch of prepend(first, iterator)) {
               throwIfAborted();
@@ -1352,7 +1352,7 @@ export class TcpClient {
     for (const [name, data] of Object.entries(tables)) {
       // Keep the RecordBatch-vs-iterable check here so iter.ts stays ignorant of
       // RecordBatch (which is itself iterable over rows).
-      const batches = data instanceof RecordBatch ? [data] : data;
+      const batches = RecordBatch.isRecordBatch(data) ? [data] : data;
       for await (const batch of toAsyncIterable(batches)) {
         const packet = this.encodeBatchAsDataPacket(name, batch, compress, compression);
         await this.writeWithBackpressure(packet);

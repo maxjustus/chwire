@@ -15,6 +15,14 @@ import type { Block } from "./index.ts";
 import type { TypedArrayConstructor } from "./io.ts";
 import type { ColumnDef, TypedArray } from "./types.ts";
 
+/**
+ * Brand keyed in the global symbol registry so `isRecordBatch` recognizes
+ * instances across separate module copies (ESM vs CJS, source vs bundled dist).
+ * Plain `instanceof` fails the moment two copies of this class coexist; the
+ * brand survives because `Symbol.for` returns one symbol process-wide.
+ */
+const RECORD_BATCH_BRAND = Symbol.for("chwire.RecordBatch");
+
 type NumericConverter = (v: unknown) => number | bigint;
 
 /** Map of numeric ClickHouse types to their TypedArray constructors and converters. */
@@ -122,6 +130,24 @@ export class RecordBatch implements Iterable<Row> {
 
   static from(block: Block): RecordBatch {
     return new RecordBatch(block);
+  }
+
+  /** Prototype-level brand; see RECORD_BATCH_BRAND. */
+  get [RECORD_BATCH_BRAND](): true {
+    return true;
+  }
+
+  /**
+   * Identity-independent RecordBatch check. Prefer this over `instanceof` for
+   * dispatching on user-supplied data: it stays correct when the batch was
+   * created by a different copy of this module (ESM/CJS or source/dist split).
+   */
+  static isRecordBatch(value: unknown): value is RecordBatch {
+    return (
+      typeof value === "object" &&
+      value !== null &&
+      (value as Record<symbol, unknown>)[RECORD_BATCH_BRAND] === true
+    );
   }
 
   get length(): number {

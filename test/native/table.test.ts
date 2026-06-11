@@ -778,3 +778,26 @@ describe("bigIntAsString option", () => {
     assert.strictEqual(typeof row.toArray({ bigIntAsString: false })[0], "bigint");
   });
 });
+
+describe("RecordBatch.isRecordBatch", () => {
+  it("recognizes a real RecordBatch", () => {
+    const batch = batchFromCols({ x: getCodec("Int64").fromValues([1n]) });
+    assert.strictEqual(RecordBatch.isRecordBatch(batch), true);
+    assert.strictEqual(batch instanceof RecordBatch, true);
+  });
+
+  it("rejects non-RecordBatch values", () => {
+    for (const v of [null, undefined, 42, "batch", {}, [], new Map()]) {
+      assert.strictEqual(RecordBatch.isRecordBatch(v), false);
+    }
+  });
+
+  it("recognizes an instance from a separate module copy via the global brand", () => {
+    // Simulate a RecordBatch built by a different copy of this module (ESM vs
+    // CJS, or source vs bundled dist): a distinct object that carries the same
+    // global-registry brand symbol. instanceof would fail; isRecordBatch must not.
+    const foreign = { [Symbol.for("chwire.RecordBatch")]: true } as unknown;
+    assert.strictEqual(foreign instanceof RecordBatch, false);
+    assert.strictEqual(RecordBatch.isRecordBatch(foreign), true);
+  });
+});
