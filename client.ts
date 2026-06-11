@@ -28,7 +28,7 @@ export {
 import { encodeNative, type ExternalTableData, RecordBatch } from "./native/index.ts";
 import { BlockBuffer } from "./native/io.ts";
 import { type CollectableAsyncGenerator, collectable } from "./util.ts";
-import { mapAsync, prepend, toAsyncIterable } from "./iter.ts";
+import { mapAsync, prepend, readChunks, toAsyncIterable } from "./iter.ts";
 import { serializeParams, extractParamTypes, SQL_NULL } from "./params.ts";
 
 export type { CollectableAsyncGenerator } from "./util.ts";
@@ -802,35 +802,22 @@ async function* queryImpl(
     try {
       if (!compressed) {
         if (!detectStreamExceptions) {
-          while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
-            yield value;
-          }
+          yield* readChunks(reader);
           return;
         }
 
         // Keep a small tail so a framed exception preamble split across reads
         // is validated before we emit those bytes to the caller.
-        let pending = new Uint8Array(0);
+        let pending: Uint8Array = new Uint8Array(0);
 
-        while (true) {
-          const { done, value } = await reader.read();
-          const chunk = value ?? new Uint8Array(0);
-          const combined = pending.length === 0 ? chunk : concat([pending, chunk]);
+        for await (const value of readChunks(reader)) {
+          const combined = pending.length === 0 ? value : concat([pending, value]);
           const match = splitStreamException(combined);
 
           if (match) {
             pending = new Uint8Array(0);
-            if (match.prefix.length > 0) {
-              yield match.prefix;
-            }
+            if (match.prefix.length > 0) yield match.prefix;
             throw match.error;
-          }
-
-          if (done) {
-            if (combined.length > 0) yield combined;
-            break;
           }
 
           const keep = Math.min(combined.length, EXCEPTION_SCAN_TAIL_BYTES);
@@ -838,13 +825,22 @@ async function* queryImpl(
           if (emitLen > 0) yield combined.subarray(0, emitLen);
           pending = combined.subarray(emitLen);
         }
+        // Stream ended: scan the held-back tail one final time. A marker at the
+        // tail's offset 0 can match here even when it didn't mid-stream, since
+        // findExceptionMarker drops the preceding-newline requirement at offset 0.
+        if (pending.length > 0) {
+          const match = splitStreamException(pending);
+          if (match) {
+            if (match.prefix.length > 0) yield match.prefix;
+            throw match.error;
+          }
+          yield pending;
+        }
       } else {
         const streamBuffer = new BlockBuffer(64 * 1024);
 
-        while (true) {
-          const { done, value } = await reader.read();
-
-          if (value) streamBuffer.append(value);
+        for await (const value of readChunks(reader)) {
+          streamBuffer.append(value);
 
           // process complete blocks
           while (streamBuffer.available >= 25) {
@@ -893,20 +889,15 @@ async function* queryImpl(
               throw new Error(`Block decompression failed: ${message}`);
             }
           }
+        }
 
-          if (done) {
-            if (streamBuffer.available > 0) {
-              const rawMatch = detectStreamExceptions
-                ? splitStreamException(streamBuffer.view)
-                : null;
-              if (rawMatch && rawMatch.prefix.length === 0) {
-                throw rawMatch.error;
-              }
-              throw new Error("Incomplete block");
-            }
-
-            break;
+        // after stream ends: any remaining bytes mean an incomplete compressed block
+        if (streamBuffer.available > 0) {
+          const rawMatch = detectStreamExceptions ? splitStreamException(streamBuffer.view) : null;
+          if (rawMatch && rawMatch.prefix.length === 0) {
+            throw rawMatch.error;
           }
+          throw new Error("Incomplete block");
         }
       }
     } finally {
