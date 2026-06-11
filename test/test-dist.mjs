@@ -50,42 +50,57 @@ try {
   process.exit(1);
 }
 
-console.log("=== Testing RecordBatch instanceof consistency ===\n");
+console.log("=== Testing RecordBatch dual-package hazard ===\n");
 
-// This test catches dual-package hazards where different import paths
-// would create separate class instances, causing instanceof to fail
-const native = await import("../dist/native.js");
+// Resolve via the package's published subpaths (self-reference), exactly as a
+// consumer would, so this exercises the build's native-externalization and the
+// real ESM/CJS export conditions — not a direct dist/ file import.
+import { createRequire } from "node:module";
+const require = createRequire(import.meta.url);
 
 try {
-  // Create a batch using the dist native module
-  const batch = native.batchFromCols({
-    id: native.getCodec("Int64").fromValues([10n, 20n]),
-    value: native.getCodec("String").fromValues(["val_1", "val_2"]),
+  const esmNative = await import("@maxjustus/chwire/native");
+  const esmMain = await import("@maxjustus/chwire");
+  const cjsNative = require("@maxjustus/chwire/native");
+
+  const batch = esmNative.batchFromCols({
+    id: esmNative.getCodec("Int64").fromValues([10n, 20n]),
+    value: esmNative.getCodec("String").fromValues(["val_1", "val_2"]),
   });
 
-  // Verify instanceof works
-  if (!(batch instanceof native.RecordBatch)) {
-    throw new Error("batch should be instanceof RecordBatch");
+  // 1. Cross-subpath (all ESM): /native and the main bundle externalize the
+  //    codec layer, so they share one RecordBatch class. instanceof must hold —
+  //    this is what the tcp client's insert dispatch relies on.
+  if (esmNative.RecordBatch !== esmMain.RecordBatch) {
+    throw new Error("ESM /native and main bundle have different RecordBatch classes");
+  }
+  if (!(batch instanceof esmMain.RecordBatch)) {
+    throw new Error("native batch not instanceof main-bundle RecordBatch (subpath split)");
   }
 
-  // Verify data is correct
-  if (batch.rowCount !== 2) {
-    throw new Error(`Expected rowCount=2, got ${batch.rowCount}`);
+  // 2. Cross-format (ESM vs CJS): the two formats are necessarily separate class
+  //    objects, so instanceof CANNOT bridge them. The Symbol.for brand can, which
+  //    is why insert dispatch uses RecordBatch.isRecordBatch, not instanceof.
+  if (batch instanceof cjsNative.RecordBatch) {
+    throw new Error("ESM/CJS RecordBatch unexpectedly shared identity — test assumption stale");
+  }
+  if (!cjsNative.RecordBatch.isRecordBatch(batch)) {
+    throw new Error("isRecordBatch failed to recognize ESM batch from the CJS copy");
+  }
+  if (!esmNative.RecordBatch.isRecordBatch(batch)) {
+    throw new Error("isRecordBatch failed on the same-copy batch");
   }
 
-  // Test encode/decode roundtrip
-  const encoded = native.encodeNative(batch);
-  const decoded = native.decodeNativeBlock(encoded, 0);
-
+  // 3. Round-trip sanity.
+  const decoded = esmNative.decodeNativeBlock(esmNative.encodeNative(batch), 0);
   if (decoded.rowCount !== 2) {
     throw new Error(`Decoded rowCount should be 2, got ${decoded.rowCount}`);
   }
 
-  console.log("RecordBatch instanceof: PASSED");
-  console.log(`  Created batch with ${batch.rowCount} rows`);
-  console.log(`  Encoded to ${encoded.length} bytes`);
-  console.log(`  Decoded back to ${decoded.rowCount} rows`);
-  console.log("\nRecordBatch consistency PASSED!\n");
+  console.log("cross-subpath instanceof (ESM): PASSED");
+  console.log("cross-format isRecordBatch brand (ESM batch <-> CJS class): PASSED");
+  console.log("round-trip encode/decode: PASSED");
+  console.log("\nRecordBatch dual-package hazard test PASSED!\n");
 } catch (err) {
   console.error("ERROR:", err.message);
   console.error("Stack:", err.stack);
