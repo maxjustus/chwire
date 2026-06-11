@@ -48,9 +48,9 @@ describe("bounds validation", () => {
       const result = decodeNativeBlock(block, 0, { clientVersion: 54454 });
 
       assert.strictEqual(result.rowCount, 3);
-      assert.strictEqual(result.columnData[0].get(0), "apple");
-      assert.strictEqual(result.columnData[0].get(1), "banana");
-      assert.strictEqual(result.columnData[0].get(2), "apple");
+      assert.strictEqual(result.columnData[0]!.get(0), "apple");
+      assert.strictEqual(result.columnData[0]!.get(1), "banana");
+      assert.strictEqual(result.columnData[0]!.get(2), "apple");
     });
 
     it("throws on out-of-bounds dictionary index", () => {

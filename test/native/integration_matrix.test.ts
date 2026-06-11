@@ -106,38 +106,42 @@ describe("Native integration type matrix", { timeout: 120000 }, () => {
       const decoder = new TextDecoder();
 
       assert.strictEqual(decoded.rowCount, 2);
-      assert.strictEqual(decodedRows[0][0], 1);
-      assert.strictEqual(decodedRows[1][0], 2);
-      assert.strictEqual(decodedRows[0][1], "a");
-      assert.strictEqual(decodedRows[1][1], "b");
-      assert.strictEqual(decoder.decode(decodedRows[0][2] as Uint8Array), "ab12");
-      assert.strictEqual(decoder.decode(decodedRows[1][2] as Uint8Array), "wxyz");
-      assert.strictEqual(decodedRows[0][3], "12345.678901");
-      assert.strictEqual(decodedRows[1][3], "-99999.000001");
-      assert.ok(typeof decodedRows[0][4] === "string" && (decodedRows[0][4] as string).length > 0);
-      assert.ok(typeof decodedRows[1][4] === "string" && (decodedRows[1][4] as string).length > 0);
+      assert.strictEqual(decodedRows[0]![0], 1);
+      assert.strictEqual(decodedRows[1]![0], 2);
+      assert.strictEqual(decodedRows[0]![1], "a");
+      assert.strictEqual(decodedRows[1]![1], "b");
+      assert.strictEqual(decoder.decode(decodedRows[0]![2] as Uint8Array), "ab12");
+      assert.strictEqual(decoder.decode(decodedRows[1]![2] as Uint8Array), "wxyz");
+      assert.strictEqual(decodedRows[0]![3], "12345.678901");
+      assert.strictEqual(decodedRows[1]![3], "-99999.000001");
+      assert.ok(
+        typeof decodedRows[0]![4] === "string" && (decodedRows[0]![4] as string).length > 0,
+      );
+      assert.ok(
+        typeof decodedRows[1]![4] === "string" && (decodedRows[1]![4] as string).length > 0,
+      );
 
-      const ts0 = decodedRows[0][5] as { toDate(): Date };
-      const ts1 = decodedRows[1][5] as { toDate(): Date };
+      const ts0 = decodedRows[0]![5] as { toDate(): Date };
+      const ts1 = decodedRows[1]![5] as { toDate(): Date };
       assert.strictEqual(ts0.toDate().getTime(), new Date("2024-01-15T10:30:00.123Z").getTime());
       assert.strictEqual(ts1.toDate().getTime(), new Date("2024-01-15T10:30:00.456Z").getTime());
-      assert.strictEqual(decodedRows[0][6], "active");
-      assert.strictEqual(decodedRows[1][6], null);
-      assert.deepStrictEqual(decodedRows[0][7], [1n, -2n]);
-      assert.deepStrictEqual(decodedRows[1][7], []);
+      assert.strictEqual(decodedRows[0]![6], "active");
+      assert.strictEqual(decodedRows[1]![6], null);
+      assert.deepStrictEqual(decodedRows[0]![7], [1n, -2n]);
+      assert.deepStrictEqual(decodedRows[1]![7], []);
 
-      const map0 = decodedRows[0][8] as Map<string, bigint>;
-      const map1 = decodedRows[1][8] as Map<string, bigint>;
+      const map0 = decodedRows[0]![8] as Map<string, bigint>;
+      const map1 = decodedRows[1]![8] as Map<string, bigint>;
       assert.deepStrictEqual(Array.from(map0), [
         ["a", 1n],
         ["b", 2n],
       ]);
       assert.deepStrictEqual(Array.from(map1), []);
 
-      assert.deepStrictEqual(decodedRows[0][9], [0, "hello"]);
-      assert.deepStrictEqual(decodedRows[1][9], [1, 42n]);
-      assert.deepStrictEqual(decodedRows[0][10], [1.5, 2.5]);
-      assert.deepStrictEqual(decodedRows[1][10], [0.0, 0.0]);
+      assert.deepStrictEqual(decodedRows[0]![9], [0, "hello"]);
+      assert.deepStrictEqual(decodedRows[1]![9], [1, 42n]);
+      assert.deepStrictEqual(decodedRows[0]![10], [1.5, 2.5]);
+      assert.deepStrictEqual(decodedRows[1]![10], [0.0, 0.0]);
     } finally {
       await consume(query(`DROP TABLE ${table}`, sessionId, { baseUrl, auth }));
     }

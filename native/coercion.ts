@@ -184,7 +184,7 @@ export function toValidIPv4(v: unknown): string {
     throw new TypeError(`Invalid IPv4 address: "${s}"`);
   }
   for (let i = 1; i <= 4; i++) {
-    const octet = parseInt(m[i], 10);
+    const octet = parseInt(m[i]!, 10);
     if (octet > 255) {
       throw new TypeError(`Invalid IPv4 address: "${s}" (octet ${octet} > 255)`);
     }

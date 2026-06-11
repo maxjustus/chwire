@@ -43,15 +43,15 @@ describe("streamDecodeNative", () => {
     }
 
     assert.strictEqual(decoded.length, 2);
-    assert.strictEqual(decoded[0].rowCount, 4);
-    assert.strictEqual(decoded[1].rowCount, 4);
+    assert.strictEqual(decoded[0]!.rowCount, 4);
+    assert.strictEqual(decoded[1]!.rowCount, 4);
 
     // Read the first batch after the stream has advanced through later chunks.
-    assert.strictEqual(decoded[0].getAt(0, 0), 1);
-    assert.strictEqual(decoded[0].getAt(3, 0), 4);
-    assert.strictEqual(decoded[0].getAt(0, 1), 1.5);
-    assert.strictEqual(decoded[0].getAt(3, 1), 4.5);
-    assert.strictEqual(decoded[1].getAt(0, 0), 5);
-    assert.strictEqual(decoded[1].getAt(3, 1), 8.5);
+    assert.strictEqual(decoded[0]!.getAt(0, 0), 1);
+    assert.strictEqual(decoded[0]!.getAt(3, 0), 4);
+    assert.strictEqual(decoded[0]!.getAt(0, 1), 1.5);
+    assert.strictEqual(decoded[0]!.getAt(3, 1), 4.5);
+    assert.strictEqual(decoded[1]!.getAt(0, 0), 5);
+    assert.strictEqual(decoded[1]!.getAt(3, 1), 8.5);
   });
 });

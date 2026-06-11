@@ -13,7 +13,7 @@ async function roundTripValue(type: string, value: unknown): Promise<unknown> {
   const rows = [[value]];
   const encoded = encodeNativeRows(columns, rows);
   const decoded = await decodeBatch(encoded);
-  return toArrayRows(decoded)[0][0];
+  return toArrayRows(decoded)[0]![0];
 }
 
 describe("Native type matrix", () => {

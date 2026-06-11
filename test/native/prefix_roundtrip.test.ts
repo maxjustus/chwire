@@ -43,7 +43,7 @@ describe("prefix round-trip tests", () => {
       assert.strictEqual(result.rowCount, 6);
 
       for (let i = 0; i < values.length; i++) {
-        assert.strictEqual(result.columnData[0].get(i), values[i]);
+        assert.strictEqual(result.columnData[0]!.get(i), values[i]!);
       }
     });
 
@@ -73,9 +73,9 @@ describe("prefix round-trip tests", () => {
 
       const result = decodeNativeBlock(data, 0, { clientVersion: 54454 });
       assert.strictEqual(result.rowCount, 3);
-      assert.strictEqual(result.columnData[0].get(0), "a");
-      assert.strictEqual(result.columnData[0].get(1), "b");
-      assert.strictEqual(result.columnData[0].get(2), "a");
+      assert.strictEqual(result.columnData[0]!.get(0), "a");
+      assert.strictEqual(result.columnData[0]!.get(1), "b");
+      assert.strictEqual(result.columnData[0]!.get(2), "a");
     });
   });
 
@@ -109,7 +109,7 @@ describe("prefix round-trip tests", () => {
       const result = decodeNativeBlock(fullWriter.finish(), 0, { clientVersion: 54454 });
       assert.strictEqual(result.rowCount, 3);
 
-      const col0 = result.columnData[0];
+      const col0 = result.columnData[0]!;
       assert.deepStrictEqual(col0.get(0), [0, "hello"]);
       assert.deepStrictEqual(col0.get(1), [1, 42n]);
       assert.deepStrictEqual(col0.get(2), [0, "world"]);
@@ -137,9 +137,9 @@ describe("prefix round-trip tests", () => {
 
       const result = decodeNativeBlock(data, 0, { clientVersion: 54454 });
       assert.strictEqual(result.rowCount, 3);
-      assert.deepStrictEqual(result.columnData[0].get(0), [0, "a"]);
-      assert.deepStrictEqual(result.columnData[0].get(1), [1, 123n]);
-      assert.deepStrictEqual(result.columnData[0].get(2), [0, "b"]);
+      assert.deepStrictEqual(result.columnData[0]!.get(0), [0, "a"]);
+      assert.deepStrictEqual(result.columnData[0]!.get(1), [1, 123n]);
+      assert.deepStrictEqual(result.columnData[0]!.get(2), [0, "b"]);
     });
   });
 
@@ -174,7 +174,7 @@ describe("prefix round-trip tests", () => {
       assert.strictEqual(result.rowCount, 4);
 
       // Dynamic returns unwrapped values (unlike Variant which returns [disc, value])
-      const col = result.columnData[0];
+      const col = result.columnData[0]!;
       assert.strictEqual(col.get(0), "a");
       assert.strictEqual(col.get(1), 42n);
       assert.strictEqual(col.get(2), null);

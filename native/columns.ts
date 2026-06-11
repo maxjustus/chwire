@@ -7,7 +7,7 @@ const MAX_SAFE_INDEX_BIGINT = BigInt(Number.MAX_SAFE_INTEGER);
 
 export function assertOffsetsFitInJsNumber(offsets: BigUint64Array, context: string): void {
   if (offsets.length === 0) return;
-  const last = offsets[offsets.length - 1];
+  const last = offsets[offsets.length - 1]!;
   if (last > MAX_SAFE_INDEX_BIGINT) {
     throw new RangeError(
       `${context}: offsets exceed JS safe integer range (last=${last}). ` +
@@ -27,7 +27,7 @@ export function countAndIndexDiscriminators(
   const counts = new Map<number, number>();
   const indices = new Uint32Array(discriminators.length);
   for (let i = 0; i < discriminators.length; i++) {
-    const d = discriminators[i];
+    const d = discriminators[i]!;
     if (d !== nullValue) {
       const n = counts.get(d) ?? 0;
       indices[i] = n;
@@ -107,7 +107,7 @@ export class EnumColumn extends AbstractColumn {
   }
 
   get(index: number): string | number {
-    const num = this.data[index];
+    const num = this.data[index]!;
     if (this.enumAsNumber) return num;
     const name = this.valueToName.get(num);
     if (name === undefined) throw new Error(`Unknown enum value: ${num}`);
@@ -143,13 +143,13 @@ export class TupleColumn extends AbstractColumn {
     if (this.isNamed) {
       const obj: Record<string, unknown> = {};
       for (let j = 0; j < numElements; j++) {
-        obj[this.elements[j].name!] = this.columns[j].get(index);
+        obj[this.elements[j]!.name!] = this.columns[j]!.get(index);
       }
       return obj;
     } else {
       const arr = new Array(numElements);
       for (let j = 0; j < numElements; j++) {
-        arr[j] = this.columns[j].get(index);
+        arr[j] = this.columns[j]!.get(index);
       }
       return arr;
     }
@@ -229,9 +229,9 @@ export class VariantColumn extends AbstractColumn {
   }
 
   get(index: number): [number, unknown] | null {
-    const d = this.discriminators[index];
+    const d = this.discriminators[index]!;
     if (d === Variant.NULL_DISCRIMINATOR) return null;
-    return [d, this.groups.get(d)?.get(this.groupIndices[index])];
+    return [d, this.groups.get(d)?.get(this.groupIndices[index]!)];
   }
 }
 
@@ -263,9 +263,9 @@ export class DynamicColumn extends AbstractColumn {
   }
 
   get(index: number): unknown {
-    const d = this.discriminators[index];
+    const d = this.discriminators[index]!;
     if (d === this.nullDisc) return null;
-    return this.groups.get(d)?.get(this.groupIndices[index]);
+    return this.groups.get(d)?.get(this.groupIndices[index]!);
   }
 }
 

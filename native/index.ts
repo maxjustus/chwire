@@ -237,8 +237,9 @@ export function encodeNative(batch: RecordBatch): Uint8Array {
   // Estimate total size for pre-allocation
   let totalEstimate = 10; // header varints
   for (let i = 0; i < columns.length; i++) {
-    totalEstimate += columns[i].name.length + columns[i].type.length + 10;
-    totalEstimate += getCodec(columns[i].type).estimateSize(rowCount);
+    const c = columns[i]!;
+    totalEstimate += c.name.length + c.type.length + 10;
+    totalEstimate += getCodec(c.type).estimateSize(rowCount);
   }
   const writer = new BufferWriter(Math.ceil(totalEstimate * 1.2));
 
@@ -247,16 +248,16 @@ export function encodeNative(batch: RecordBatch): Uint8Array {
 
   // Native format: per-column [name, type, prefix, data]
   for (let i = 0; i < columns.length; i++) {
-    const codec = getCodec(columns[i].type);
-    const col = columnData[i];
+    const colDef = columns[i]!;
+    const codec = getCodec(colDef.type);
+    const col = columnData[i]!;
 
-    writer.writeString(columns[i].name);
-    writer.writeString(columns[i].type);
+    writer.writeString(colDef.name);
+    writer.writeString(colDef.type);
     // Only write prefix and data when there are rows (matches decode behavior)
     if (rowCount > 0) {
       codec.writePrefix?.(writer, col);
-      const colHint = codec.estimateSize(col.length);
-      writer.write(codec.encode(col, colHint));
+      writer.write(codec.encode(col, codec.estimateSize(col.length)));
     }
   }
 

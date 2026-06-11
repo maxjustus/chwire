@@ -145,7 +145,7 @@ export class ArrayCodec extends BaseCodec {
         const arr = v as ArrayLike<unknown>;
         for (let j = 0; j < arr.length; j++)
           allInner[idx++] = (convert ? convert(arr[j]) : arr[j]) as never;
-        offset += BigInt(lengths[i]);
+        offset += BigInt(lengths[i]!);
         offsets[i] = offset;
       }
       return new ArrayColumn(this.type, offsets, new DataColumn(this.inner.type, allInner));
@@ -418,7 +418,7 @@ export class LowCardinalityCodec extends BaseCodec {
     if (v instanceof Uint8Array) {
       let s = "\0B:";
       for (let i = 0; i < v.length; i++) {
-        const byte = v[i];
+        const byte = v[i]!;
         s += (byte >> 4).toString(16) + (byte & 0xf).toString(16);
       }
       return s;
@@ -651,7 +651,7 @@ export class TupleCodec extends BaseCodec {
   writePrefix(writer: BufferWriter, col: Column) {
     const tuple = col as TupleColumn;
     for (let i = 0; i < this.elements.length; i++) {
-      this.elements[i].codec.writePrefix?.(writer, tuple.columns[i]);
+      this.elements[i]!.codec.writePrefix?.(writer, tuple.columns[i]!);
     }
   }
 
@@ -666,8 +666,9 @@ export class TupleCodec extends BaseCodec {
     const hint = sizeHint ?? this.estimateSize(col.length);
     const writer = new BufferWriter(hint);
     for (let i = 0; i < this.elements.length; i++) {
-      const elemHint = this.elements[i].codec.estimateSize(tuple.columns[i].length);
-      writer.write(this.elements[i].codec.encode(tuple.columns[i], elemHint));
+      const codec = this.elements[i]!.codec;
+      const tcol = tuple.columns[i]!;
+      writer.write(codec.encode(tcol, codec.estimateSize(tcol.length)));
     }
     return writer.finish();
   }
@@ -696,7 +697,7 @@ export class TupleCodec extends BaseCodec {
 
     const columns: Column[] = [];
     for (let ei = 0; ei < this.elements.length; ei++) {
-      const elem = this.elements[ei];
+      const elem = this.elements[ei]!;
       const elemValues: unknown[] = new Array(values.length);
       for (let i = 0; i < values.length; i++) {
         const tuple = values[i] as any;
@@ -734,7 +735,7 @@ export class TupleCodec extends BaseCodec {
     const parts: string[] = [];
     if (Array.isArray(value)) {
       for (let i = 0; i < this.elements.length; i++) {
-        parts.push(nullToLiteral(this.elements[i].codec.toLiteral(value[i], true)));
+        parts.push(nullToLiteral(this.elements[i]!.codec.toLiteral(value[i], true)));
       }
     } else if (typeof value === "object") {
       for (const elem of this.elements) {
@@ -759,7 +760,7 @@ export class TupleCodec extends BaseCodec {
   override compare(a: unknown, b: unknown): boolean {
     if (a == null || b == null || typeof a !== "object" || typeof b !== "object") return false;
     for (let i = 0; i < this.elements.length; i++) {
-      const elem = this.elements[i];
+      const elem = this.elements[i]!;
       const av = this.isNamed ? (a as Record<string, unknown>)[elem.name!] : (a as unknown[])[i];
       const bv = this.isNamed ? (b as Record<string, unknown>)[elem.name!] : (b as unknown[])[i];
       if (!elem.codec.compare(av, bv)) return false;

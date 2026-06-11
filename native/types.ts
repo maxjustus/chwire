@@ -115,7 +115,7 @@ function parseQuotedString(s: string, start: number): [string, number] | null {
     // Backslash found — consume the next char and resolve the escape sequence.
     // Priority: \xHH hex literal → SIMPLE_ESCAPES table → unknown (preserve or drop backslash)
     if (i >= s.length) return null; // trailing backslash with no escape char
-    const esc = s[i++];
+    const esc = s[i++]!; // guarded above: i < s.length
 
     // \xHH — two hex digits encoding a single byte (e.g. \x4A → 'J')
     if (esc === "x") {

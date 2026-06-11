@@ -52,7 +52,7 @@ describe("version validation tests", () => {
       const result = decodeNativeBlock(data, 0, { clientVersion: 54454 });
 
       assert.strictEqual(result.rowCount, 5);
-      assert.strictEqual(result.columns[0].type, "Dynamic");
+      assert.strictEqual(result.columns[0]!.type, "Dynamic");
     });
 
     it("throws on V1 format", () => {
@@ -89,7 +89,7 @@ describe("version validation tests", () => {
       const result = decodeNativeBlock(data, 0, { clientVersion: 54454 });
 
       assert.strictEqual(result.rowCount, 5);
-      assert.strictEqual(result.columns[0].type, "JSON");
+      assert.strictEqual(result.columns[0]!.type, "JSON");
     });
 
     it("throws on V1 format", () => {

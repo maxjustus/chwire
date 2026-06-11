@@ -130,23 +130,23 @@ describe("Native format integration", { timeout: 120000 }, () => {
     });
 
     assert.strictEqual(decoded.rowCount, 2);
-    assert.strictEqual(decodedRows[0][0], 1);
-    assert.strictEqual(decodedRows[1][4], 0);
-    assert.strictEqual(decodedRows[1][5], null);
-    assert.deepStrictEqual(Array.from(decodedRows[0][6] as Int32Array), [1, 2, 3]);
-    assert.deepStrictEqual(Array.from(decodedRows[1][6] as Int32Array), []);
+    assert.strictEqual(decodedRows[0]![0], 1);
+    assert.strictEqual(decodedRows[1]![4], 0);
+    assert.strictEqual(decodedRows[1]![5], null);
+    assert.deepStrictEqual(Array.from(decodedRows[0]![6] as Int32Array), [1, 2, 3]);
+    assert.deepStrictEqual(Array.from(decodedRows[1]![6] as Int32Array), []);
 
-    const map0 = decodedRows[0][7] as Map<string, number>;
+    const map0 = decodedRows[0]![7] as Map<string, number>;
     assert.strictEqual(map0.get("a"), 1);
     assert.strictEqual(map0.get("b"), 2);
 
-    assert.deepStrictEqual(decodedRows[0][8], [7, "x"]);
-    assert.deepStrictEqual(decodedRows[1][12], [1, 42n]);
+    assert.deepStrictEqual(decodedRows[0]![8], [7, "x"]);
+    assert.deepStrictEqual(decodedRows[1]![12], [1, 42n]);
 
-    const ts0 = decodedRows[0][9] as { toDate(): Date };
+    const ts0 = decodedRows[0]![9] as { toDate(): Date };
     assert.strictEqual(ts0.toDate().getTime(), new Date("2024-01-15T10:30:00.123Z").getTime());
-    assert.strictEqual(decodedRows[1][10], "f47ac10b-58cc-4372-a567-0e02b2c3d479");
-    assert.strictEqual(decodedRows[0][11], "active");
+    assert.strictEqual(decodedRows[1]![10], "f47ac10b-58cc-4372-a567-0e02b2c3d479");
+    assert.strictEqual(decodedRows[0]![11], "active");
   });
 
   it("round-trips a top-level Nested column with flatten_nested=0", async () => {
@@ -190,11 +190,11 @@ describe("Native format integration", { timeout: 120000 }, () => {
       const decodedRows = toArrayRows(decoded);
 
       assert.strictEqual(decoded.rowCount, 2);
-      assert.deepStrictEqual(decodedRows[0][1], [
+      assert.deepStrictEqual(decodedRows[0]![1], [
         { a: 1, b: "x" },
         { a: 2, b: "y" },
       ]);
-      assert.deepStrictEqual(decodedRows[1][1], []);
+      assert.deepStrictEqual(decodedRows[1]![1], []);
     } finally {
       await consume(query(`DROP TABLE ${table}`, sessionId, { baseUrl, auth }));
     }
@@ -281,9 +281,9 @@ describe("Native format integration", { timeout: 120000 }, () => {
     });
 
     assert.strictEqual(decoded.rowCount, 3);
-    const meta0 = decodedRows[0][1] as Record<string, unknown>;
-    const meta1 = decodedRows[1][1] as Record<string, unknown>;
-    const meta2 = decodedRows[2][1] as Record<string, unknown>;
+    const meta0 = decodedRows[0]![1] as Record<string, unknown>;
+    const meta1 = decodedRows[1]![1] as Record<string, unknown>;
+    const meta2 = decodedRows[2]![1] as Record<string, unknown>;
     assert.strictEqual(meta0.user, "alice");
     assert.deepStrictEqual(meta0.scores, [10n, 20n]);
     assert.strictEqual(meta1.user, "bob");
@@ -291,8 +291,8 @@ describe("Native format integration", { timeout: 120000 }, () => {
     assert.strictEqual(meta2.user, "cora");
     assert.strictEqual(meta2.scores, undefined);
 
-    assert.strictEqual(decodedRows[0][2], "hello");
-    assert.strictEqual(decodedRows[1][2], 42n);
-    assert.strictEqual(decodedRows[2][2], null);
+    assert.strictEqual(decodedRows[0]![2], "hello");
+    assert.strictEqual(decodedRows[1]![2], 42n);
+    assert.strictEqual(decodedRows[2]![2], null);
   });
 });

@@ -37,13 +37,13 @@ describe("streamEncodeNative", () => {
     assert.strictEqual(chunks.length, 3);
 
     // Decode each block
-    const decoded1 = await decodeBatch(chunks[0]);
+    const decoded1 = await decodeBatch(chunks[0]!);
     assert.deepStrictEqual(toArrayRows(decoded1), [[1], [2]]);
 
-    const decoded2 = await decodeBatch(chunks[1]);
+    const decoded2 = await decodeBatch(chunks[1]!);
     assert.deepStrictEqual(toArrayRows(decoded2), [[3], [4]]);
 
-    const decoded3 = await decodeBatch(chunks[2]);
+    const decoded3 = await decodeBatch(chunks[2]!);
     assert.deepStrictEqual(toArrayRows(decoded3), [[5]]);
   });
 });
@@ -132,23 +132,23 @@ describe("streamDecodeNative", () => {
     assert.notStrictEqual(collected[1], collected[2]);
 
     // Values should remain correct after collection
-    assert.strictEqual(collected[0].id, 1);
-    assert.strictEqual(collected[0].name, "alice");
-    assert.strictEqual(collected[1].id, 2);
-    assert.strictEqual(collected[1].name, "bob");
-    assert.strictEqual(collected[2].id, 3);
-    assert.strictEqual(collected[2].name, "charlie");
+    assert.strictEqual(collected[0]!.id, 1);
+    assert.strictEqual(collected[0]!.name, "alice");
+    assert.strictEqual(collected[1]!.id, 2);
+    assert.strictEqual(collected[1]!.name, "bob");
+    assert.strictEqual(collected[2]!.id, 3);
+    assert.strictEqual(collected[2]!.name, "charlie");
 
     // Materialization helpers should also be stable
-    assert.deepStrictEqual(collected[0].toObject(), { id: 1, name: "alice" });
-    assert.deepStrictEqual(collected[2].toArray(), [3, "charlie"]);
+    assert.deepStrictEqual(collected[0]!.toObject(), { id: 1, name: "alice" });
+    assert.deepStrictEqual(collected[2]!.toArray(), [3, "charlie"]);
 
     // Spread operator should copy row properties correctly
-    const spread = { ...collected[0] };
+    const spread = { ...collected[0]! };
     assert.deepStrictEqual(spread, { id: 1, name: "alice" });
 
     // Object.keys should return column names
-    assert.deepStrictEqual(Object.keys(collected[0]), ["id", "name"]);
+    assert.deepStrictEqual(Object.keys(collected[0]!), ["id", "name"]);
   });
 });
 
@@ -756,11 +756,11 @@ describe("bigIntAsString option", () => {
       big: getCodec("Int128").fromValues([170141183460469231731687303715884105727n]),
     });
 
-    assert.strictEqual(typeof batch.toArray()[0].big, "bigint");
+    assert.strictEqual(typeof batch.toArray()[0]!.big, "bigint");
 
     const rows = batch.toArray({ bigIntAsString: true });
-    assert.strictEqual(typeof rows[0].big, "string");
-    assert.strictEqual(rows[0].big, "170141183460469231731687303715884105727");
+    assert.strictEqual(typeof rows[0]!.big, "string");
+    assert.strictEqual(rows[0]!.big, "170141183460469231731687303715884105727");
   });
 
   it("option set on batch.get() applies to row property access", () => {

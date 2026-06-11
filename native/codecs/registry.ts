@@ -66,11 +66,11 @@ export function createCodec(type: string): Codec {
     return new LowCardinalityCodec(type, getCodec(extractTypeArgs(type)));
   if (type.startsWith("Map")) {
     const [k, v] = parseTypeList(extractTypeArgs(type));
-    return new MapCodec(type, getCodec(k), getCodec(v));
+    return new MapCodec(type, getCodec(k!), getCodec(v!));
   }
   if (type.startsWith("Tuple")) {
     const args = parseTupleElements(extractTypeArgs(type));
-    const isNamed = args[0].name !== null;
+    const isNamed = args[0]!.name !== null;
     return new TupleCodec(
       type,
       args.map((a) => ({ name: a.name, codec: getCodec(a.type) })),
@@ -117,7 +117,7 @@ export function createCodec(type: string): Codec {
 
   if (type.startsWith("DateTime64")) {
     const precisionMatch = type.match(/DateTime64\((\d+)/);
-    const precision = precisionMatch ? parseInt(precisionMatch[1], 10) : 3;
+    const precision = precisionMatch ? parseInt(precisionMatch[1]!, 10) : 3;
     return new DateTime64Codec(type, precision);
   }
 

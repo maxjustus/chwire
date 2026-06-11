@@ -130,8 +130,8 @@ describe("encodeNative", () => {
     assert.deepStrictEqual(decoded.columns, columns);
     // Float32 loses precision
     const decodedRows = toArrayRows(decoded);
-    assert.strictEqual(typeof decodedRows[0][0], "number");
-    assert.strictEqual(decodedRows[0][1], Math.PI);
+    assert.strictEqual(typeof decodedRows[0]![0], "number");
+    assert.strictEqual(decodedRows[0]![1], Math.PI);
   });
 
   it("round-trips Float Infinity and NaN", async () => {
@@ -149,12 +149,12 @@ describe("encodeNative", () => {
     const decoded = await decodeBatch(encoded);
     const decodedRows = toArrayRows(decoded);
 
-    assert.strictEqual(decodedRows[0][0], Infinity);
-    assert.strictEqual(decodedRows[0][1], Infinity);
-    assert.strictEqual(decodedRows[1][0], -Infinity);
-    assert.strictEqual(decodedRows[1][1], -Infinity);
-    assert.ok(Number.isNaN(decodedRows[2][0]), "Float32 NaN should round-trip");
-    assert.ok(Number.isNaN(decodedRows[2][1]), "Float64 NaN should round-trip");
+    assert.strictEqual(decodedRows[0]![0], Infinity);
+    assert.strictEqual(decodedRows[0]![1], Infinity);
+    assert.strictEqual(decodedRows[1]![0], -Infinity);
+    assert.strictEqual(decodedRows[1]![1], -Infinity);
+    assert.ok(Number.isNaN(decodedRows[2]![0]), "Float32 NaN should round-trip");
+    assert.ok(Number.isNaN(decodedRows[2]![1]), "Float64 NaN should round-trip");
   });
 
   it("encodes String with unicode", async () => {
@@ -174,11 +174,11 @@ describe("encodeNative", () => {
     const decoded = await decodeBatch(encoded);
     const decodedRows = toArrayRows(decoded);
 
-    assert.strictEqual(decodedRows[0][0], '{"a":1}');
-    assert.strictEqual(decodedRows[1][0], "[1,2,3]");
-    assert.strictEqual(decodedRows[2][0], '{"x":1}');
-    assert.strictEqual(decodedRows[3][0], "1");
-    assert.strictEqual(decodedRows[4][0], "[1,2]");
+    assert.strictEqual(decodedRows[0]![0], '{"a":1}');
+    assert.strictEqual(decodedRows[1]![0], "[1,2,3]");
+    assert.strictEqual(decodedRows[2]![0], '{"x":1}');
+    assert.strictEqual(decodedRows[3]![0], "1");
+    assert.strictEqual(decodedRows[4]![0], "[1,2]");
   });
 
   it("encodes Nullable", async () => {
@@ -200,9 +200,9 @@ describe("encodeNative", () => {
 
     assert.deepStrictEqual(decoded.columns, columns);
     // Arrays of integers decode as TypedArrays for performance
-    assert.deepStrictEqual([...(decodedRows[0][0] as Int32Array)], [1, 2, 3]);
-    assert.deepStrictEqual([...(decodedRows[1][0] as Int32Array)], []);
-    assert.deepStrictEqual([...(decodedRows[2][0] as Int32Array)], [42]);
+    assert.deepStrictEqual([...(decodedRows[0]![0] as Int32Array)], [1, 2, 3]);
+    assert.deepStrictEqual([...(decodedRows[1]![0] as Int32Array)], []);
+    assert.deepStrictEqual([...(decodedRows[2]![0] as Int32Array)], [42]);
   });
 
   it("treats null/undefined as defaults for container types", async () => {
@@ -223,27 +223,27 @@ describe("encodeNative", () => {
     const decodedRows = toArrayRows(decoded);
 
     // Array defaults to empty array
-    assert.deepStrictEqual([...(decodedRows[0][0] as Int32Array)], []);
-    assert.deepStrictEqual([...(decodedRows[1][0] as Int32Array)], []);
+    assert.deepStrictEqual([...(decodedRows[0]![0] as Int32Array)], []);
+    assert.deepStrictEqual([...(decodedRows[1]![0] as Int32Array)], []);
 
     // Map defaults to empty map
-    assert.strictEqual((decodedRows[0][1] as Map<unknown, unknown>).size, 0);
-    assert.strictEqual((decodedRows[1][1] as Map<unknown, unknown>).size, 0);
+    assert.strictEqual((decodedRows[0]![1] as Map<unknown, unknown>).size, 0);
+    assert.strictEqual((decodedRows[1]![1] as Map<unknown, unknown>).size, 0);
 
     // Tuple defaults each element (Int32=0, String="")
-    assert.deepStrictEqual(decodedRows[0][2], [0, ""]);
-    assert.deepStrictEqual(decodedRows[1][2], [0, ""]);
+    assert.deepStrictEqual(decodedRows[0]![2], [0, ""]);
+    assert.deepStrictEqual(decodedRows[1]![2], [0, ""]);
 
     // Enum defaults to minimum mapped value for both null and undefined.
     // (ClickHouse Native protocol silently converts invalid values like 0 to min.)
-    assert.strictEqual(decodedRows[0][3], 1);
-    assert.strictEqual(decodedRows[1][3], 1);
+    assert.strictEqual(decodedRows[0]![3], 1);
+    assert.strictEqual(decodedRows[1]![3], 1);
 
     // Non-default row still round-trips
-    assert.deepStrictEqual([...(decodedRows[2][0] as Int32Array)], [1, 2]);
-    assert.strictEqual((decodedRows[2][1] as Map<string, number>).get("x"), 1);
-    assert.deepStrictEqual(decodedRows[2][2], [3, "z"]);
-    assert.strictEqual(decodedRows[2][3], 1);
+    assert.deepStrictEqual([...(decodedRows[2]![0] as Int32Array)], [1, 2]);
+    assert.strictEqual((decodedRows[2]![1] as Map<string, number>).get("x"), 1);
+    assert.deepStrictEqual(decodedRows[2]![2], [3, "z"]);
+    assert.strictEqual(decodedRows[2]![3], 1);
   });
 
   it("encodes Map", async () => {
@@ -255,8 +255,8 @@ describe("encodeNative", () => {
 
     assert.deepStrictEqual(decoded.columns, columns);
     // Maps decode as Map objects
-    assert.ok(decodedRows[0][0] instanceof Map);
-    assert.strictEqual((decodedRows[0][0] as Map<string, number>).get("a"), 1);
+    assert.ok(decodedRows[0]![0] instanceof Map);
+    assert.strictEqual((decodedRows[0]![0] as Map<string, number>).get("a"), 1);
   });
 
   it("encodes Tuple", async () => {
@@ -277,7 +277,7 @@ describe("encodeNative", () => {
     const decodedRows = toArrayRows(decoded);
 
     assert.deepStrictEqual(decoded.columns, columns);
-    assert.deepStrictEqual(decodedRows[0][0], { id: 1, name: "alice" });
+    assert.deepStrictEqual(decodedRows[0]![0], { id: 1, name: "alice" });
   });
 
   it("encodes UUID", async () => {
@@ -288,7 +288,7 @@ describe("encodeNative", () => {
     const decodedRows = toArrayRows(decoded);
 
     assert.deepStrictEqual(decoded.columns, columns);
-    assert.strictEqual(decodedRows[0][0], "550e8400-e29b-41d4-a716-446655440000");
+    assert.strictEqual(decodedRows[0]![0], "550e8400-e29b-41d4-a716-446655440000");
   });
 
   it("encodes Date and DateTime", async () => {
@@ -304,8 +304,8 @@ describe("encodeNative", () => {
     const decodedRows = toArrayRows(decoded);
 
     assert.deepStrictEqual(decoded.columns, columns);
-    assert.ok(decodedRows[0][0] instanceof Date);
-    assert.ok(decodedRows[0][1] instanceof Date);
+    assert.ok(decodedRows[0]![0] instanceof Date);
+    assert.ok(decodedRows[0]![1] instanceof Date);
   });
 
   it("throws on Date/DateTime out of range", () => {
@@ -330,8 +330,8 @@ describe("encodeNative", () => {
     const decoded = await decodeBatch(encoded);
     const decodedRows = toArrayRows(decoded);
 
-    assert.ok(decodedRows[0][0] instanceof Date);
-    assert.strictEqual((decodedRows[0][0] as Date).getTime(), datetime.getTime());
+    assert.ok(decodedRows[0]![0] instanceof Date);
+    assert.strictEqual((decodedRows[0]![0] as Date).getTime(), datetime.getTime());
   });
 });
 
@@ -346,8 +346,8 @@ describe("additional scalar types", () => {
     assert.deepStrictEqual(decoded.columns, columns);
     // FixedString decodes as Uint8Array
     const textDecoder = new TextDecoder();
-    assert.strictEqual(textDecoder.decode(decodedRows[0][0] as Uint8Array), "hello");
-    assert.strictEqual(textDecoder.decode(decodedRows[1][0] as Uint8Array), "world");
+    assert.strictEqual(textDecoder.decode(decodedRows[0]![0] as Uint8Array), "hello");
+    assert.strictEqual(textDecoder.decode(decodedRows[1]![0] as Uint8Array), "world");
   });
 
   it("encodes Date32", async () => {
@@ -359,7 +359,7 @@ describe("additional scalar types", () => {
     const decodedRows = toArrayRows(decoded);
 
     assert.deepStrictEqual(decoded.columns, columns);
-    assert.ok(decodedRows[0][0] instanceof Date);
+    assert.ok(decodedRows[0]![0] instanceof Date);
   });
 
   it("encodes DateTime64", async () => {
@@ -372,7 +372,7 @@ describe("additional scalar types", () => {
 
     assert.deepStrictEqual(decoded.columns, columns);
     // DateTime64 returns ClickHouseDateTime64 wrapper
-    const dt = decodedRows[0][0] as { toDate(): Date };
+    const dt = decodedRows[0]![0] as { toDate(): Date };
     assert.strictEqual(dt.toDate().getTime(), date.getTime());
   });
 
@@ -392,14 +392,14 @@ describe("additional scalar types", () => {
 
     assert.deepStrictEqual(decoded.columns, columns);
     // Date truncates to day precision
-    assert.ok(decodedRows[0][0] instanceof Date);
-    assert.strictEqual((decodedRows[0][0] as Date).toISOString().split("T")[0], "2024-01-15");
+    assert.ok(decodedRows[0]![0] instanceof Date);
+    assert.strictEqual((decodedRows[0]![0] as Date).toISOString().split("T")[0], "2024-01-15");
     // DateTime has second precision
-    assert.ok(decodedRows[0][1] instanceof Date);
-    assert.strictEqual((decodedRows[0][1] as Date).getUTCHours(), 10);
+    assert.ok(decodedRows[0]![1] instanceof Date);
+    assert.strictEqual((decodedRows[0]![1] as Date).getUTCHours(), 10);
     // Date32 truncates to day precision
-    assert.ok(decodedRows[0][2] instanceof Date);
-    assert.strictEqual((decodedRows[0][2] as Date).toISOString().split("T")[0], "2024-01-15");
+    assert.ok(decodedRows[0]![2] instanceof Date);
+    assert.strictEqual((decodedRows[0]![2] as Date).toISOString().split("T")[0], "2024-01-15");
   });
 
   it("encodes DateTime64 from ISO strings", async () => {
@@ -412,9 +412,9 @@ describe("additional scalar types", () => {
     const decodedRows = toArrayRows(decoded);
 
     assert.deepStrictEqual(decoded.columns, columns);
-    const dt1 = decodedRows[0][0] as { toDate(): Date };
+    const dt1 = decodedRows[0]![0] as { toDate(): Date };
     assert.strictEqual(dt1.toDate().getTime(), new Date(isoFull).getTime());
-    const dt2 = decodedRows[1][0] as { toDate(): Date };
+    const dt2 = decodedRows[1]![0] as { toDate(): Date };
     assert.strictEqual(dt2.toDate().getTime(), new Date(isoNoMs).getTime());
   });
 
@@ -427,7 +427,7 @@ describe("additional scalar types", () => {
     const decodedRows = toArrayRows(decoded);
 
     assert.deepStrictEqual(decoded.columns, columns);
-    const dt = decodedRows[0][0] as { toDate(): Date };
+    const dt = decodedRows[0]![0] as { toDate(): Date };
     assert.strictEqual(dt.toDate().getTime(), timestampMs);
   });
 
@@ -448,15 +448,15 @@ describe("additional scalar types", () => {
 
     assert.deepStrictEqual(decoded.columns, columns);
     // true -> 1
-    assert.strictEqual(decodedRows[0][0], 1);
-    assert.strictEqual(decodedRows[0][1], 1);
-    assert.strictEqual(decodedRows[0][2], 1n);
-    assert.strictEqual(decodedRows[0][3], 1);
+    assert.strictEqual(decodedRows[0]![0], 1);
+    assert.strictEqual(decodedRows[0]![1], 1);
+    assert.strictEqual(decodedRows[0]![2], 1n);
+    assert.strictEqual(decodedRows[0]![3], 1);
     // false -> 0
-    assert.strictEqual(decodedRows[1][0], 0);
-    assert.strictEqual(decodedRows[1][1], 0);
-    assert.strictEqual(decodedRows[1][2], 0n);
-    assert.strictEqual(decodedRows[1][3], 0);
+    assert.strictEqual(decodedRows[1]![0], 0);
+    assert.strictEqual(decodedRows[1]![1], 0);
+    assert.strictEqual(decodedRows[1]![2], 0n);
+    assert.strictEqual(decodedRows[1]![3], 0);
   });
 
   it("throws on invalid string coercion to number", () => {
@@ -481,12 +481,12 @@ describe("additional scalar types", () => {
     const encoded = encodeNativeRows(columns, rows);
     const decoded = await decodeBatch(encoded);
     const decodedRows = toArrayRows(decoded);
-    assert.strictEqual(decodedRows[0][0], 123);
-    assert.strictEqual(decodedRows[0][1], 3.14);
-    assert.strictEqual(decodedRows[1][0], -456);
-    assert.strictEqual(decodedRows[1][1], -2.5);
-    assert.strictEqual(decodedRows[2][0], 0);
-    assert.strictEqual(decodedRows[2][1], 0.0);
+    assert.strictEqual(decodedRows[0]![0], 123);
+    assert.strictEqual(decodedRows[0]![1], 3.14);
+    assert.strictEqual(decodedRows[1]![0], -456);
+    assert.strictEqual(decodedRows[1]![1], -2.5);
+    assert.strictEqual(decodedRows[2]![0], 0);
+    assert.strictEqual(decodedRows[2]![1], 0.0);
   });
 
   it("throws on invalid string coercion to bigint", () => {
@@ -523,8 +523,8 @@ describe("additional scalar types", () => {
     const decoded = await decodeBatch(encoded);
     const decodedRows = toArrayRows(decoded);
 
-    assert.strictEqual(decodedRows[0][0], 0);
-    assert.strictEqual((decodedRows[0][1] as Date).getTime(), 0);
+    assert.strictEqual(decodedRows[0]![0], 0);
+    assert.strictEqual((decodedRows[0]![1] as Date).getTime(), 0);
   });
 
   it("encodes IPv4", async () => {
@@ -535,8 +535,8 @@ describe("additional scalar types", () => {
     const decodedRows = toArrayRows(decoded);
 
     assert.deepStrictEqual(decoded.columns, columns);
-    assert.strictEqual(decodedRows[0][0], "192.168.1.1");
-    assert.strictEqual(decodedRows[1][0], "10.0.0.1");
+    assert.strictEqual(decodedRows[0]![0], "192.168.1.1");
+    assert.strictEqual(decodedRows[1]![0], "10.0.0.1");
   });
 
   it("encodes IPv6", async () => {
@@ -548,7 +548,7 @@ describe("additional scalar types", () => {
 
     assert.deepStrictEqual(decoded.columns, columns);
     // IPv6 may be normalized
-    assert.ok(typeof decodedRows[0][0] === "string");
+    assert.ok(typeof decodedRows[0]![0] === "string");
   });
 
   it("throws on invalid IPv4 address", () => {
@@ -635,8 +635,8 @@ describe("additional scalar types", () => {
     const decodedRows = toArrayRows(decoded);
 
     assert.deepStrictEqual(decoded.columns, columns);
-    assert.strictEqual(decodedRows[0][0], "123.4567");
-    assert.strictEqual(decodedRows[1][0], "-999.9999");
+    assert.strictEqual(decodedRows[0]![0], "123.4567");
+    assert.strictEqual(decodedRows[1]![0], "-999.9999");
   });
 
   it("encodes Decimal32, Decimal128, and Decimal256", async () => {
@@ -664,10 +664,10 @@ describe("additional scalar types", () => {
     const decoded = await decodeBatch(encoded);
     const decodedRows = toArrayRows(decoded);
 
-    assert.strictEqual(decodedRows[0][0], "123.45");
-    assert.strictEqual(decodedRows[1][0], "-99.99");
-    assert.strictEqual(decodedRows[2][0], "0.00");
-    assert.strictEqual(decodedRows[3][0], "0.00"); // null → default
+    assert.strictEqual(decodedRows[0]![0], "123.45");
+    assert.strictEqual(decodedRows[1]![0], "-99.99");
+    assert.strictEqual(decodedRows[2]![0], "0.00");
+    assert.strictEqual(decodedRows[3]![0], "0.00"); // null → default
   });
 
   it("throws on Decimal out of range", () => {
@@ -688,8 +688,8 @@ describe("additional scalar types", () => {
     const decodedRows = toArrayRows(decoded);
 
     assert.deepStrictEqual(decoded.columns, columns);
-    assert.strictEqual(decodedRows[0][0], 170141183460469231731687303715884105727n);
-    assert.strictEqual(decodedRows[1][0], -170141183460469231731687303715884105728n);
+    assert.strictEqual(decodedRows[0]![0], 170141183460469231731687303715884105727n);
+    assert.strictEqual(decodedRows[1]![0], -170141183460469231731687303715884105728n);
   });
 
   it("encodes UInt128", async () => {
@@ -701,8 +701,8 @@ describe("additional scalar types", () => {
     const decodedRows = toArrayRows(decoded);
 
     assert.deepStrictEqual(decoded.columns, columns);
-    assert.strictEqual(decodedRows[0][0], maxU128);
-    assert.strictEqual(decodedRows[1][0], 0n);
+    assert.strictEqual(decodedRows[0]![0], maxU128);
+    assert.strictEqual(decodedRows[1]![0], 0n);
   });
 
   it("encodes Int256", async () => {
@@ -715,8 +715,8 @@ describe("additional scalar types", () => {
     const decodedRows = toArrayRows(decoded);
 
     assert.deepStrictEqual(decoded.columns, columns);
-    assert.strictEqual(decodedRows[0][0], maxI256);
-    assert.strictEqual(decodedRows[1][0], minI256);
+    assert.strictEqual(decodedRows[0]![0], maxI256);
+    assert.strictEqual(decodedRows[1]![0], minI256);
   });
 
   it("encodes UInt256", async () => {
@@ -728,8 +728,8 @@ describe("additional scalar types", () => {
     const decodedRows = toArrayRows(decoded);
 
     assert.deepStrictEqual(decoded.columns, columns);
-    assert.strictEqual(decodedRows[0][0], maxU256);
-    assert.strictEqual(decodedRows[1][0], 0n);
+    assert.strictEqual(decodedRows[0]![0], maxU256);
+    assert.strictEqual(decodedRows[1]![0], 0n);
   });
 
   it("throws on out-of-range Int128/UInt128/Int256/UInt256", () => {
@@ -862,16 +862,16 @@ describe("additional scalar types", () => {
     const decoded = await decodeBatch(encoded);
     const decodedRows = toArrayRows(decoded);
 
-    assert.strictEqual(decodedRows[0][0], 1); // "true"
-    assert.strictEqual(decodedRows[1][0], 0); // "false"
-    assert.strictEqual(decodedRows[2][0], 1); // "1"
-    assert.strictEqual(decodedRows[3][0], 0); // "0"
-    assert.strictEqual(decodedRows[4][0], 1); // "TRUE"
-    assert.strictEqual(decodedRows[5][0], 0); // "FALSE"
-    assert.strictEqual(decodedRows[6][0], 1); // true
-    assert.strictEqual(decodedRows[7][0], 0); // false
-    assert.strictEqual(decodedRows[8][0], 1); // 1
-    assert.strictEqual(decodedRows[9][0], 0); // 0
+    assert.strictEqual(decodedRows[0]![0], 1); // "true"
+    assert.strictEqual(decodedRows[1]![0], 0); // "false"
+    assert.strictEqual(decodedRows[2]![0], 1); // "1"
+    assert.strictEqual(decodedRows[3]![0], 0); // "0"
+    assert.strictEqual(decodedRows[4]![0], 1); // "TRUE"
+    assert.strictEqual(decodedRows[5]![0], 0); // "FALSE"
+    assert.strictEqual(decodedRows[6]![0], 1); // true
+    assert.strictEqual(decodedRows[7]![0], 0); // false
+    assert.strictEqual(decodedRows[8]![0], 1); // 1
+    assert.strictEqual(decodedRows[9]![0], 0); // 0
   });
 
   it("throws on invalid Bool string", () => {
@@ -898,14 +898,14 @@ describe("additional scalar types", () => {
     const decoded = await decodeBatch(encoded);
     const decodedRows = toArrayRows(decoded);
 
-    assert.strictEqual(decodedRows[0][0], 1n);
-    assert.strictEqual(decodedRows[0][1], 1n);
-    assert.strictEqual(decodedRows[1][0], 0n);
-    assert.strictEqual(decodedRows[1][1], 0n);
-    assert.strictEqual(decodedRows[2][0], 0n);
-    assert.strictEqual(decodedRows[2][1], 0n);
-    assert.strictEqual(decodedRows[3][0], 123n);
-    assert.strictEqual(decodedRows[3][1], 456n);
+    assert.strictEqual(decodedRows[0]![0], 1n);
+    assert.strictEqual(decodedRows[0]![1], 1n);
+    assert.strictEqual(decodedRows[1]![0], 0n);
+    assert.strictEqual(decodedRows[1]![1], 0n);
+    assert.strictEqual(decodedRows[2]![0], 0n);
+    assert.strictEqual(decodedRows[2]![1], 0n);
+    assert.strictEqual(decodedRows[3]![0], 123n);
+    assert.strictEqual(decodedRows[3]![1], 456n);
   });
 
   it("throws on invalid Int128 input", () => {
@@ -929,7 +929,7 @@ describe("DateTime64 precision edge cases", () => {
     const decodedRows = toArrayRows(decoded);
 
     assert.deepStrictEqual(decoded.columns, columns);
-    const dt = decodedRows[0][0] as { toClosestDate(): Date };
+    const dt = decodedRows[0]![0] as { toClosestDate(): Date };
     // 500ms truncated to deciseconds (5 * 100ms = 500ms)
     assert.strictEqual(
       dt.toClosestDate().getTime(),
@@ -947,7 +947,7 @@ describe("DateTime64 precision edge cases", () => {
     const decodedRows = toArrayRows(decoded);
 
     assert.deepStrictEqual(decoded.columns, columns);
-    const dt = decodedRows[0][0] as { toClosestDate(): Date };
+    const dt = decodedRows[0]![0] as { toClosestDate(): Date };
     assert.strictEqual(
       dt.toClosestDate().getTime(),
       new Date("2024-01-15T10:30:00.120Z").getTime(),
@@ -964,7 +964,7 @@ describe("DateTime64 precision edge cases", () => {
     const decodedRows = toArrayRows(decoded);
 
     assert.deepStrictEqual(decoded.columns, columns);
-    const dt = decodedRows[0][0] as { toClosestDate(): Date };
+    const dt = decodedRows[0]![0] as { toClosestDate(): Date };
     // 999ms truncated to seconds
     assert.strictEqual(
       dt.toClosestDate().getTime(),

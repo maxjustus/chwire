@@ -83,7 +83,7 @@ function parseNamedElement(part: string): { name: string | null; type: string } 
     return type ? { name, type } : { name: null, type: part };
   }
   const match = part.match(/^([a-z_][a-z0-9_]*(?:\.[a-z_][a-z0-9_]*)*)\s+(.+)$/i);
-  if (match) return { name: match[1], type: match[2] };
+  if (match) return { name: match[1]!, type: match[2]! };
   return { name: null, type: part };
 }
 
@@ -256,7 +256,7 @@ export function readKindsMany(reader: BufferReader, children: readonly Codec[]):
   const kind = reader.readU8();
   const nodes = new Array(children.length);
   for (let i = 0; i < children.length; i++) {
-    nodes[i] = children[i].readKinds(reader);
+    nodes[i] = children[i]!.readKinds(reader);
   }
   return { kind, children: nodes };
 }
@@ -320,7 +320,7 @@ function readSparse(
       break;
     }
 
-    const startOfGroup = !isFirstValue && indices.length > 0 ? indices[indices.length - 1] + 1 : 0;
+    const startOfGroup = !isFirstValue && indices.length > 0 ? indices[indices.length - 1]! + 1 : 0;
     if (defaultsBeforeValue >= readOffset) {
       indices.push(startOfGroup + defaultsBeforeValue - readOffset);
       readOffset = 0;
@@ -356,9 +356,9 @@ function readSparse(
     const Ctor = src.constructor as TypedArrayConstructor<TypedArray>;
     const dest = new Ctor(rows);
     for (let i = 0; i < indices.length; i++) {
-      const idx = indices[i];
+      const idx = indices[i]!;
       if (idx < rows) {
-        dest[idx] = src[i];
+        dest[idx] = src[i]!;
       }
     }
     return new DataColumn(codec.type, dest);
@@ -368,7 +368,7 @@ function readSparse(
   for (let i = 0; i < rows; i++) resultValues[i] = zero;
 
   for (let i = 0; i < indices.length; i++) {
-    const idx = indices[i];
+    const idx = indices[i]!;
     if (idx < rows) {
       resultValues[idx] = values.get(i);
     }

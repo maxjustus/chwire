@@ -45,7 +45,7 @@ function buildSparseUInt64Block(
       // Trailing defaults with END flag
       const trailingDefaults =
         nonDefaults.length > 0
-          ? totalRows - nonDefaults[nonDefaults.length - 1].index - 1
+          ? totalRows - nonDefaults[nonDefaults.length - 1]!.index - 1
           : totalRows;
       w.writeVarint(BigInt(trailingDefaults) | Sparse.END_OF_GRANULE_FLAG);
 
@@ -92,7 +92,7 @@ describe("sparse serialization unit tests", () => {
     assert.strictEqual(result.rowCount, 10);
     assert.strictEqual(result.columnData.length, 1);
 
-    const col = result.columnData[0];
+    const col = result.columnData[0]!;
     for (let i = 0; i < 10; i++) {
       if (i === 5) {
         assert.strictEqual(col.get(i), 42n, `index ${i} should be 42n`);
@@ -114,7 +114,7 @@ describe("sparse serialization unit tests", () => {
     const result = decodeNativeBlock(data, 0, { clientVersion: 54454 });
 
     assert.strictEqual(result.rowCount, 100);
-    const col = result.columnData[0];
+    const col = result.columnData[0]!;
 
     assert.strictEqual(col.get(10), 100n);
     assert.strictEqual(col.get(50), 500n);
@@ -132,7 +132,7 @@ describe("sparse serialization unit tests", () => {
     const result = decodeNativeBlock(data, 0, { clientVersion: 54454 });
 
     assert.strictEqual(result.rowCount, 50);
-    const col = result.columnData[0];
+    const col = result.columnData[0]!;
     for (let i = 0; i < 50; i++) {
       assert.strictEqual(col.get(i), 0n, `index ${i} should be 0n`);
     }
@@ -150,7 +150,7 @@ describe("sparse serialization unit tests", () => {
     const result = decodeNativeBlock(data, 0, { clientVersion: 54454 });
 
     assert.strictEqual(result.rowCount, 20);
-    const col = result.columnData[0];
+    const col = result.columnData[0]!;
 
     assert.strictEqual(col.get(4), 0n);
     assert.strictEqual(col.get(5), 1n);
@@ -166,7 +166,7 @@ describe("sparse serialization unit tests", () => {
     const result = decodeNativeBlock(data, 0, { clientVersion: 54454 });
 
     assert.strictEqual(result.rowCount, 10);
-    const col = result.columnData[0];
+    const col = result.columnData[0]!;
     assert.strictEqual(col.get(0), 999n);
     assert.strictEqual(col.get(1), 0n);
   });
@@ -178,7 +178,7 @@ describe("sparse serialization unit tests", () => {
     const result = decodeNativeBlock(data, 0, { clientVersion: 54454 });
 
     assert.strictEqual(result.rowCount, 10);
-    const col = result.columnData[0];
+    const col = result.columnData[0]!;
     assert.strictEqual(col.get(8), 0n);
     assert.strictEqual(col.get(9), 123n);
   });
@@ -189,7 +189,7 @@ describe("sparse serialization unit tests", () => {
     const result = decodeNativeBlock(data, 0, { clientVersion: 54454 });
 
     assert.strictEqual(result.rowCount, 3);
-    const col = result.columnData[0];
+    const col = result.columnData[0]!;
     assert.deepStrictEqual(col.get(0), []);
     assert.deepStrictEqual(col.get(1), [7n]);
     assert.deepStrictEqual(col.get(2), []);

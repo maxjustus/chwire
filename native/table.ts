@@ -176,7 +176,7 @@ export class RecordBatch implements Iterable<Row> {
 
   /** Get value at specific row and column index. Allocation-free. */
   getAt(rowIndex: number, colIndex: number): unknown {
-    return this.columnData[colIndex].get(rowIndex);
+    return this.columnData[colIndex]!.get(rowIndex);
   }
 
   /** Get row at index (returns a lazy Proxy). */
@@ -203,7 +203,7 @@ export class RecordBatch implements Iterable<Row> {
     for (let i = 0; i < this.rowCount; i++) {
       const row: Record<string, unknown> = {};
       for (let j = 0; j < numCols; j++) {
-        row[names[j]] = maybeStringify(this.columnData[j].get(i), options);
+        row[names[j]!] = maybeStringify(this.columnData[j]!.get(i), options);
       }
       result[i] = row;
     }
@@ -226,7 +226,7 @@ function createRowProxy(batch: RecordBatch, rowIndex: number, options?: Material
     const o = opts ?? options;
     const obj: Record<string, unknown> = {};
     for (let j = 0; j < batch.numCols; j++) {
-      obj[names[j]] = maybeStringify(batch.columnData[j].get(rowIndex), o);
+      obj[names[j]!] = maybeStringify(batch.columnData[j]!.get(rowIndex), o);
     }
     return obj;
   };
@@ -240,14 +240,14 @@ function createRowProxy(batch: RecordBatch, rowIndex: number, options?: Material
           const o = opts ?? options;
           const arr = new Array(batch.numCols);
           for (let j = 0; j < batch.numCols; j++) {
-            arr[j] = maybeStringify(batch.columnData[j].get(rowIndex), o);
+            arr[j] = maybeStringify(batch.columnData[j]!.get(rowIndex), o);
           }
           return arr;
         };
       }
       if (typeof prop === "string") {
         const idx = nameToIndex.get(prop);
-        if (idx !== undefined) return maybeStringify(batch.columnData[idx].get(rowIndex), options);
+        if (idx !== undefined) return maybeStringify(batch.columnData[idx]!.get(rowIndex), options);
       }
       return undefined;
     },
@@ -298,7 +298,7 @@ export class RecordBatchBuilder {
   appendRow(values: unknown[]): this {
     if (values.length !== this.schema.length) throw new Error("Row length mismatch");
     for (let i = 0; i < values.length; i++) {
-      this.accumulators[i].push(values[i]);
+      this.accumulators[i]!.push(values[i]);
     }
     this._rowCount++;
     return this;
@@ -309,10 +309,11 @@ export class RecordBatchBuilder {
     if (this.finished) throw new Error("Builder already finished");
     this.finished = true;
     const columnData = this.accumulators.map((acc, i) => {
+      const type = this.schema[i]!.type;
       if (acc instanceof GrowingTypedArray) {
-        return new DataColumn(this.schema[i].type, acc.finish());
+        return new DataColumn(type, acc.finish());
       }
-      return getCodec(this.schema[i].type).fromValues(acc);
+      return getCodec(type).fromValues(acc);
     });
     return new RecordBatch({
       columns: this.schema,
@@ -377,10 +378,11 @@ export function validateColumnLengths(
 ): number {
   const rowCount = expectedRowCount ?? columnData[0]?.length ?? 0;
   for (let i = 0; i < columnData.length; i++) {
-    if (columnData[i].length !== rowCount) {
+    const c = columnData[i]!;
+    if (c.length !== rowCount) {
       const name = columnNames?.[i] ?? `#${i}`;
       throw new Error(
-        `Column length mismatch: expected ${rowCount} rows, column ${name} has ${columnData[i].length}`,
+        `Column length mismatch: expected ${rowCount} rows, column ${name} has ${c.length}`,
       );
     }
   }
@@ -399,8 +401,8 @@ export function validateColumnLengths(
  */
 export function batchFromCols(columns: Record<string, Column>): RecordBatch {
   const names = Object.keys(columns);
-  const schema = names.map((name) => ({ name, type: columns[name].type }));
-  const columnData = names.map((name) => columns[name]);
+  const schema = names.map((name) => ({ name, type: columns[name]!.type }));
+  const columnData = names.map((name) => columns[name]!);
   const rowCount = validateColumnLengths(columnData, names);
   return new RecordBatch({ columns: schema, columnData, rowCount });
 }

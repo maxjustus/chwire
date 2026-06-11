@@ -186,7 +186,7 @@ export function readVarInt(buffer: Uint8Array, cursor: { offset: number }): numb
   while (true) {
     if (cursor.offset >= buffer.length)
       throw new BufferUnderflowError("Buffer underflow reading varint");
-    const byte = buffer[cursor.offset++];
+    const byte = buffer[cursor.offset++]!;
     result |= (byte & VarInt.DATA_MASK_NUM) << shift;
     if ((byte & VarInt.CONT_BIT) === 0) break;
     shift += VarInt.BITS_PER_BYTE_NUM;
@@ -200,7 +200,7 @@ export function readVarInt64(buffer: Uint8Array, cursor: { offset: number }): bi
   while (true) {
     if (cursor.offset >= buffer.length)
       throw new BufferUnderflowError("Buffer underflow reading varint64");
-    const byte = BigInt(buffer[cursor.offset++]);
+    const byte = BigInt(buffer[cursor.offset++]!);
     result |= (byte & VarInt.DATA_MASK) << shift;
     if ((byte & VarInt.CONTINUATION_BIT) === 0n) break;
     shift += VarInt.BITS_PER_BYTE;
@@ -358,7 +358,7 @@ export class BufferReader {
 
   readU8(): number {
     this.ensureAvailable(1);
-    return this.buffer[this.offset++];
+    return this.buffer[this.offset++]!;
   }
 
   readU32LE(): number {

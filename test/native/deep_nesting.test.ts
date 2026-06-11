@@ -141,9 +141,9 @@ describe("deep nesting edge cases", () => {
       const v0 = col.get(0) as Map<string, number>[];
       assert.ok(Array.isArray(v0));
       assert.strictEqual(v0.length, 2);
-      assert.strictEqual(v0[0].get("a"), 1);
-      assert.strictEqual(v0[0].get("b"), 2);
-      assert.strictEqual(v0[1].get("c"), 3);
+      assert.strictEqual(v0[0]!.get("a"), 1);
+      assert.strictEqual(v0[0]!.get("b"), 2);
+      assert.strictEqual(v0[1]!.get("c"), 3);
     });
 
     it("handles Array inside Map", () => {
