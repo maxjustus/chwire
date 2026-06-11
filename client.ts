@@ -28,6 +28,7 @@ export {
 import { encodeNative, type ExternalTableData, RecordBatch } from "./native/index.ts";
 import { BlockBuffer } from "./native/io.ts";
 import { type CollectableAsyncGenerator, collectable } from "./util.ts";
+import { mapAsync, prepend } from "./iter.ts";
 import { serializeParams, extractParamTypes, SQL_NULL } from "./params.ts";
 
 export type { CollectableAsyncGenerator } from "./util.ts";
@@ -87,28 +88,11 @@ async function normalizeExternalTable(input: HttpExternalTableInput): Promise<Ht
     }
     const firstBatch = first.value;
     const structure = schemaToStructure(firstBatch);
-
-    // Create async iterable that yields encoded batches
-    const streamingData: AsyncIterable<Uint8Array> = {
-      [Symbol.asyncIterator]: () => {
-        let sentFirst = false;
-        return {
-          async next() {
-            if (!sentFirst) {
-              sentFirst = true;
-              return { done: false, value: encodeNative(firstBatch) };
-            }
-            const result = await iter.next();
-            if (result.done) {
-              return { done: true, value: undefined };
-            }
-            return { done: false, value: encodeNative(result.value) };
-          },
-        };
-      },
+    return {
+      structure,
+      format: "Native",
+      data: mapAsync(prepend(firstBatch, iter), encodeNative),
     };
-
-    return { structure, format: "Native", data: streamingData };
   }
 
   // Sync Iterable<RecordBatch>
