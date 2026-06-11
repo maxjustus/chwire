@@ -61,7 +61,7 @@ function decodeGroups(
   const groups = new Map<number, Column>();
   for (let i = 0; i < codecs.length; i++) {
     if (counts.has(i)) {
-      groups.set(i, codecs[i].decode(reader, counts.get(i)!, childState(state, i)));
+      groups.set(i, codecs[i]!.decode(reader, counts.get(i)!, childState(state, i)));
     }
   }
   return groups;
@@ -89,9 +89,9 @@ export class VariantCodec implements Codec {
     // against its own sorted arms, corrupting the round-trip.
     const order = typeStrings
       .map((_, i) => i)
-      .sort((a, b) => byteOrder(typeStrings[a], typeStrings[b]));
-    this.typeStrings = order.map((i) => typeStrings[i]);
-    this.codecs = order.map((i) => codecs[i]);
+      .sort((a, b) => byteOrder(typeStrings[a]!, typeStrings[b]!));
+    this.typeStrings = order.map((i) => typeStrings[i]!);
+    this.codecs = order.map((i) => codecs[i]!);
     this.type = `Variant(${this.typeStrings.join(", ")})`;
   }
 
@@ -105,8 +105,9 @@ export class VariantCodec implements Codec {
     // emit their static metadata.
     const variant = col as VariantColumn;
     for (let i = 0; i < this.codecs.length; i++) {
-      const group = variant.groups.get(i) ?? this.codecs[i].fromValues([]);
-      this.codecs[i].writePrefix?.(writer, group);
+      const codec = this.codecs[i]!;
+      const group = variant.groups.get(i) ?? codec.fromValues([]);
+      codec.writePrefix?.(writer, group);
     }
   }
 
@@ -123,8 +124,8 @@ export class VariantCodec implements Codec {
     for (let i = 0; i < this.codecs.length; i++) {
       const group = variant.groups.get(i);
       if (group) {
-        const groupHint = this.codecs[i].estimateSize(group.length);
-        writer.write(this.codecs[i].encode(group, groupHint));
+        const codec = this.codecs[i]!;
+        writer.write(codec.encode(group, codec.estimateSize(group.length)));
       }
     }
     return writer.finish();
@@ -156,18 +157,19 @@ export class VariantCodec implements Codec {
           );
         }
         discriminators[i] = disc;
-        variantValues[disc].push(v[1]);
+        variantValues[disc]!.push(v[1]);
       } else {
         const variantIdx = this.findVariantIndex(v, this.typeStrings);
         discriminators[i] = variantIdx;
-        variantValues[variantIdx].push(v);
+        variantValues[variantIdx]!.push(v);
       }
     }
 
     const groups = new Map<number, Column>();
     for (let vi = 0; vi < this.codecs.length; vi++) {
-      if (variantValues[vi].length > 0) {
-        groups.set(vi, this.codecs[vi].fromValues(variantValues[vi]));
+      const vals = variantValues[vi]!;
+      if (vals.length > 0) {
+        groups.set(vi, this.codecs[vi]!.fromValues(vals));
       }
     }
 
@@ -185,7 +187,7 @@ export class VariantCodec implements Codec {
 
   findVariantIndex(value: unknown, types: string[]): number {
     for (let i = 0; i < types.length; i++) {
-      const t = types[i];
+      const t = types[i]!;
       if (t === "String" && typeof value === "string") return i;
       if ((t === "Int64" || t === "UInt64") && typeof value === "bigint") return i;
       if (
@@ -215,14 +217,14 @@ export class VariantCodec implements Codec {
   toLiteral(value: unknown): string | typeof SQL_NULL {
     if (value == null) return SQL_NULL;
     const idx = this.findVariantIndex(value, this.typeStrings);
-    return nullToLiteral(this.codecs[idx].toLiteral(value));
+    return nullToLiteral(this.codecs[idx]!.toLiteral(value));
   }
 
   generate(ctx: GenContext): [number, unknown] | null {
     // Index N selects the NULL discriminator; 0..N-1 select an arm.
     const disc = ctx.rng.int(0, this.codecs.length);
     if (disc === this.codecs.length) return null;
-    return [disc, this.codecs[disc].generate(ctx.descend())];
+    return [disc, this.codecs[disc]!.generate(ctx.descend())];
   }
 
   compare(a: unknown, b: unknown): boolean {
@@ -231,7 +233,7 @@ export class VariantCodec implements Codec {
     const [discA, valA] = a as [number, unknown];
     const [discB, valB] = b as [number, unknown];
     if (discA !== discB) return false;
-    return this.codecs[discA].compare(valA, valB);
+    return this.codecs[discA]!.compare(valA, valB);
   }
 }
 
@@ -266,7 +268,7 @@ export class DynamicCodec implements Codec {
 
     for (let i = 0; i < this.types.length; i++) {
       const group = dyn.groups.get(i);
-      if (group) this.codecs[i].writePrefix?.(writer, group);
+      if (group) this.codecs[i]!.writePrefix?.(writer, group);
     }
   }
 
@@ -293,8 +295,8 @@ export class DynamicCodec implements Codec {
     for (let i = 0; i < this.codecs.length; i++) {
       const group = dyn.groups.get(i);
       if (group) {
-        const groupHint = this.codecs[i].estimateSize(group.length);
-        writer.write(this.codecs[i].encode(group, groupHint));
+        const codec = this.codecs[i]!;
+        writer.write(codec.encode(group, codec.estimateSize(group.length)));
       }
     }
     return writer.finish();
@@ -344,8 +346,9 @@ export class DynamicCodec implements Codec {
 
     const groups = new Map<number, Column>();
     for (let ti = 0; ti < typeOrder.length; ti++) {
-      const codec = this.resolveCodec(typeOrder[ti]);
-      groups.set(ti, codec.fromValues(typeMap.get(typeOrder[ti])!));
+      const t = typeOrder[ti]!;
+      const codec = this.resolveCodec(t);
+      groups.set(ti, codec.fromValues(typeMap.get(t)!));
     }
 
     return new DynamicColumn(typeOrder, discriminators, groups);
