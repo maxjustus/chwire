@@ -91,10 +91,10 @@ describe("TCP Client Integration", () => {
 
       const allRows = await collectRows(client, `SELECT * FROM ${tableName} ORDER BY id`);
       assert.strictEqual(allRows.length, 3);
-      assert.strictEqual(allRows[0].id, 1);
-      assert.strictEqual(allRows[0].name, "alice");
-      assert.strictEqual(allRows[1].id, 2);
-      assert.strictEqual(allRows[2].value, 3.5);
+      assert.strictEqual(allRows[0]!.id, 1);
+      assert.strictEqual(allRows[0]!.name, "alice");
+      assert.strictEqual(allRows[1]!.id, 2);
+      assert.strictEqual(allRows[2]!.value, 3.5);
 
       await client.query(`DROP TABLE ${tableName}`);
     }));
@@ -247,11 +247,11 @@ describe("TCP Client Integration", () => {
 
       const allRows = await collectRows(client, `SELECT * FROM ${tableName} ORDER BY id`);
       assert.strictEqual(allRows.length, 3);
-      assert.strictEqual(allRows[0].name, "anonymous");
-      assert.strictEqual(allRows[0].counter, 42n);
-      assert.ok(allRows[0].created instanceof Date, "created should be a Date");
-      assert.strictEqual(allRows[1].name, "anonymous");
-      assert.strictEqual(allRows[2].name, "anonymous");
+      assert.strictEqual(allRows[0]!.name, "anonymous");
+      assert.strictEqual(allRows[0]!.counter, 42n);
+      assert.ok(allRows[0]!.created instanceof Date, "created should be a Date");
+      assert.strictEqual(allRows[1]!.name, "anonymous");
+      assert.strictEqual(allRows[2]!.name, "anonymous");
 
       await client.query(`DROP TABLE ${tableName}`);
     }));
@@ -272,10 +272,10 @@ describe("TCP Client Integration", () => {
 
       const allRows = await collectRows(client, `SELECT * FROM ${tableName}`);
       assert.strictEqual(allRows.length, 1);
-      assert.strictEqual(allRows[0].id, 1);
-      assert.strictEqual(allRows[0].a, "a_default");
-      assert.strictEqual(allRows[0].b, "custom_b");
-      assert.strictEqual(allRows[0].c, "c_default");
+      assert.strictEqual(allRows[0]!.id, 1);
+      assert.strictEqual(allRows[0]!.a, "a_default");
+      assert.strictEqual(allRows[0]!.b, "custom_b");
+      assert.strictEqual(allRows[0]!.c, "c_default");
 
       await client.query(`DROP TABLE ${tableName}`);
     }));
@@ -310,10 +310,10 @@ describe("TCP Client Integration", () => {
 
       const allRows = await collectRows(client, `SELECT * FROM ${tableName} ORDER BY id`);
       assert.strictEqual(allRows.length, 2);
-      assert.strictEqual(allRows[0].name, "alice");
-      assert.strictEqual(allRows[0].counter, 100n);
-      assert.strictEqual(allRows[1].name, ""); // Type default, NOT 'default_name'
-      assert.strictEqual(allRows[1].counter, 0n); // Type default, NOT 999n
+      assert.strictEqual(allRows[0]!.name, "alice");
+      assert.strictEqual(allRows[0]!.counter, 100n);
+      assert.strictEqual(allRows[1]!.name, ""); // Type default, NOT 'default_name'
+      assert.strictEqual(allRows[1]!.counter, 0n); // Type default, NOT 999n
 
       await client.query(`DROP TABLE ${tableName}`);
     }));
@@ -339,13 +339,13 @@ describe("TCP Client Integration", () => {
       });
 
       assert.strictEqual(allRows.length, 2);
-      assert.strictEqual(allRows[0].id, 1);
-      assert.strictEqual((allRows[0].data as any).currency, "USD");
-      assert.strictEqual((allRows[0].data as any).amount, 100n);
-      assert.strictEqual(allRows[1].id, 2);
-      assert.strictEqual((allRows[1].data as any).currency, "EUR");
-      assert.strictEqual((allRows[1].data as any).amount, 200n);
-      assert.strictEqual((allRows[1].data as any).extra, "dynamic");
+      assert.strictEqual(allRows[0]!.id, 1);
+      assert.strictEqual((allRows[0]!.data as any).currency, "USD");
+      assert.strictEqual((allRows[0]!.data as any).amount, 100n);
+      assert.strictEqual(allRows[1]!.id, 2);
+      assert.strictEqual((allRows[1]!.data as any).currency, "EUR");
+      assert.strictEqual((allRows[1]!.data as any).amount, 200n);
+      assert.strictEqual((allRows[1]!.data as any).extra, "dynamic");
 
       await client.query(`DROP TABLE ${tableName}`);
     }));
@@ -387,9 +387,9 @@ describe("TCP Client Integration", () => {
 
       const allRows = await collectRows(client, `SELECT * FROM ${tableName} ORDER BY id`);
       assert.strictEqual(allRows.length, 3);
-      assert.deepStrictEqual(Array.from(allRows[0].arr as any), [10, 20, 30]);
-      assert.deepStrictEqual(Array.from(allRows[1].arr as any), [100]);
-      assert.deepStrictEqual(Array.from(allRows[2].arr as any), []);
+      assert.deepStrictEqual(Array.from(allRows[0]!.arr as any), [10, 20, 30]);
+      assert.deepStrictEqual(Array.from(allRows[1]!.arr as any), [100]);
+      assert.deepStrictEqual(Array.from(allRows[2]!.arr as any), []);
 
       await client.query(`DROP TABLE ${tableName}`);
     }));
@@ -409,9 +409,9 @@ describe("TCP Client Integration", () => {
 
       const allRows = await collectRows(client, `SELECT * FROM ${tableName} ORDER BY id`);
       assert.strictEqual(allRows.length, 3);
-      assert.deepStrictEqual(allRows[0].tags, ["foo", "bar", "baz"]);
-      assert.deepStrictEqual(allRows[1].tags, ["single"]);
-      assert.deepStrictEqual(allRows[2].tags, []);
+      assert.deepStrictEqual(allRows[0]!.tags, ["foo", "bar", "baz"]);
+      assert.deepStrictEqual(allRows[1]!.tags, ["single"]);
+      assert.deepStrictEqual(allRows[2]!.tags, []);
 
       await client.query(`DROP TABLE ${tableName}`);
     }));
@@ -437,7 +437,7 @@ describe("TCP Client Integration", () => {
 
       const allRows = await collectRows(client, `SELECT * FROM ${tableName} ORDER BY id`);
       assert.strictEqual(allRows.length, 3);
-      const matrix = allRows[0].matrix as any[];
+      const matrix = allRows[0]!.matrix as any[];
       assert.strictEqual(matrix.length, 2);
       assert.deepStrictEqual(Array.from(matrix[0]), [1, 2]);
       assert.deepStrictEqual(Array.from(matrix[1]), [3, 4, 5]);
@@ -461,9 +461,9 @@ describe("TCP Client Integration", () => {
 
       const allRows = await collectRows(client, `SELECT * FROM ${tableName} ORDER BY id`);
       assert.strictEqual(allRows.length, 3);
-      assert.deepStrictEqual(allRows[0].arr, [1, null, 3]);
-      assert.deepStrictEqual(allRows[1].arr, [null, null]);
-      assert.deepStrictEqual(allRows[2].arr, []);
+      assert.deepStrictEqual(allRows[0]!.arr, [1, null, 3]);
+      assert.deepStrictEqual(allRows[1]!.arr, [null, null]);
+      assert.deepStrictEqual(allRows[2]!.arr, []);
 
       await client.query(`DROP TABLE ${tableName}`);
     }));

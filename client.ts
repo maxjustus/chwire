@@ -100,7 +100,7 @@ async function normalizeExternalTable(input: HttpExternalTableInput): Promise<Ht
   if (batches.length === 0) {
     throw new Error("Empty iterable for external table");
   }
-  const structure = schemaToStructure(batches[0]);
+  const structure = schemaToStructure(batches[0]!);
   const encoded = batches.map((b) => encodeNative(b));
   return { structure, format: "Native", data: concat(encoded) };
 }
@@ -250,7 +250,7 @@ const EXCEPTION_SCAN_TAIL_BYTES = 64;
 function parseErrorText(text: string): { code: number; name: string; message: string } {
   const match = text.match(/Code:\s*(\d+)\.\s*(\S+):\s+(.*)/s);
   if (match) {
-    return { code: parseInt(match[1], 10), name: match[2].trim(), message: match[3].trim() };
+    return { code: parseInt(match[1]!, 10), name: match[2]!.trim(), message: match[3]!.trim() };
   }
   return { code: 0, name: "Unknown", message: text.trim() };
 }
@@ -337,7 +337,7 @@ function isFramedExceptionAt(buf: Uint8Array, offset: number): boolean {
 
   while (p < buf.length && buf[p] === 32) p++; // optional spaces after "Code:"
   const digitStart = p;
-  while (p < buf.length && buf[p] >= 48 && buf[p] <= 57) p++; // one or more digits
+  while (p < buf.length && buf[p]! >= 48 && buf[p]! <= 57) p++; // one or more digits
   if (p === digitStart) return false;
   return p < buf.length && buf[p] === 46; // trailing '.'
 }

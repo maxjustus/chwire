@@ -25,7 +25,7 @@ function sameEntries(a: Map<string, bigint>, b: [string, bigint][]): boolean {
   const entries = [...a.entries()];
   if (entries.length !== b.length) return false;
   for (let i = 0; i < entries.length; i++) {
-    if (entries[i][0] !== b[i][0] || entries[i][1] !== b[i][1]) {
+    if (entries[i]![0] !== b[i]![0] || entries[i]![1] !== b[i]![1]) {
       return false;
     }
   }
@@ -158,8 +158,8 @@ describe("TCP progress accumulation", { timeout: 60000 }, () => {
       // Only peak memory should be monotonically non-decreasing
       for (let i = 1; i < peakMemoryValues.length; i++) {
         assert.ok(
-          peakMemoryValues[i] >= peakMemoryValues[i - 1],
-          `Peak memory should be monotonically non-decreasing: ${peakMemoryValues[i]} < ${peakMemoryValues[i - 1]}`,
+          peakMemoryValues[i]! >= peakMemoryValues[i - 1]!,
+          `Peak memory should be monotonically non-decreasing: ${peakMemoryValues[i]!} < ${peakMemoryValues[i - 1]!}`,
         );
       }
     }

@@ -28,7 +28,7 @@
 import type { Rng } from "../native/codecs/base.ts";
 
 /** Random element of a non-empty array. */
-const pick = <T>(rng: Rng, arr: readonly T[]): T => arr[rng.int(0, arr.length - 1)];
+const pick = <T>(rng: Rng, arr: readonly T[]): T => arr[rng.int(0, arr.length - 1)]!;
 
 /** Leaf types with no parameters. Each is a valid Nullable inner and Map value. */
 const SIMPLE_SCALARS = [

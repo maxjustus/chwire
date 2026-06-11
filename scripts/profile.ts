@@ -24,7 +24,7 @@ function encodeNativeRows(columns: ColumnDef[], rows: unknown[][]): Uint8Array {
 function buildColumnar(columns: ColumnDef[], columnarData: unknown[][]): RecordBatch {
   const cols: Record<string, ReturnType<ReturnType<typeof getCodec>["fromValues"]>> = {};
   for (let i = 0; i < columns.length; i++) {
-    cols[columns[i].name] = getCodec(columns[i].type).fromValues(columnarData[i] as unknown[]);
+    cols[columns[i]!.name] = getCodec(columns[i]!.type).fromValues(columnarData[i]! as unknown[]);
   }
   return batchFromCols(cols);
 }
@@ -347,7 +347,7 @@ function generateData(type: (typeof DATA_TYPES)[number], count: number): DataSet
       // JSON can't handle Map/BigInt
       if (val instanceof Map) val = Object.fromEntries(val);
       if (typeof val === "bigint") val = val.toString();
-      obj[columns[j].name] = val;
+      obj[columns[j]!.name] = val;
     }
     objects.push(obj);
   }

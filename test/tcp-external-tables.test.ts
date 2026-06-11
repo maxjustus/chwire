@@ -34,10 +34,10 @@ describe("TCP external tables", { timeout: 120000 }, () => {
       });
 
       assert.strictEqual(rows.length, 3);
-      assert.strictEqual(rows[0][0], 1);
-      assert.strictEqual(rows[0][1], "Alice");
-      assert.strictEqual(rows[2][0], 3);
-      assert.strictEqual(rows[2][1], "Charlie");
+      assert.strictEqual(rows[0]![0], 1);
+      assert.strictEqual(rows[0]![1], "Alice");
+      assert.strictEqual(rows[2]![0], 3);
+      assert.strictEqual(rows[2]![1], "Charlie");
     } finally {
       await client.close();
     }
@@ -55,7 +55,7 @@ describe("TCP external tables", { timeout: 120000 }, () => {
       });
 
       assert.strictEqual(rows.length, 1);
-      assert.strictEqual(rows[0][0], 600n);
+      assert.strictEqual(rows[0]![0], 600n);
     } finally {
       await client.close();
     }
@@ -86,10 +86,10 @@ describe("TCP external tables", { timeout: 120000 }, () => {
       );
 
       assert.strictEqual(rows.length, 2);
-      assert.strictEqual(rows[0][0], "Alice");
-      assert.strictEqual(rows[0][1], 26.0); // 10.5 + 15.5
-      assert.strictEqual(rows[1][0], "Bob");
-      assert.strictEqual(rows[1][1], 20.0);
+      assert.strictEqual(rows[0]![0], "Alice");
+      assert.strictEqual(rows[0]![1], 26.0); // 10.5 + 15.5
+      assert.strictEqual(rows[1]![0], "Bob");
+      assert.strictEqual(rows[1]![1], 20.0);
     } finally {
       await client.close();
     }
@@ -113,8 +113,8 @@ describe("TCP external tables", { timeout: 120000 }, () => {
       );
 
       assert.strictEqual(rows.length, 1);
-      assert.strictEqual(rows[0][0], 55n); // 1+2+3+4+5+6+7+8+9+10 = 55
-      assert.strictEqual(rows[0][1], 10n);
+      assert.strictEqual(rows[0]![0], 55n); // 1+2+3+4+5+6+7+8+9+10 = 55
+      assert.strictEqual(rows[0]![1], 10n);
     } finally {
       await client.close();
     }
@@ -136,7 +136,7 @@ describe("TCP external tables", { timeout: 120000 }, () => {
       });
 
       assert.strictEqual(rows.length, 1);
-      assert.strictEqual(rows[0][0], 15n); // 1+2+3+4+5 = 15
+      assert.strictEqual(rows[0]![0], 15n); // 1+2+3+4+5 = 15
     } finally {
       await client.close();
     }
@@ -165,8 +165,8 @@ describe("TCP external tables", { timeout: 120000 }, () => {
       );
 
       assert.strictEqual(rows.length, 1);
-      assert.strictEqual(rows[0][0], 100n);
-      assert.strictEqual(rows[0][1], 99);
+      assert.strictEqual(rows[0]![0], 100n);
+      assert.strictEqual(rows[0]![1], 99);
     } finally {
       await client.close();
     }
@@ -184,7 +184,7 @@ describe("TCP external tables", { timeout: 120000 }, () => {
       });
 
       assert.strictEqual(rows.length, 1);
-      assert.strictEqual(rows[0][0], 0n);
+      assert.strictEqual(rows[0]![0], 0n);
     } finally {
       await client.close();
     }
@@ -205,9 +205,9 @@ describe("TCP external tables", { timeout: 120000 }, () => {
       );
 
       assert.strictEqual(rows.length, 3);
-      assert.strictEqual(rows[0][0], 1);
-      assert.strictEqual(rows[1][0], 3);
-      assert.strictEqual(rows[2][0], 5);
+      assert.strictEqual(rows[0]![0], 1);
+      assert.strictEqual(rows[1]![0], 3);
+      assert.strictEqual(rows[2]![0], 5);
     } finally {
       await client.close();
     }
@@ -227,7 +227,7 @@ describe("TCP external tables", { timeout: 120000 }, () => {
       );
 
       assert.strictEqual(rows.length, 1);
-      assert.strictEqual(rows[0][0], 30);
+      assert.strictEqual(rows[0]![0], 30);
     } finally {
       await client.close();
     }

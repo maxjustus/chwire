@@ -36,7 +36,7 @@ function main() {
     process.exit(1);
   }
 
-  const profilePath = args[0];
+  const profilePath = args[0]!;
   const topN = parseInt(args[1] ?? "30", 10);
 
   const profile: Profile = JSON.parse(readFileSync(profilePath, "utf-8"));
@@ -82,7 +82,7 @@ function main() {
   console.log("  ─────────────────────────────────────────────────────────────");
 
   for (let i = 0; i < Math.min(topN, sorted.length); i++) {
-    const { hits: h, fn, loc } = sorted[i];
+    const { hits: h, fn, loc } = sorted[i]!;
     const pct = ((h / totalHits) * 100).toFixed(1);
     console.log(`  ${h.toString().padStart(5)}  ${pct.padStart(5)}%  ${fn}`);
     console.log(`                   ${loc}`);

@@ -127,8 +127,8 @@ describe("genType type-only oracle", { timeout: 120000 }, () => {
       const chTypes = await canonicalizeBatch(batch);
 
       for (let j = 0; j < batch.length; j++) {
-        const type = batch[j];
-        const chType = chTypes[j];
+        const type = batch[j]!;
+        const chType = chTypes[j]!;
         if (chType === null) {
           failures.push({ type, reason: "CH rejected at CREATE" });
           continue;

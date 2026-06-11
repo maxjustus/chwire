@@ -26,7 +26,7 @@ function randomString(length: number): string {
       chars.push(String.fromCharCode(32 + Math.floor(Math.random() * 95)));
     } else if (choice < 0.85) {
       // Special chars that need escaping
-      chars.push(["'", '"', "\\", "\n", "\t", "\r", "\0"][Math.floor(Math.random() * 7)]);
+      chars.push(["'", '"', "\\", "\n", "\t", "\r", "\0"][Math.floor(Math.random() * 7)]!);
     } else {
       // Control chars and extended ASCII
       chars.push(String.fromCharCode(Math.floor(Math.random() * 256)));

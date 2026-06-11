@@ -169,7 +169,7 @@ export class StreamingReader {
 
   async readU8(): Promise<number> {
     await this.ensure(1);
-    return this.buffer[this.offset++];
+    return this.buffer[this.offset++]!;
   }
 
   async readU32LE(): Promise<number> {

@@ -164,7 +164,7 @@ async function runInteractive(client: TcpClient): Promise<void> {
     const loadMatch = query.match(/^\\load\s+(\S+)\s+into\s+(\S+)$/i);
     if (loadMatch) {
       try {
-        await runLoad(client, loadMatch[1], loadMatch[2]);
+        await runLoad(client, loadMatch[1]!, loadMatch[2]!);
       } catch (err) {
         console.error(`Error: ${(err as Error).message}`);
       }

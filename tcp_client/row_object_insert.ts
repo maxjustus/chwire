@@ -19,7 +19,7 @@ export function transposeRowObjectsToColumns(
   const numCols = schema.length;
 
   const schemaNames = new Array<string>(numCols);
-  for (let i = 0; i < numCols; i++) schemaNames[i] = schema[i].name;
+  for (let i = 0; i < numCols; i++) schemaNames[i] = schema[i]!.name;
 
   const hasOwn = Object.prototype.hasOwnProperty;
 
@@ -33,8 +33,8 @@ export function transposeRowObjectsToColumns(
     }
 
     for (let c = 0; c < numCols; c++) {
-      const name = schemaNames[c];
-      columns[c][r] = hasOwn.call(row, name) ? row[name] : undefined;
+      const name = schemaNames[c]!;
+      columns[c]![r] = hasOwn.call(row, name) ? row[name] : undefined;
     }
   }
 

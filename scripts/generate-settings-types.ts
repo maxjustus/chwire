@@ -91,13 +91,13 @@ function parseEnums(enumsCpp: string): Map<string, string[]> {
     /IMPLEMENT_SETTING_(?:MULTI_)?ENUM\s*\(\s*(\w+)\s*,\s*\w+::\w+\s*,\s*\{([\s\S]*?)\}\s*\)/g;
 
   for (const match of enumsCpp.matchAll(implPattern)) {
-    const enumName = match[1];
-    const valuesBlock = match[2];
+    const enumName = match[1]!;
+    const valuesBlock = match[2]!;
 
     // Extract string values: {"value_name", EnumType::...}
     const valuePattern = /\{\s*"([^"]*)"\s*,/g;
     const values = [...valuesBlock.matchAll(valuePattern)]
-      .map((m) => m[1])
+      .map((m) => m[1]!)
       .filter((v) => v.length > 0); // Filter out empty strings
 
     if (values.length > 0) {
@@ -117,7 +117,9 @@ function parseSettings(cpp: string, enums: Map<string, string[]>): Setting[] {
     /DECLARE(?:_WITH_ALIAS)?\s*\(\s*(\w+)\s*,\s*(\w+)\s*,\s*[^,]+\s*,\s*R"\(\s*([\s\S]*?)\s*\)"\s*,\s*[^)]+\)/g;
 
   for (const match of cpp.matchAll(declarePattern)) {
-    const [, cppType, name, description] = match;
+    const cppType = match[1]!;
+    const name = match[2]!;
+    const description = match[3]!;
 
     // Map C++ type to TypeScript
     let tsType = TYPE_MAP[cppType];
@@ -169,7 +171,9 @@ async function buildVersionMap(noCache: boolean): Promise<Map<string, string>> {
   let startMonth = BASELINE.month;
 
   if (cache && !noCache) {
-    const [y, m] = cache.lastChecked.split(".").map(Number);
+    const parts = cache.lastChecked.split(".");
+    const y = Number(parts[0]!);
+    const m = Number(parts[1]!);
     if (m === 12) {
       startYear = y + 1;
       startMonth = 1;
@@ -197,7 +201,7 @@ async function buildVersionMap(noCache: boolean): Promise<Map<string, string>> {
 
     // Quick parse to get setting names
     const names = [...cpp.matchAll(/DECLARE(?:_WITH_ALIAS)?\s*\(\s*\w+\s*,\s*(\w+)/g)].map(
-      (m) => m[1],
+      (m) => m[1]!,
     );
 
     let newSettings = 0;
@@ -275,14 +279,14 @@ async function main() {
 
   // Get latest version for full parsing
   const versions = [...generateVersions(BASELINE.year, BASELINE.month)];
-  let latestVersion = versions[versions.length - 1];
+  let latestVersion = versions[versions.length - 1]!;
   let latestTag = versionToTag(latestVersion);
   let cpp: string | null = null;
   let enumsCpp: string | null = null;
 
   // Try latest versions until we find one that exists
   for (let i = versions.length - 1; i >= 0 && !cpp; i--) {
-    latestVersion = versions[i];
+    latestVersion = versions[i]!;
     latestTag = versionToTag(latestVersion);
     cpp = await fetchWithRetry(SETTINGS_CPP_URL(latestTag));
     if (cpp) {

@@ -172,7 +172,7 @@ describe("TCP Client Protocol Features", () => {
         if (packet.type === "Log") {
           gotLog = true;
           assert.ok(packet.entries.length > 0, "Log should have entries");
-          assert.ok(typeof packet.entries[0].text === "string", "Log entry should have text");
+          assert.ok(typeof packet.entries[0]!.text === "string", "Log entry should have text");
         }
       }
       // Log packets are optional - server may or may not send them

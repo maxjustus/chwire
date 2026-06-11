@@ -62,7 +62,7 @@ export function toArrayRows(batch: RecordBatch): unknown[][] {
   for (let i = 0; i < rowCount; i++) {
     const row = new Array(numCols);
     for (let j = 0; j < numCols; j++) {
-      row[j] = columnData[j].get(i);
+      row[j] = columnData[j]!.get(i);
     }
     rows[i] = row;
   }
@@ -81,7 +81,7 @@ export async function decodeBatch(data: Uint8Array, options?: DecodeOptions): Pr
     return RecordBatch.from({ columns: [], columnData: [], rowCount: 0 });
   }
   if (batches.length === 1) {
-    return batches[0];
+    return batches[0]!;
   }
   throw new Error("decodeBatch: expected single batch, got multiple");
 }

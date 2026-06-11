@@ -55,7 +55,7 @@ function isWordChar(ch: string): boolean {
 }
 
 function skipWhitespace(query: string, i: number): number {
-  while (i < query.length && isWhitespace(query[i])) {
+  while (i < query.length && isWhitespace(query[i]!)) {
     i++;
   }
   return i;
@@ -92,7 +92,7 @@ function parseParam(query: string, i: number): [string, string, number] | null {
   i = skipWhitespace(query, i);
 
   const nameStart = i;
-  while (i < query.length && isWordChar(query[i])) {
+  while (i < query.length && isWordChar(query[i]!)) {
     i++;
   }
   if (i === nameStart) return null;
@@ -108,7 +108,7 @@ function parseParam(query: string, i: number): [string, string, number] | null {
   if (!type) return null;
   // Basic sanity check: ClickHouse type names start with a letter or underscore.
   // This avoids accidentally treating unrelated "{a: 1}" patterns as params.
-  const firstTypeChar = type[0];
+  const firstTypeChar = type[0]!;
   const isTypeStart =
     firstTypeChar === "_" ||
     (firstTypeChar >= "a" && firstTypeChar <= "z") ||

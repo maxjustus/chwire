@@ -141,14 +141,14 @@ function validateSchema(expected: ColumnDef[], actual: ColumnSchema[]): void {
     throw new Error(`Schema mismatch: expected ${expected.length} columns, got ${actual.length}`);
   }
   for (let i = 0; i < expected.length; i++) {
-    if (expected[i].name !== actual[i].name) {
-      throw new Error(
-        `Schema mismatch: column ${i} expected name '${expected[i].name}', got '${actual[i].name}'`,
-      );
+    const e = expected[i]!;
+    const a = actual[i]!;
+    if (e.name !== a.name) {
+      throw new Error(`Schema mismatch: column ${i} expected name '${e.name}', got '${a.name}'`);
     }
-    if (expected[i].type !== actual[i].type) {
+    if (e.type !== a.type) {
       throw new Error(
-        `Schema mismatch: column '${expected[i].name}' expected type '${expected[i].type}', got '${actual[i].type}'`,
+        `Schema mismatch: column '${e.name}' expected type '${e.type}', got '${a.type}'`,
       );
     }
   }
@@ -573,14 +573,15 @@ export class TcpClient {
         // Build Column objects via codecs (coercion happens in fromValues)
         const encodedColumns = [];
         for (let i = 0; i < numCols; i++) {
-          const col = codecs[i].fromValues(columns[i]);
+          const codec = codecs[i]!;
+          const col = codec.fromValues(columns[i]!);
           const writer = new BufferWriter();
-          codecs[i].writePrefix?.(writer, col);
-          const encoded = codecs[i].encode(col);
-          writer.write(encoded);
+          codec.writePrefix?.(writer, col);
+          writer.write(codec.encode(col));
+          const schemaCol = serverSchema[i]!;
           encodedColumns.push({
-            name: serverSchema[i].name,
-            type: serverSchema[i].type,
+            name: schemaCol.name,
+            type: schemaCol.type,
             data: writer.finish(),
           });
         }
@@ -1330,8 +1331,8 @@ export class TcpClient {
   ): Uint8Array {
     const encodedColumns = [];
     for (let i = 0; i < batch.columns.length; i++) {
-      const colDef = batch.columns[i];
-      const colData = batch.columnData[i];
+      const colDef = batch.columns[i]!;
+      const colData = batch.columnData[i]!;
       const codec = getCodec(colDef.type);
       const writer = new BufferWriter();
       codec.writePrefix?.(writer, colData);

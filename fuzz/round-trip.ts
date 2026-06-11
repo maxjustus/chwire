@@ -111,7 +111,7 @@ export async function roundTripCells(opts: {
 
   const decoded: unknown[] = [];
   for await (const block of streamDecodeNative(dataChunks(queryResult), { mapAsArray: true })) {
-    for (const row of block.columnData[0]) {
+    for (const row of block.columnData[0]!) {
       decoded.push(row);
     }
   }
@@ -126,7 +126,7 @@ export async function roundTripCells(opts: {
 
   const mismatches: Mismatch[] = [];
   for (let r = 0; r < rows.length; r++) {
-    const expected = rows[r][0];
+    const expected = rows[r]![0];
     const actual = decoded[r];
     if (!codec.compare(expected, actual)) {
       mismatches.push({ rowIndex: r, expected: stringify(expected), actual: stringify(actual) });

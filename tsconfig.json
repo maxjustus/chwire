@@ -10,8 +10,9 @@
     "isolatedModules": true,
     "verbatimModuleSyntax": true,
     "exactOptionalPropertyTypes": true,
-    // Deferred — notation churn / large diffs: noPropertyAccessFromIndexSignature
-    // (169 errors), noUncheckedIndexedAccess (in progress).
+    "noUncheckedIndexedAccess": true,
+    // Deferred — pure notation churn, no robustness gain:
+    // noPropertyAccessFromIndexSignature (169 errors).
 
     "target": "ES2022",
     "lib": ["ESNext"],

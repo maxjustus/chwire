@@ -102,14 +102,14 @@ describe("TCP sparse deserialization", { timeout: 120000 }, () => {
             // Check specific values if we have enough rows
             if (decodedRows.length > 10) {
               assert.strictEqual(
-                decodedRows[10][1],
+                decodedRows[10]![1],
                 123456789n,
                 "Row 10 should have value 123456789",
               );
             }
             if (decodedRows.length > 5000) {
               assert.strictEqual(
-                decodedRows[5000][1],
+                decodedRows[5000]![1],
                 987654321n,
                 "Row 5000 should have value 987654321",
               );
@@ -145,14 +145,14 @@ describe("TCP sparse deserialization", { timeout: 120000 }, () => {
           // Check specific values if we have enough rows
           if (decodedRows.length > 50) {
             assert.deepStrictEqual(
-              decodedRows[50][1],
+              decodedRows[50]![1],
               [0, "hello"],
               "Row 50 should have Variant(String) = 'hello'",
             );
           }
           if (decodedRows.length > 5000) {
             assert.deepStrictEqual(
-              decodedRows[5000][1],
+              decodedRows[5000]![1],
               [1, 42n],
               "Row 5000 should have Variant(UInt64) = 42",
             );

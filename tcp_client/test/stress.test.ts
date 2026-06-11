@@ -388,12 +388,12 @@ describe("TCP Client Stress Tests", () => {
             }
           }
           assert.strictEqual(spotCheckRows.length, 3, "Should have 3 spot check rows");
-          assert.strictEqual(spotCheckRows[0].id, 0n);
-          assert.strictEqual(spotCheckRows[0].name, "row_0");
-          assert.strictEqual(spotCheckRows[1].id, 99999n);
-          assert.strictEqual(spotCheckRows[1].name, "row_99999");
-          assert.strictEqual(spotCheckRows[2].id, 199999n);
-          assert.strictEqual(spotCheckRows[2].name, "row_199999");
+          assert.strictEqual(spotCheckRows[0]!.id, 0n);
+          assert.strictEqual(spotCheckRows[0]!.name, "row_0");
+          assert.strictEqual(spotCheckRows[1]!.id, 99999n);
+          assert.strictEqual(spotCheckRows[1]!.name, "row_99999");
+          assert.strictEqual(spotCheckRows[2]!.id, 199999n);
+          assert.strictEqual(spotCheckRows[2]!.name, "row_199999");
         } finally {
           await client.query(`DROP TABLE ${tableName}`);
         }

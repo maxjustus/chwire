@@ -109,7 +109,10 @@ export function concat(arrays: Uint8Array<ArrayBufferLike>[]): Uint8Array {
 
 export function readUInt32LE(arr: Uint8Array, offset: number): number {
   return (
-    arr[offset] | (arr[offset + 1] << 8) | (arr[offset + 2] << 16) | ((arr[offset + 3] << 24) >>> 0)
+    arr[offset]! |
+    (arr[offset + 1]! << 8) |
+    (arr[offset + 2]! << 16) |
+    ((arr[offset + 3]! << 24) >>> 0)
   );
 }
 
