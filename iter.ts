@@ -40,7 +40,11 @@ export async function* mapAsync<T, U>(
   }
 }
 
-/** Re-attach an already-consumed first item to the rest of an iterator. */
+/**
+ * Push an item to the front of an async iterator.
+ * Useful when we peek the first item, do some operation on it, and then
+ * iterate over the entire collection including that first item.
+ */
 export async function* prepend<T>(
   first: T,
   rest: AsyncIterator<T> | Iterator<T>,
