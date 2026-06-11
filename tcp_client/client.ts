@@ -19,6 +19,7 @@ import type { ClickHouseException } from "../errors.ts";
 import type { ClickHouseSettings } from "../settings.ts";
 import type { QueryParamValue } from "../types.ts";
 import { type CollectableAsyncGenerator, collectable } from "../util.ts";
+import { prepend, toAsyncIterable } from "../iter.ts";
 import { StreamingReader } from "./reader.ts";
 import { transposeRowObjectsToColumns } from "./row_object_insert.ts";
 import {
@@ -610,29 +611,24 @@ export class TcpClient {
 
           if (first instanceof RecordBatch) {
             // RecordBatch mode
-            await sendBatch(first);
-            while (true) {
+            for await (const batch of prepend(first, iterator)) {
               throwIfAborted();
               if (cancelled) throw createAbortError("Insert aborted");
-              const result = await Promise.resolve(iterator.next());
+              await sendBatch(batch as RecordBatch);
               throwIfAborted();
-              if (result.done) break;
-              await sendBatch(result.value as RecordBatch);
             }
           } else {
             // Row object mode with batching
-            let buffer: Record<string, unknown>[] = [first as Record<string, unknown>];
-            while (true) {
+            let buffer: Record<string, unknown>[] = [];
+            for await (const row of prepend(first, iterator)) {
               throwIfAborted();
               if (cancelled) throw createAbortError("Insert aborted");
-              const result = await Promise.resolve(iterator.next());
-              throwIfAborted();
-              if (result.done) break;
-              buffer.push(result.value as Record<string, unknown>);
+              buffer.push(row as Record<string, unknown>);
               if (buffer.length >= batchSize) {
                 await sendRowBatch(buffer);
                 buffer = [];
               }
+              throwIfAborted();
             }
             if (buffer.length > 0) {
               await sendRowBatch(buffer);
@@ -1354,19 +1350,12 @@ export class TcpClient {
     compression: Compression,
   ): Promise<void> {
     for (const [name, data] of Object.entries(tables)) {
-      if (data instanceof RecordBatch) {
-        const packet = this.encodeBatchAsDataPacket(name, data, compress, compression);
+      // Keep the RecordBatch-vs-iterable check here so iter.ts stays ignorant of
+      // RecordBatch (which is itself iterable over rows).
+      const batches = data instanceof RecordBatch ? [data] : data;
+      for await (const batch of toAsyncIterable(batches)) {
+        const packet = this.encodeBatchAsDataPacket(name, batch, compress, compression);
         await this.writeWithBackpressure(packet);
-      } else if (Symbol.asyncIterator in data) {
-        for await (const batch of data as AsyncIterable<RecordBatch>) {
-          const packet = this.encodeBatchAsDataPacket(name, batch, compress, compression);
-          await this.writeWithBackpressure(packet);
-        }
-      } else {
-        for (const batch of data as Iterable<RecordBatch>) {
-          const packet = this.encodeBatchAsDataPacket(name, batch, compress, compression);
-          await this.writeWithBackpressure(packet);
-        }
       }
     }
   }
