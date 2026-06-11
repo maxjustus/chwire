@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { once } from "node:events";
 import * as net from "node:net";
 import * as tls from "node:tls";
 import {
@@ -134,6 +135,32 @@ function createAbortError(message: string): Error {
   return err;
 }
 
+/** Write to a socket, resolving once the OS write callback fires (or rejecting on error). */
+function socketWrite(socket: net.Socket, data: Uint8Array): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    socket.write(data, (err) => (err ? reject(err) : resolve()));
+  });
+}
+
+/**
+ * Wait for the socket's send buffer to drain. `once` auto-rejects if the socket
+ * emits "error" while waiting; the close race surfaces a hangup as a rejection.
+ * The AbortController removes whichever listener didn't fire.
+ */
+async function waitForDrain(socket: net.Socket): Promise<void> {
+  const ac = new AbortController();
+  try {
+    await Promise.race([
+      once(socket, "drain", { signal: ac.signal }),
+      once(socket, "close", { signal: ac.signal }).then(() => {
+        throw new Error("Socket closed while waiting for drain");
+      }),
+    ]);
+  } finally {
+    ac.abort();
+  }
+}
+
 /** Validates that expected schema matches server schema exactly. */
 function validateSchema(expected: ColumnDef[], actual: ColumnSchema[]): void {
   if (expected.length !== actual.length) {
@@ -173,29 +200,7 @@ export class TcpClient {
   /** Write with backpressure - waits for drain if socket buffer is full */
   private async writeWithBackpressure(data: Uint8Array): Promise<void> {
     if (!this.socket!.write(data)) {
-      await new Promise<void>((resolve, reject) => {
-        const socket = this.socket!;
-        const cleanup = () => {
-          socket.removeListener("drain", onDrain);
-          socket.removeListener("error", onError);
-          socket.removeListener("close", onClose);
-        };
-        const onDrain = () => {
-          cleanup();
-          resolve();
-        };
-        const onError = (err: Error) => {
-          cleanup();
-          reject(err);
-        };
-        const onClose = () => {
-          cleanup();
-          reject(new Error("Socket closed while waiting for drain"));
-        };
-        socket.once("drain", onDrain);
-        socket.once("error", onError);
-        socket.once("close", onClose);
-      });
+      await waitForDrain(this.socket!);
     }
   }
 
@@ -441,9 +446,7 @@ export class TcpClient {
       // Without this, rapid connect() -> query() can fail because Query packet
       // may be written before addendum is actually sent.
       const addendum = this.writer.encodeAddendum(effectiveRevision);
-      await new Promise<void>((resolve, reject) => {
-        this.socket!.write(addendum, (err) => (err ? reject(err) : resolve()));
-      });
+      await socketWrite(this.socket!, addendum);
     }
 
     this.log("Handshake: Complete!");
