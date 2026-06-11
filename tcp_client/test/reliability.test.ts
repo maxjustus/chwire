@@ -1,13 +1,16 @@
 import assert from "node:assert";
 import { after, before, describe, test } from "node:test";
-import { batchFromCols, getCodec } from "@maxjustus/chwire/native";
 import { startClickHouse, stopClickHouse } from "../../test/setup.ts";
 import {
   toClientOptions,
   withClient as withClientBase,
   type TcpConfig,
 } from "../../test/test_utils.ts";
-import { ClickHouseException, TcpClient } from "@maxjustus/chwire/tcp";
+// Import from source, not the dist package: withClient (test_utils) constructs
+// the source TcpClient, so RecordBatch and ClickHouseException must share the
+// source identity or instanceof checks (insert dispatch, error matching) fail.
+import { batchFromCols, getCodec } from "../../native/index.ts";
+import { ClickHouseException, TcpClient } from "../index.ts";
 import { ServerPacketId } from "../types.ts";
 
 describe("TCP Client Reliability", () => {

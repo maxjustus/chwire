@@ -1,9 +1,12 @@
 import assert from "node:assert";
 import { after, before, describe, test } from "node:test";
-import { batchFromRows } from "@maxjustus/chwire/native";
-import type { TcpClient } from "@maxjustus/chwire/tcp";
 import { startClickHouse, stopClickHouse } from "../../test/setup.ts";
 import { type TcpConfig, withClient as withClientBase } from "../../test/test_utils.ts";
+// Import from source, not the dist package: withClient (test_utils) constructs
+// the source TcpClient, so a RecordBatch from the dist factory would fail the
+// source `instanceof RecordBatch` insert-dispatch check and be mis-encoded.
+import { batchFromRows } from "../../native/index.ts";
+import type { TcpClient } from "../index.ts";
 
 describe("TCP Client Multi-block Integration", () => {
   let options: TcpConfig;
@@ -85,7 +88,7 @@ describe("TCP Client Multi-block Integration", () => {
 
       async function* generateBlocks() {
         for (let i = 0; i < blockCount; i++) {
-          const rows = [];
+          const rows: [bigint, string][] = [];
           for (let j = 0; j < rowsPerBlock; j++) {
             const id = BigInt(i * rowsPerBlock + j);
             rows.push([id, `name_${id}`]);

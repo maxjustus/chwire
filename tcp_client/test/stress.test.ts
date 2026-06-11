@@ -1,6 +1,5 @@
 import assert from "node:assert";
 import { after, before, describe, test } from "node:test";
-import { batchFromCols, batchFromRows, getCodec } from "@maxjustus/chwire/native";
 import { startClickHouse, stopClickHouse } from "../../test/setup.ts";
 import {
   toClientOptions,
@@ -8,7 +7,9 @@ import {
   withClient as withClientBase,
 } from "../../test/test_utils.ts";
 // Import from source, not the dist package: withClient (test_utils) constructs
-// the source TcpClient, and instanceof checks fail across the two identities.
+// the source TcpClient, so RecordBatch and ClickHouseException must share the
+// source identity or instanceof checks (insert dispatch, error matching) fail.
+import { batchFromCols, batchFromRows, getCodec } from "../../native/index.ts";
 import { ClickHouseException, TcpClient } from "../index.ts";
 
 describe("TCP Client Stress Tests", () => {
