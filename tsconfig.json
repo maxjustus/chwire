@@ -4,18 +4,13 @@
 
     "noUnusedLocals": true,
     "noUnusedParameters": true,
-    // "exactOptionalPropertyTypes": true,
-    // "noImplicitReturns": true,
-    // "noFallthroughCasesInSwitch": true,
-    // // "noUncheckedIndexedAccess": true,
-    // "noImplicitOverride": true,
-    // "noPropertyAccessFromIndexSignature": true,
-    // "allowUnusedLabels": false,
-    // "allowUnreachableCode": false,
-    //
-    // // Module resolution strictness
-    // "isolatedModules": true,
-    // "verbatimModuleSyntax": true,
+    "noImplicitReturns": true,
+    "noFallthroughCasesInSwitch": true,
+    "noImplicitOverride": true,
+    "isolatedModules": true,
+    "verbatimModuleSyntax": true,
+    // Deferred — large diffs at present: exactOptionalPropertyTypes (8 errors),
+    // noPropertyAccessFromIndexSignature (169), noUncheckedIndexedAccess (604).
 
     "target": "ES2022",
     "lib": ["ESNext"],

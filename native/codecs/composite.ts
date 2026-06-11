@@ -175,7 +175,7 @@ export class ArrayCodec extends BaseCodec {
     return rows * 8 + this.inner.estimateSize(rows * 5);
   }
 
-  readKinds(reader: BufferReader) {
+  override readKinds(reader: BufferReader) {
     return readKinds1(reader, this.inner);
   }
 
@@ -199,7 +199,7 @@ export class ArrayCodec extends BaseCodec {
     return result;
   }
 
-  compare(a: unknown, b: unknown): boolean {
+  override compare(a: unknown, b: unknown): boolean {
     if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false;
     for (let i = 0; i < a.length; i++) {
       if (!this.inner.compare(a[i], b[i])) return false;
@@ -271,11 +271,11 @@ export class NullableCodec extends BaseCodec {
     return rows + this.inner.estimateSize(rows);
   }
 
-  readKinds(reader: BufferReader) {
+  override readKinds(reader: BufferReader) {
     return readKinds1(reader, this.inner);
   }
 
-  toLiteral(value: unknown, quoted?: boolean) {
+  override toLiteral(value: unknown, quoted?: boolean) {
     if (value == null) return SQL_NULL;
     return this.inner.toLiteral(value, quoted);
   }
@@ -289,7 +289,7 @@ export class NullableCodec extends BaseCodec {
     return this.inner.generate(ctx);
   }
 
-  compare(a: unknown, b: unknown): boolean {
+  override compare(a: unknown, b: unknown): boolean {
     if (a === null || b === null) return a === b;
     return this.inner.compare(a, b);
   }
@@ -435,11 +435,11 @@ export class LowCardinalityCodec extends BaseCodec {
     return 8 + 8 + this.dictCodec.estimateSize(dictSize) + 8 + rows * 2;
   }
 
-  readKinds(reader: BufferReader) {
+  override readKinds(reader: BufferReader) {
     return readKinds1(reader, this.inner);
   }
 
-  toLiteral(value: unknown, quoted?: boolean) {
+  override toLiteral(value: unknown, quoted?: boolean) {
     return this.inner.toLiteral(value, quoted);
   }
 
@@ -451,7 +451,7 @@ export class LowCardinalityCodec extends BaseCodec {
     return this.inner.generate(ctx);
   }
 
-  compare(a: unknown, b: unknown): boolean {
+  override compare(a: unknown, b: unknown): boolean {
     return this.inner.compare(a, b);
   }
 }
@@ -562,7 +562,7 @@ export class MapCodec extends BaseCodec {
     );
   }
 
-  readKinds(reader: BufferReader) {
+  override readKinds(reader: BufferReader) {
     return readKinds2(reader, this.keyCodec, this.valCodec);
   }
 
@@ -600,7 +600,7 @@ export class MapCodec extends BaseCodec {
   }
 
   // CH does not preserve Map entry order, so match keys then compare values.
-  compare(a: unknown, b: unknown): boolean {
+  override compare(a: unknown, b: unknown): boolean {
     const ea = toEntries(a);
     const eb = toEntries(b);
     if (ea.length !== eb.length) return false;
@@ -720,7 +720,7 @@ export class TupleCodec extends BaseCodec {
     return this.elements.reduce((sum, e) => sum + e.codec.estimateSize(rows), 0);
   }
 
-  readKinds(reader: BufferReader) {
+  override readKinds(reader: BufferReader) {
     return readKindsMany(
       reader,
       this.elements.map((e) => e.codec),
@@ -756,7 +756,7 @@ export class TupleCodec extends BaseCodec {
     return this.elements.map((elem) => elem.codec.generate(ctx.descend()));
   }
 
-  compare(a: unknown, b: unknown): boolean {
+  override compare(a: unknown, b: unknown): boolean {
     if (a == null || b == null || typeof a !== "object" || typeof b !== "object") return false;
     for (let i = 0; i < this.elements.length; i++) {
       const elem = this.elements[i];

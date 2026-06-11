@@ -1136,7 +1136,7 @@ export class DateTime64Codec extends BaseCodec {
     return new ClickHouseDateTime64(genBigInt(rng, minTicks, maxTicks), this.precision);
   }
 
-  compare(a: unknown, b: unknown): boolean {
+  override compare(a: unknown, b: unknown): boolean {
     if (!(a instanceof ClickHouseDateTime64) || !(b instanceof ClickHouseDateTime64)) return false;
     return a.ticks === b.ticks && a.precision === b.precision;
   }
