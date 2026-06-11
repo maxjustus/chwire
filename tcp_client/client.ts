@@ -44,7 +44,7 @@ export type { CollectableAsyncGenerator } from "../util.ts";
 /**
  * One server packet with its payload fully consumed off the wire.
  * Parsing lives in a single place (readServerPacket) so every consumer
- * loop stays in sync: a packet type one consumer ignores is still read,
+ * loop stays in sync: a packet type a consumer ignores is still read,
  * and the stream cannot desync.
  */
 type WirePacket =
@@ -135,32 +135,6 @@ function createAbortError(message: string): Error {
   return err;
 }
 
-/** Write to a socket, resolving once the OS write callback fires (or rejecting on error). */
-function socketWrite(socket: net.Socket, data: Uint8Array): Promise<void> {
-  return new Promise<void>((resolve, reject) => {
-    socket.write(data, (err) => (err ? reject(err) : resolve()));
-  });
-}
-
-/**
- * Wait for the socket's send buffer to drain. `once` auto-rejects if the socket
- * emits "error" while waiting; the close race surfaces a hangup as a rejection.
- * The AbortController removes whichever listener didn't fire.
- */
-async function waitForDrain(socket: net.Socket): Promise<void> {
-  const ac = new AbortController();
-  try {
-    await Promise.race([
-      once(socket, "drain", { signal: ac.signal }),
-      once(socket, "close", { signal: ac.signal }).then(() => {
-        throw new Error("Socket closed while waiting for drain");
-      }),
-    ]);
-  } finally {
-    ac.abort();
-  }
-}
-
 /** Validates that expected schema matches server schema exactly. */
 function validateSchema(expected: ColumnDef[], actual: ColumnSchema[]): void {
   if (expected.length !== actual.length) {
@@ -197,10 +171,38 @@ export class TcpClient {
     }
   }
 
+  /** Write, resolving once the OS write callback fires (or rejecting on error). */
+  private socketWrite(data: Uint8Array): Promise<void> {
+    const socket = this.socket!;
+    return new Promise<void>((resolve, reject) => {
+      socket.write(data, (err) => (err ? reject(err) : resolve()));
+    });
+  }
+
+  /**
+   * Wait for the socket's send buffer to drain. `once` auto-rejects if the socket
+   * emits "error" while waiting; the close race surfaces a hangup as a rejection.
+   * The AbortController removes whichever listener didn't fire.
+   */
+  private async waitForDrain(): Promise<void> {
+    const socket = this.socket!;
+    const ac = new AbortController();
+    try {
+      await Promise.race([
+        once(socket, "drain", { signal: ac.signal }),
+        once(socket, "close", { signal: ac.signal }).then(() => {
+          throw new Error("Socket closed while waiting for drain");
+        }),
+      ]);
+    } finally {
+      ac.abort();
+    }
+  }
+
   /** Write with backpressure - waits for drain if socket buffer is full */
   private async writeWithBackpressure(data: Uint8Array): Promise<void> {
     if (!this.socket!.write(data)) {
-      await waitForDrain(this.socket!);
+      await this.waitForDrain();
     }
   }
 
@@ -446,7 +448,7 @@ export class TcpClient {
       // Without this, rapid connect() -> query() can fail because Query packet
       // may be written before addendum is actually sent.
       const addendum = this.writer.encodeAddendum(effectiveRevision);
-      await socketWrite(this.socket!, addendum);
+      await this.socketWrite(addendum);
     }
 
     this.log("Handshake: Complete!");
