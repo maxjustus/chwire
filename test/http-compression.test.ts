@@ -38,7 +38,7 @@ describe("HTTP query body compression", { timeout: 60000 }, () => {
         baseUrl,
         auth,
         compression: "zstd",
-        compressQuery,
+        ...(compressQuery !== undefined ? { compressQuery } : {}),
       }),
     );
 

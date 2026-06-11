@@ -385,7 +385,7 @@ export class NumericCodec<T extends TypedArray> extends BaseCodec {
     super();
     this.type = type;
     this.Ctor = Ctor;
-    this.converter = converter;
+    if (converter !== undefined) this.converter = converter;
     const bits = Ctor.BYTES_PER_ELEMENT * 8;
     const signed = type.startsWith("Int");
     this.max = signed ? 2 ** (bits - 1) - 1 : 2 ** bits - 1;

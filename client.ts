@@ -769,7 +769,7 @@ async function* queryImpl(
       method: "POST",
       body,
       headers,
-      signal: createSignal(options.signal, options.timeout),
+      signal: createSignal(options.signal, options.timeout) ?? null,
     };
     if (body instanceof ReadableStream) {
       fetchOptions.duplex = "half";
@@ -793,7 +793,7 @@ async function* queryImpl(
       method: "POST",
       body,
       headers,
-      signal: createSignal(options.signal, options.timeout),
+      signal: createSignal(options.signal, options.timeout) ?? null,
     });
   }
 

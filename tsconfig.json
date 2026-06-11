@@ -9,8 +9,9 @@
     "noImplicitOverride": true,
     "isolatedModules": true,
     "verbatimModuleSyntax": true,
-    // Deferred — large diffs at present: exactOptionalPropertyTypes (8 errors),
-    // noPropertyAccessFromIndexSignature (169), noUncheckedIndexedAccess (604).
+    "exactOptionalPropertyTypes": true,
+    // Deferred — notation churn / large diffs: noPropertyAccessFromIndexSignature
+    // (169 errors), noUncheckedIndexedAccess (in progress).
 
     "target": "ES2022",
     "lib": ["ESNext"],

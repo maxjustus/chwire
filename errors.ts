@@ -23,6 +23,6 @@ export class ClickHouseException extends Error {
     this.exceptionName = exceptionName;
     this.serverStackTrace = serverStackTrace;
     this.hasNested = hasNested;
-    this.nested = nested;
+    if (nested !== undefined) this.nested = nested;
   }
 }

@@ -304,7 +304,7 @@ export class BufferReader {
     this.buffer = buffer;
     this.offset = offset;
     this.view = new DataView(buffer.buffer, buffer.byteOffset, buffer.byteLength);
-    this.options = options;
+    if (options !== undefined) this.options = options;
   }
 
   readVarint(): number {

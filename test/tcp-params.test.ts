@@ -10,7 +10,7 @@ async function queryScalar(
   sql: string,
   params?: Record<string, QueryParamValue>,
 ): Promise<unknown> {
-  const stream = client.query(sql, { params });
+  const stream = client.query(sql, params !== undefined ? { params } : {});
   for await (const packet of stream) {
     if (packet.type === "Data" && packet.batch.rowCount > 0) {
       return packet.batch.getAt(0, 0);

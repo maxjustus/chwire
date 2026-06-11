@@ -123,7 +123,7 @@ export class RecordBatch implements Iterable<Row> {
     this.columns = block.columns;
     this.columnData = block.columnData;
     this.rowCount = block.rowCount;
-    this.decodeTimeMs = block.decodeTimeMs;
+    if (block.decodeTimeMs !== undefined) this.decodeTimeMs = block.decodeTimeMs;
     this.nameToIndex = new Map(this.columns.map((c, i) => [c.name, i]));
     this._columnNames = this.columns.map((c) => c.name);
   }
