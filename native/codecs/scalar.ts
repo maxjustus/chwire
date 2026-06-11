@@ -85,7 +85,7 @@ function decimalByteSize(type: string): 4 | 8 | 16 | 32 {
   if (type.startsWith("Decimal256")) return 32;
   const match = type.match(/Decimal\((\d+),/);
   if (match) {
-    const p = parseInt(match[1], 10);
+    const p = parseInt(match[1]!, 10);
     if (p <= 9) return 4;
     if (p <= 18) return 8;
     if (p <= 38) return 16;
@@ -96,7 +96,7 @@ function decimalByteSize(type: string): 4 | 8 | 16 | 32 {
 
 function extractDecimalScale(type: string): number {
   const match = type.match(/Decimal\d*\((?:\d+,\s*)?(\d+)\)/);
-  return match ? parseInt(match[1], 10) : 0;
+  return match ? parseInt(match[1]!, 10) : 0;
 }
 
 function parseDecimalToScaledBigInt(str: string, scale: number): bigint {
@@ -146,8 +146,10 @@ function ipv6ToBytes(ip: string): Uint8Array {
 
   let groups: string[];
   if (parts.length === 2) {
-    const left = parts[0] === "" ? [] : parts[0].split(":");
-    const right = parts[1] === "" ? [] : parts[1].split(":");
+    const [hi, lo] = parts;
+    if (hi === undefined || lo === undefined) throw new TypeError(`Invalid IPv6 address: "${ip}"`);
+    const left = hi === "" ? [] : hi.split(":");
+    const right = lo === "" ? [] : lo.split(":");
 
     for (const g of left) {
       if (g.length === 0) throw new TypeError(`Invalid IPv6 address: "${ip}"`);
@@ -170,13 +172,16 @@ function ipv6ToBytes(ip: string): Uint8Array {
   const bytes = new Uint8Array(16);
   for (let i = 0; i < 8; i++) {
     const group = groups[i];
-    if (group.length < 1 || group.length > 4) {
+    if (group === undefined || group.length < 1 || group.length > 4) {
       throw new TypeError(`Invalid IPv6 address: "${ip}"`);
     }
     let val = 0;
     for (let j = 0; j < group.length; j++) {
       const nibble = HEX_LUT[group.charCodeAt(j)];
-      if (nibble === 255) throw new TypeError(`Invalid IPv6 address: "${ip}"`);
+      // undefined when charCode is outside the LUT (non-ASCII) — also invalid.
+      if (nibble === undefined || nibble === 255) {
+        throw new TypeError(`Invalid IPv6 address: "${ip}"`);
+      }
       val = (val << 4) | nibble;
     }
     bytes[i * 2] = (val >> 8) & 0xff;
@@ -188,7 +193,7 @@ function ipv6ToBytes(ip: string): Uint8Array {
 function bytesToIpv6(bytes: Uint8Array): string {
   const parts: string[] = [];
   for (let i = 0; i < 8; i++) {
-    const val = (bytes[i * 2] << 8) | bytes[i * 2 + 1];
+    const val = ((bytes[i * 2] ?? 0) << 8) | (bytes[i * 2 + 1] ?? 0);
     parts.push(val.toString(16));
   }
   return parts.join(":");
@@ -220,7 +225,7 @@ function randomBigIntInRange(rng: Rng, min: bigint, max: bigint): bigint {
 }
 
 /** Random element of a non-empty array. */
-const pick = <T>(rng: Rng, arr: readonly T[]): T => arr[rng.int(0, arr.length - 1)];
+const pick = <T>(rng: Rng, arr: readonly T[]): T => arr[rng.int(0, arr.length - 1)]!;
 
 /**
  * Half the time, pick one of the symbolic width boundaries and clamp it into
@@ -629,13 +634,15 @@ export class UUIDCodec extends BaseCodec {
       const clean = u.replace(/-/g, "");
 
       const off = i * 16;
+      // clean is 32 validated hex chars (toValidUUID), so every charCode is in
+      // the LUT — the lookups are in range.
       for (let j = 0; j < 8; j++) {
         const p = (7 - j) * 2;
-        buf[off + j] = (HEX_LUT[clean.charCodeAt(p)] << 4) | HEX_LUT[clean.charCodeAt(p + 1)];
+        buf[off + j] = (HEX_LUT[clean.charCodeAt(p)]! << 4) | HEX_LUT[clean.charCodeAt(p + 1)]!;
       }
       for (let j = 0; j < 8; j++) {
         const p = (15 - j) * 2;
-        buf[off + 8 + j] = (HEX_LUT[clean.charCodeAt(p)] << 4) | HEX_LUT[clean.charCodeAt(p + 1)];
+        buf[off + 8 + j] = (HEX_LUT[clean.charCodeAt(p)]! << 4) | HEX_LUT[clean.charCodeAt(p + 1)]!;
       }
     }
     return buf;
@@ -648,27 +655,30 @@ export class UUIDCodec extends BaseCodec {
       const b = reader.buffer.subarray(reader.offset, reader.offset + 16);
       reader.offset += 16;
 
+      // b is exactly 16 bytes (ensureAvailable above); the fixed indices are in range.
+      // Leading "" anchors the whole expression as string concatenation.
       values[i] =
-        BYTE_TO_HEX[b[7]] +
-        BYTE_TO_HEX[b[6]] +
-        BYTE_TO_HEX[b[5]] +
-        BYTE_TO_HEX[b[4]] +
+        "" +
+        BYTE_TO_HEX[b[7]!] +
+        BYTE_TO_HEX[b[6]!] +
+        BYTE_TO_HEX[b[5]!] +
+        BYTE_TO_HEX[b[4]!] +
         "-" +
-        BYTE_TO_HEX[b[3]] +
-        BYTE_TO_HEX[b[2]] +
+        BYTE_TO_HEX[b[3]!] +
+        BYTE_TO_HEX[b[2]!] +
         "-" +
-        BYTE_TO_HEX[b[1]] +
-        BYTE_TO_HEX[b[0]] +
+        BYTE_TO_HEX[b[1]!] +
+        BYTE_TO_HEX[b[0]!] +
         "-" +
-        BYTE_TO_HEX[b[15]] +
-        BYTE_TO_HEX[b[14]] +
+        BYTE_TO_HEX[b[15]!] +
+        BYTE_TO_HEX[b[14]!] +
         "-" +
-        BYTE_TO_HEX[b[13]] +
-        BYTE_TO_HEX[b[12]] +
-        BYTE_TO_HEX[b[11]] +
-        BYTE_TO_HEX[b[10]] +
-        BYTE_TO_HEX[b[9]] +
-        BYTE_TO_HEX[b[8]];
+        BYTE_TO_HEX[b[13]!] +
+        BYTE_TO_HEX[b[12]!] +
+        BYTE_TO_HEX[b[11]!] +
+        BYTE_TO_HEX[b[10]!] +
+        BYTE_TO_HEX[b[9]!] +
+        BYTE_TO_HEX[b[8]!];
     }
     return new DataColumn(this.type, values);
   }
@@ -692,7 +702,7 @@ export class UUIDCodec extends BaseCodec {
   generate(ctx: GenContext): string {
     const bytes = genBytes(ctx.rng, 16);
     let hex = "";
-    for (let i = 0; i < 16; i++) hex += BYTE_TO_HEX[bytes[i]];
+    for (let i = 0; i < 16; i++) hex += BYTE_TO_HEX[bytes[i]!];
     return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
   }
 }
@@ -1066,7 +1076,7 @@ export class DateTime64Codec extends BaseCodec {
     const arr = reader.readTypedArray(BigInt64Array, rows);
     const values: ClickHouseDateTime64[] = new Array(rows);
     for (let i = 0; i < rows; i++) {
-      values[i] = new ClickHouseDateTime64(arr[i], this.precision);
+      values[i] = new ClickHouseDateTime64(arr[i]!, this.precision);
     }
     return new DataColumn(this.type, values);
   }
@@ -1279,13 +1289,12 @@ export class IPv4Codec extends BaseCodec {
       const v = toValidIPv4(col.get(i));
       const m = IPV4_REGEX.exec(v);
       if (!m) throw new TypeError(`Invalid IPv4 address: "${v}"`);
-      const parts = [
-        parseInt(m[1], 10),
-        parseInt(m[2], 10),
-        parseInt(m[3], 10),
-        parseInt(m[4], 10),
-      ];
-      arr[i] = ((parts[0] << 24) | (parts[1] << 16) | (parts[2] << 8) | parts[3]) >>> 0;
+      // A successful match guarantees all four octet capture groups.
+      const a = parseInt(m[1]!, 10);
+      const b = parseInt(m[2]!, 10);
+      const c = parseInt(m[3]!, 10);
+      const d = parseInt(m[4]!, 10);
+      arr[i] = ((a << 24) | (b << 16) | (c << 8) | d) >>> 0;
     }
     return asBytes(arr);
   }
@@ -1294,7 +1303,7 @@ export class IPv4Codec extends BaseCodec {
     const arr = reader.readTypedArray(Uint32Array, rows);
     const values: string[] = new Array(rows);
     for (let i = 0; i < rows; i++) {
-      const v = arr[i];
+      const v = arr[i]!;
       values[i] = `${(v >> 24) & 0xff}.${(v >> 16) & 0xff}.${(v >> 8) & 0xff}.${v & 0xff}`;
     }
     return new DataColumn(this.type, values);
