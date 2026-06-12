@@ -1,6 +1,6 @@
 # chwire
 
-ClickHouse HTTP/TCP client and Native/RowBinary wire format toolkit for TypeScript.
+ClickHouse HTTP/TCP client and Native wire format toolkit for TypeScript.
 
 `@maxjustus/chwire` is the renamed successor to `@maxjustus/chttp`.
 

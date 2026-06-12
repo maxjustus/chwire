@@ -516,14 +516,12 @@ Structure Visualization:
     |-- [Dynamic Body for "details.id"]   (Discriminators + Data)
 ```
 
-## Other Types (Fallback)
+## Fixed-Width Scalar Types
 
-For types not handled by a specialized Native codec (e.g., `Decimal`, `Int128`, `Int256`), the system falls back to a `ScalarCodec` which uses **RowBinary** encoding.
-
-This works because these are fixed-width scalar types where the Native column format is identical to the concatenation of RowBinary values.
+Wide fixed-width scalars (`Decimal`, `Int128`/`UInt128`, `Int256`/`UInt256`) are encoded as fixed-width little-endian values with no per-row framing, so the Native column is simply those values concatenated. The 128/256-bit integers use `BigIntCodec`; `Decimal(P, S)` stores a little-endian integer of the width implied by `P`, interpreted at scale `S`.
 
 - **Examples**: `Decimal(P, S)`, `Int128`, `UInt128`, `Int256`, `UInt256`.
-- **Layout**: `[RowBinary_Value_0] [RowBinary_Value_1] ...`
+- **Layout**: `[Value_0] [Value_1] ...` (each value fixed-width little-endian)
 
 ### Sparse serialization
 

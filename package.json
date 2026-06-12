@@ -1,7 +1,7 @@
 {
   "name": "@maxjustus/chwire",
   "version": "1.0.0",
-  "description": "ClickHouse HTTP/TCP client and Native/RowBinary wire format toolkit for TypeScript",
+  "description": "ClickHouse HTTP/TCP client and Native wire format toolkit for TypeScript",
   "type": "module",
   "main": "./dist/chwire.js",
   "bin": {
