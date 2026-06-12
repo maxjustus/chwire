@@ -1,149 +1,186 @@
 import type * as net from "node:net";
+import { decodeBlock, readUInt32LE } from "../compression.ts";
 import { BufferUnderflowError, Compression, readVarInt64, TEXT_DECODER } from "../native/index.ts";
-import { decodeBlock } from "../compression.ts";
 import { ClickHouseException } from "./types.ts";
-
-/**
- * Wraps a socket's async iterator to ensure errors are propagated to pending next() calls.
- * Without this wrapper, socket errors may be emitted as events without rejecting pending reads.
- */
-function createErrorPropagatingIterator(socket: net.Socket): AsyncIterator<Uint8Array> {
-  const baseIterator = (socket as AsyncIterable<Uint8Array>)[Symbol.asyncIterator]();
-  let pendingReject: ((err: Error) => void) | null = null;
-  let socketError: Error | null = null;
-
-  socket.on("error", (err) => {
-    socketError = err;
-    if (pendingReject) {
-      pendingReject(err);
-      pendingReject = null;
-    }
-  });
-
-  return {
-    async next(): Promise<IteratorResult<Uint8Array>> {
-      // If socket already errored, reject immediately
-      if (socketError) {
-        throw socketError;
-      }
-      if (pendingReject) {
-        throw new Error("Concurrent read on socket iterator");
-      }
-
-      // Race the base iterator with error handling
-      return new Promise((resolve, reject) => {
-        pendingReject = reject;
-        baseIterator.next().then(
-          (result) => {
-            pendingReject = null;
-            resolve(result);
-          },
-          (err) => {
-            pendingReject = null;
-            reject(err);
-          },
-        );
-      });
-    },
-  };
-}
 
 /**
  * A streaming byte reader for raw TCP packet framing.
  * Data block payloads may be compressed, but those are read explicitly with readCompressedBlock().
- * Optimized to avoid O(N^2) copies during buffering.
+ *
+ * The socket is consumed eagerly via 'data' events (flowing mode) so the kernel
+ * receive buffer stays drained while the decoder works. Pulling through the
+ * stream async iterator instead (paused mode) stops kernel reads every time the
+ * stream buffers one highWaterMark (~64KB); on high-latency links that churn
+ * keeps the TCP receive window from growing and caps throughput at roughly one
+ * receive buffer per round trip.
+ *
+ * If the consumer falls behind and unread data exceeds PAUSE_THRESHOLD, the
+ * socket is paused until the buffer drains below half the threshold, so
+ * backpressure still reaches the server for genuinely slow consumers.
  */
 export class StreamingReader {
   private static MAX_COMPRESSED_BLOCK_SIZE = 128 * 1024 * 1024; // 128 MiB
-  private source: AsyncIterator<Uint8Array>;
-  private buffer: Uint8Array = new Uint8Array(0);
-  private offset: number = 0;
-  private done: boolean = false;
+  private static PAUSE_THRESHOLD = 16 * 1024 * 1024;
+  private static MIN_CAPACITY = 64 * 1024;
+
+  private socket: net.Socket;
+  private buffer = new Uint8Array(StreamingReader.MIN_CAPACITY);
+  /** Read cursor into buffer. */
+  private offset = 0;
+  /** End of valid data in buffer. */
+  private end = 0;
+  /** Bytes before this index were already handed out via peekAll()/nextChunk(). */
+  private returnedEnd = 0;
+  private done = false;
+  private error: Error | null = null;
+  private wake: (() => void) | null = null;
+  private pausedByUs = false;
 
   constructor(socket: net.Socket) {
-    this.source = createErrorPropagatingIterator(socket);
+    this.socket = socket;
+    socket.on("data", (chunk: Uint8Array) => {
+      this.append(chunk);
+      if (this.available >= StreamingReader.PAUSE_THRESHOLD && !this.pausedByUs) {
+        this.pausedByUs = true;
+        socket.pause();
+      }
+      this.wakeWaiter();
+    });
+    const finish = () => {
+      this.done = true;
+      this.wakeWaiter();
+    };
+    socket.on("end", finish);
+    // 'close' without 'end' (destroy, reset) must also unblock pending reads.
+    socket.on("close", finish);
+    socket.on("error", (err: Error) => {
+      this.error = err;
+      this.wakeWaiter();
+    });
+  }
+
+  private get available(): number {
+    return this.end - this.offset;
+  }
+
+  private append(chunk: Uint8Array): void {
+    if (chunk.length === 0) return;
+    if (this.end + chunk.length > this.buffer.length) {
+      this.realloc(chunk.length);
+    }
+    this.buffer.set(chunk, this.end);
+    this.end += chunk.length;
+  }
+
+  /**
+   * Move unread bytes to a fresh buffer with headroom for `incoming` more.
+   * Always a fresh allocation, never compaction in place: views handed out by
+   * peekAll()/nextChunk()/readCompressedBlock() must keep their bytes.
+   * Sizing from current unread data (not previous capacity) lets the buffer
+   * shrink back after an unusually large block.
+   */
+  private realloc(incoming: number): void {
+    const unread = this.available;
+    const capacity = Math.max(StreamingReader.MIN_CAPACITY, (unread + incoming) * 2);
+    const next = new Uint8Array(capacity);
+    next.set(this.buffer.subarray(this.offset, this.end));
+    this.buffer = next;
+    this.returnedEnd = Math.max(this.returnedEnd - this.offset, 0);
+    this.end = unread;
+    this.offset = 0;
+  }
+
+  private wakeWaiter(): void {
+    const wake = this.wake;
+    if (wake) {
+      this.wake = null;
+      wake();
+    }
+  }
+
+  /** Wait for more data, EOF, or error. Callers re-check state after resolution. */
+  private waitForMore(): Promise<void> {
+    if (this.wake) {
+      throw new Error("Concurrent read on StreamingReader");
+    }
+    // About to sleep: reading must continue even past the pause threshold, or
+    // waiting for a span larger than the threshold would deadlock.
+    this.resume();
+    return new Promise((resolve) => {
+      this.wake = resolve;
+    });
+  }
+
+  private resume(): void {
+    if (this.pausedByUs) {
+      this.pausedByUs = false;
+      this.socket.resume();
+    }
+  }
+
+  private advance(n: number): void {
+    this.offset += n;
+    if (this.pausedByUs && this.available < StreamingReader.PAUSE_THRESHOLD / 2) {
+      this.resume();
+    }
+  }
+
+  /** Throws on socket error, returns false on EOF, otherwise waits for new data. */
+  private async waitOrEnd(): Promise<boolean> {
+    if (this.error) throw this.error;
+    if (this.done) return false;
+    await this.waitForMore();
+    return true;
   }
 
   private async ensure(n: number): Promise<void> {
-    while (this.buffer.length - this.offset < n) {
-      if (this.done) {
+    while (this.available < n) {
+      if (!(await this.waitOrEnd())) {
         throw new Error(
-          `Unexpected end of stream: needed ${n} bytes, only ${this.buffer.length - this.offset} available`,
+          `Unexpected end of stream: needed ${n} bytes, only ${this.available} available`,
         );
       }
-      await this.pullRawChunk();
     }
-  }
-
-  private async pullRawChunk(): Promise<void> {
-    const { value, done } = await this.source.next();
-    if (done) {
-      this.done = true;
-      return;
-    }
-    this.feed(value);
-  }
-
-  private feed(chunk: Uint8Array) {
-    if (this.offset === this.buffer.length) {
-      this.buffer = chunk;
-      this.offset = 0;
-    } else {
-      // Consolidate remaining data with new chunk.
-      // For very large buffers, we might want a chunk list, but for typical
-      // ClickHouse blocks, this is acceptable compared to the previous version.
-      const remaining = this.buffer.length - this.offset;
-      const next = new Uint8Array(remaining + chunk.length);
-      next.set(this.buffer.subarray(this.offset), 0);
-      next.set(chunk, remaining);
-      this.buffer = next;
-      this.offset = 0;
-    }
-  }
-
-  async peek(n: number): Promise<Uint8Array> {
-    await this.ensure(n);
-    return this.buffer.subarray(this.offset, this.offset + n);
   }
 
   consume(n: number): void {
-    if (this.offset + n > this.buffer.length) {
-      throw new Error(
-        `Cannot consume ${n} bytes, only ${this.buffer.length - this.offset} available`,
-      );
+    if (n > this.available) {
+      throw new Error(`Cannot consume ${n} bytes, only ${this.available} available`);
     }
-    this.offset += n;
+    this.advance(n);
   }
 
+  /**
+   * All currently buffered unread bytes. Marks them as handed out: a following
+   * nextChunk() resolves only once bytes beyond these arrive.
+   */
   peekAll(): Uint8Array {
-    return this.buffer.subarray(this.offset);
+    this.returnedEnd = this.end;
+    return this.buffer.subarray(this.offset, this.end);
   }
 
+  /** Buffered bytes not yet handed out by peekAll()/nextChunk(), or null on EOF. */
   async nextChunk(): Promise<Uint8Array | null> {
-    if (this.done) return null;
-    const { value, done } = await this.source.next();
-    if (done) {
-      this.done = true;
-      return null;
+    while (this.end <= this.returnedEnd) {
+      if (!(await this.waitOrEnd())) return null;
     }
-    this.feed(value);
-    return value;
+    const chunk = this.buffer.subarray(this.returnedEnd, this.end);
+    this.returnedEnd = this.end;
+    return chunk;
   }
 
   async readVarint(): Promise<bigint> {
-    // Reuse shared logic by providing a cursor-like object
     while (true) {
       const cursor = { offset: this.offset };
       try {
-        const val = readVarInt64(this.buffer, cursor);
-        this.offset = cursor.offset;
+        const val = readVarInt64(this.buffer.subarray(0, this.end), cursor);
+        this.advance(cursor.offset - this.offset);
         return val;
       } catch (err) {
         if (err instanceof BufferUnderflowError) {
-          if (this.done) {
+          if (!(await this.waitOrEnd())) {
             throw new Error("Connection closed unexpectedly while reading response");
           }
-          await this.pullRawChunk();
           continue;
         }
         throw err;
@@ -156,44 +193,29 @@ export class StreamingReader {
     if (len === 0) return "";
     await this.ensure(len);
     const str = TEXT_DECODER.decode(this.buffer.subarray(this.offset, this.offset + len));
-    this.offset += len;
+    this.advance(len);
     return str;
-  }
-
-  async readFixed(n: number): Promise<Uint8Array> {
-    await this.ensure(n);
-    const bytes = this.buffer.slice(this.offset, this.offset + n);
-    this.offset += n;
-    return bytes;
   }
 
   async readU8(): Promise<number> {
     await this.ensure(1);
-    return this.buffer[this.offset++]!;
-  }
-
-  async readU32LE(): Promise<number> {
-    await this.ensure(4);
-    const view = new DataView(this.buffer.buffer, this.buffer.byteOffset + this.offset, 4);
-    const val = view.getUint32(0, true);
-    this.offset += 4;
+    const val = this.buffer[this.offset]!;
+    this.advance(1);
     return val;
   }
 
   async readInt32LE(): Promise<number> {
     await this.ensure(4);
     const view = new DataView(this.buffer.buffer, this.buffer.byteOffset + this.offset, 4);
-    const val = view.getInt32(0, true);
-    this.offset += 4;
-    return val;
+    this.advance(4);
+    return view.getInt32(0, true);
   }
 
   async readU64LE(): Promise<bigint> {
     await this.ensure(8);
     const view = new DataView(this.buffer.buffer, this.buffer.byteOffset + this.offset, 8);
-    const val = view.getBigUint64(0, true);
-    this.offset += 8;
-    return val;
+    this.advance(8);
+    return view.getBigUint64(0, true);
   }
 
   async readException(): Promise<ClickHouseException> {
@@ -207,34 +229,22 @@ export class StreamingReader {
   }
 
   async readCompressedBlock(): Promise<Uint8Array> {
-    const checksum = await this.readFixed(Compression.CHECKSUM_SIZE);
-    const header = await this.readFixed(Compression.HEADER_SIZE);
-    const compressedData = await this.readFixed(this.compressedDataSize(header));
-    return this.assembleAndDecodeBlock(checksum, header, compressedData);
-  }
-
-  private compressedDataSize(header: Uint8Array): number {
-    const compressedSizeWithHeader = new DataView(
-      header.buffer,
-      header.byteOffset + 1,
-      4,
-    ).getUint32(0, true);
+    await this.ensure(Compression.FULL_HEADER_SIZE);
+    // Frame layout: 16-byte checksum, 1-byte method, u32 size counting the
+    // 9-byte header plus the compressed payload, u32 decompressed size.
+    const compressedSizeWithHeader = readUInt32LE(
+      this.buffer,
+      this.offset + Compression.CHECKSUM_SIZE + 1,
+    );
     const dataSize = compressedSizeWithHeader - Compression.HEADER_SIZE;
     if (dataSize < 0 || dataSize > StreamingReader.MAX_COMPRESSED_BLOCK_SIZE) {
       throw new Error(`Invalid compressed block size: ${compressedSizeWithHeader}`);
     }
-    return dataSize;
-  }
-
-  private assembleAndDecodeBlock(
-    checksum: Uint8Array,
-    header: Uint8Array,
-    compressedData: Uint8Array,
-  ): Uint8Array {
-    const fullBlock = new Uint8Array(Compression.FULL_HEADER_SIZE + compressedData.length);
-    fullBlock.set(checksum, 0);
-    fullBlock.set(header, Compression.CHECKSUM_SIZE);
-    fullBlock.set(compressedData, Compression.FULL_HEADER_SIZE);
-    return decodeBlock(fullBlock);
+    const frameSize = Compression.CHECKSUM_SIZE + compressedSizeWithHeader;
+    await this.ensure(frameSize);
+    const frame = this.buffer.subarray(this.offset, this.offset + frameSize);
+    const decoded = decodeBlock(frame);
+    this.advance(frameSize);
+    return decoded;
   }
 }
