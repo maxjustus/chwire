@@ -311,6 +311,9 @@ export class TcpClient {
       }
 
       const socket = this.socket;
+      // Query packet and delimiter go out as separate small writes; without
+      // this, Nagle holds the second one for ~1 RTT on every query.
+      socket.setNoDelay(true);
       socket.on("error", (err) => reject(err));
       // Route any destruction (timeout, abort, server hangup, drain timeout)
       // through teardown so the client is left cleanly disconnected.
