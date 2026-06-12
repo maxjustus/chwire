@@ -1,13 +1,14 @@
 import assert from "node:assert";
 import { after, before, describe, test } from "node:test";
 import { batchFromRows, type ColumnDef } from "../../native/index.ts";
-import { TcpClient } from "../index.ts";
 import { startClickHouse, stopClickHouse } from "../../test/setup.ts";
 import {
   collectRows,
+  connectTcpClient,
   type TcpConfig,
   withClient as withClientBase,
 } from "../../test/test_utils.ts";
+import type { TcpClient } from "../index.ts";
 
 describe("TCP Client Integration", () => {
   let options: TcpConfig;
@@ -39,6 +40,27 @@ describe("TCP Client Integration", () => {
       }
       assert.strictEqual(rowsFound, 1);
     }));
+
+  test("mirrors the zstd compression choice to the server's send direction", async () => {
+    const client = await connectTcpClient(options, {
+      compression: { method: "zstd", level: 3 },
+    });
+    try {
+      // The setting reaching the server is what makes it compress its own
+      // blocks with zstd; the rows decoding at all proves the client read
+      // zstd frames back.
+      const rows = await collectRows(
+        client,
+        "SELECT name, toString(value) AS value FROM system.settings WHERE name IN ('network_compression_method', 'network_zstd_compression_level') ORDER BY name",
+      );
+      assert.deepStrictEqual(rows, [
+        { name: "network_compression_method", value: "ZSTD" },
+        { name: "network_zstd_compression_level", value: "3" },
+      ]);
+    } finally {
+      client.close();
+    }
+  });
 
   test("should connect and run an INSERT query", () =>
     withClient(async (client) => {

@@ -536,8 +536,12 @@ export class TcpClient {
     const compression = this.options.compression || "lz4";
 
     try {
-      // Merge settings: client defaults < per-insert overrides
-      const mergedSettings = { ...this.defaultSettings, ...options.settings };
+      // Merge settings: compression mirror < client defaults < per-insert overrides
+      const mergedSettings = {
+        ...this.networkCompressionSettings(),
+        ...this.defaultSettings,
+        ...options.settings,
+      };
 
       const serverSchema = await this.sendInsertQueryAndGetSchema(
         sql,
@@ -949,6 +953,23 @@ export class TcpClient {
     }
   }
 
+  /**
+   * The server compresses its blocks per network_compression_method (server
+   * default LZ4) regardless of what codec the client sends, so an explicit
+   * compression choice is mirrored as a query setting to apply to both
+   * directions. Merged at lowest precedence: settings can override it.
+   */
+  private networkCompressionSettings(): ClickHouseSettings {
+    const compression = this.options.compression;
+    if (!compression) return {};
+    if (compression === "lz4") return { network_compression_method: "LZ4" };
+    const settings: ClickHouseSettings = { network_compression_method: "ZSTD" };
+    if (typeof compression === "object" && compression.level !== undefined) {
+      settings.network_zstd_compression_level = BigInt(compression.level);
+    }
+    return settings;
+  }
+
   private async decodeNativePayload(
     readNextChunk: () => Promise<Uint8Array | null>,
     options: { clientVersion: number },
@@ -1152,8 +1173,9 @@ export class TcpClient {
       // The compression flag in the query packet enables bidirectional compression:
       // - When 1: client sends compressed Data blocks, server sends compressed Data blocks
       // - When 0: both sides send uncompressed
-      // Settings merge order: hardcoded < client defaults < per-call overrides
+      // Settings merge order: compression mirror < client defaults < per-call overrides
       const baseSettings: ClickHouseSettings = {
+        ...this.networkCompressionSettings(),
         ...this.defaultSettings,
         ...settings,
       };
