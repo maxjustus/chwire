@@ -9,13 +9,13 @@ import assert from "node:assert/strict";
 import { after, before, describe, it } from "node:test";
 import {
   ClickHouseException,
-  _createSignal as createSignal,
   collectText,
-  init,
-  query,
+  _createSignal as createSignal,
   _findExceptionMarker as findExceptionMarker,
+  init,
   _parseErrorText as parseErrorText,
   _parseStreamException as parseStreamException,
+  query,
 } from "../client.ts";
 import { startClickHouse, stopClickHouse } from "./setup.ts";
 import { generateSessionId } from "./test_utils.ts";
@@ -112,6 +112,41 @@ describe("findExceptionMarker", () => {
   it("text mode rejects the same non-line-start marker (inline-payload guard)", () => {
     const buf = encode("\x00\x00__exception__\r\nCode: 5. DB::Exception: boom\r\n");
     assert.strictEqual(findExceptionMarker(buf, true), -1);
+  });
+});
+
+describe("tagged exception trailer (ClickHouse 26.x)", () => {
+  // Servers that send X-ClickHouse-Exception-Tag frame the trailer as
+  // __exception__\r\n<tag>\r\nCode: ...<len> <tag>\r\n__exception__\r\n
+  const TAG = "hmrwngjlqfwpfqhh";
+  const tagged = encode(
+    "\x00\x00__exception__\r\nhmrwngjlqfwpfqhh\r\nCode: 395. DB::Exception: boom. (THROW)",
+  );
+
+  it("finds a tagged trailer when the tag is known", () => {
+    assert.strictEqual(findExceptionMarker(tagged, false, TAG), 2);
+  });
+
+  it("rejects a tagged trailer whose tag does not match", () => {
+    assert.strictEqual(findExceptionMarker(tagged, false, "aaaaaaaaaaaaaaaa"), -1);
+  });
+
+  it("still finds tagless trailers when a tag is provided (older server form)", () => {
+    const tagless = encode("\x00__exception__\r\nCode: 395. DB::Exception: boom");
+    assert.strictEqual(findExceptionMarker(tagless, false, TAG), 1);
+  });
+
+  it("parses a tagged trailer, stripping the tag line and closing frame", () => {
+    const full = encode(
+      "__exception__\r\nhmrwngjlqfwpfqhh\r\nCode: 395. DB::Exception: boom. (THROW)\n74 hmrwngjlqfwpfqhh\r\n__exception__\r\n",
+    );
+    const err = parseStreamException(full, TAG);
+    assert.ok(err instanceof ClickHouseException);
+    assert.strictEqual(err.code, 395);
+    assert.strictEqual(err.exceptionName, "DB::Exception");
+    assert.ok(err.message.includes("boom"));
+    assert.ok(!err.message.includes(TAG), `tag leaked into message: ${err.message}`);
+    assert.ok(!err.message.includes("__exception__"));
   });
 });
 

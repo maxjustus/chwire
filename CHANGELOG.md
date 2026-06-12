@@ -20,6 +20,8 @@ release includes the unreleased changes since `@maxjustus/chttp@1.15.0`.
 
 ### Fixed
 
+- Fixed mid-stream HTTP exception detection against ClickHouse 26.x, which frames the `__exception__` trailer with the random tag announced in `X-ClickHouse-Exception-Tag`. The old parser missed tagged trailers entirely: text formats returned silently truncated results, and Native streams surfaced decoder garbage (e.g. "Need 4 bytes at offset N") instead of the server exception.
+- Native stream decoding now reports "stream ended mid-block" with byte counts when the source ends inside a block, instead of a bare buffer-underflow error.
 - The TCP client's `compression` choice now applies to both directions: it is mirrored to the server as `network_compression_method` (plus `network_zstd_compression_level` when a level is set), merged below client and per-call settings. Previously the server always replied with its own default (LZ4) regardless of the configured codec, which made bulk reads over slow links carry 2-4x more wire bytes than zstd allows.
 - Fixed TCP bulk-read throughput collapse on high-latency links: the reader now consumes the socket eagerly via `'data'` events (flowing mode) instead of the stream async iterator, which stopped kernel reads every ~64KB and kept the TCP receive window from growing. Backpressure still applies above a 16MB buffered threshold.
 - Enabled `TCP_NODELAY` on the TCP connection; Nagle's algorithm delayed the query delimiter packet by one round trip per query.

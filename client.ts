@@ -1,38 +1,39 @@
 import {
+  type Compression,
   compressionLevel,
   concat,
   decodeBlock,
   decodeBlocks,
   encodeBlock,
-  readUInt32LE,
   init,
   lz4CompressFrame,
-  type Compression,
+  readUInt32LE,
   zstdCompressRaw,
 } from "./compression.ts";
-import type { ClickHouseSettings } from "./settings.ts";
 import { ClickHouseException } from "./errors.ts";
+import type { ClickHouseSettings } from "./settings.ts";
 
 export {
   ClickHouseDateTime64,
   type ColumnDef,
   collectRows,
   type DecodeResult,
-  encodeNative,
   type ExternalTableData,
+  encodeNative,
   RecordBatch,
   rows,
   streamDecodeNative,
   streamEncodeNative,
 } from "./native/index.ts";
-import { encodeNative, type ExternalTableData, RecordBatch } from "./native/index.ts";
-import { BlockBuffer } from "./native/io.ts";
-import { type CollectableAsyncGenerator, collectable } from "./util.ts";
-import { mapAsync, prepend, readChunks, toAsyncIterable } from "./iter.ts";
-import { serializeParams, extractParamTypes, SQL_NULL } from "./params.ts";
 
+import { mapAsync, prepend, readChunks, toAsyncIterable } from "./iter.ts";
+import { type ExternalTableData, encodeNative, RecordBatch } from "./native/index.ts";
+import { BlockBuffer } from "./native/io.ts";
+import { extractParamTypes, SQL_NULL, serializeParams } from "./params.ts";
+import { type CollectableAsyncGenerator, collectable } from "./util.ts";
+
+export type { QueryParams, QueryParamValue } from "./types.ts";
 export type { CollectableAsyncGenerator } from "./util.ts";
-export type { QueryParamValue, QueryParams } from "./types.ts";
 
 import type { QueryParams } from "./types.ts";
 
@@ -244,7 +245,10 @@ function parseProgress(header: string): HttpProgress {
 
 const EXCEPTION_MARKER_BYTES = new TextEncoder().encode("__exception__");
 const EXCEPTION_CODE_BYTES = new TextEncoder().encode("Code:");
-const EXCEPTION_SCAN_TAIL_BYTES = 64;
+// Must exceed the longest trailer preamble a chunk boundary can split:
+// marker + newline + exception tag + newline + "Code: <digits>." (~60 bytes
+// with the 16-char tags current servers send).
+const EXCEPTION_SCAN_TAIL_BYTES = 128;
 
 /** Parse ClickHouse error text: "Code: N. DB::Exception: message (ERROR_TAG)" */
 function parseErrorText(text: string): { code: number; name: string; message: string } {
@@ -301,38 +305,48 @@ function isTextFormat(format: string): boolean {
   );
 }
 
+/** Index just past an LF or CRLF at `p`, or -1 if `p` is not at a newline. */
+function consumeNewline(buf: Uint8Array, p: number): number {
+  if (p < buf.length && buf[p] === 10) return p + 1;
+  if (p + 1 < buf.length && buf[p] === 13 && buf[p + 1] === 10) return p + 2;
+  return -1;
+}
+
+function matchesAt(buf: Uint8Array, offset: number, expected: Uint8Array): boolean {
+  if (offset + expected.length > buf.length) return false;
+  for (let i = 0; i < expected.length; i++) {
+    if (buf[offset + i] !== expected[i]) return false;
+  }
+  return true;
+}
+
 /**
- * Validate a framed exception at `offset`: `__exception__` + newline + the full
- * `Code: <digits>.` preamble ClickHouse always emits ("Code: 395. DB::Exception:
- * ...").
+ * Validate a framed exception at `offset`: `__exception__` + newline, an
+ * optional `<tag>` + newline (servers that send X-ClickHouse-Exception-Tag
+ * frame the trailer with that random tag), then the full `Code: <digits>.`
+ * preamble ClickHouse always emits ("Code: 395. DB::Exception: ...").
  *
- * Requiring the digits-and-period is what lets binary-format detection work: a
+ * Requiring the tag/preamble is what lets binary-format detection work: a
  * Native/RowBinary stream's exception trailer is preceded by arbitrary block
  * bytes (e.g. \0), not a newline, so the line-start guard text relies on cannot
  * apply — the strict preamble is the only thing distinguishing a real trailer
  * from marker bytes that happen to appear in a column value.
  */
-function isFramedExceptionAt(buf: Uint8Array, offset: number): boolean {
-  if (offset + EXCEPTION_MARKER_BYTES.length > buf.length) return false;
+function isFramedExceptionAt(buf: Uint8Array, offset: number, tagBytes?: Uint8Array): boolean {
+  if (!matchesAt(buf, offset, EXCEPTION_MARKER_BYTES)) return false;
 
-  for (let i = 0; i < EXCEPTION_MARKER_BYTES.length; i++) {
-    if (buf[offset + i] !== EXCEPTION_MARKER_BYTES[i]) return false;
+  let p = consumeNewline(buf, offset + EXCEPTION_MARKER_BYTES.length);
+  if (p < 0) return false;
+
+  // Tag line between marker and Code: when the server announced one. Tagless
+  // is still accepted: the tag arrived via header, but pre-26.x trailers omit it.
+  if (tagBytes && matchesAt(buf, p, tagBytes)) {
+    const afterTag = consumeNewline(buf, p + tagBytes.length);
+    if (afterTag < 0) return false;
+    p = afterTag;
   }
 
-  let p = offset + EXCEPTION_MARKER_BYTES.length;
-  if (p >= buf.length) return false;
-  if (buf[p] === 10) {
-    p += 1;
-  } else if (buf[p] === 13 && p + 1 < buf.length && buf[p + 1] === 10) {
-    p += 2;
-  } else {
-    return false;
-  }
-
-  if (p + EXCEPTION_CODE_BYTES.length > buf.length) return false;
-  for (let i = 0; i < EXCEPTION_CODE_BYTES.length; i++) {
-    if (buf[p + i] !== EXCEPTION_CODE_BYTES[i]) return false;
-  }
+  if (!matchesAt(buf, p, EXCEPTION_CODE_BYTES)) return false;
   p += EXCEPTION_CODE_BYTES.length;
 
   while (p < buf.length && buf[p] === 32) p++; // optional spaces after "Code:"
@@ -350,35 +364,42 @@ function isFramedExceptionAt(buf: Uint8Array, offset: number): boolean {
  * pass false: the marker follows arbitrary block bytes, so isFramedExceptionAt's
  * strict preamble is the only guard.
  */
-function findExceptionMarker(buf: Uint8Array, requireLineStart: boolean): number {
+function findExceptionMarker(buf: Uint8Array, requireLineStart: boolean, tag?: string): number {
   const first = EXCEPTION_MARKER_BYTES[0]; // '_'
   const len = EXCEPTION_MARKER_BYTES.length;
+  const tagBytes = tag ? encoder.encode(tag) : undefined;
   for (let i = 0; i <= buf.length - len; i++) {
     if (requireLineStart && i > 0 && buf[i - 1] !== 10) continue;
     if (buf[i] !== first) continue;
-    if (!isFramedExceptionAt(buf, i)) continue;
+    if (!isFramedExceptionAt(buf, i, tagBytes)) continue;
     return i;
   }
   return -1;
 }
 
 /** Parse a mid-stream __exception__ block from bytes into a ClickHouseException */
-function parseStreamException(buf: Uint8Array): ClickHouseException {
+function parseStreamException(buf: Uint8Array, tag?: string): ClickHouseException {
   const text = new TextDecoder().decode(buf);
   // Strip "__exception__\r\n" prefix
-  const body = text.replace(/^__exception__\r?\n/, "");
+  let body = text.replace(/^__exception__\r?\n/, "");
+  if (tag) {
+    // Tagged trailers wrap the text: <tag>\n<text><len> <tag>\n__exception__\n
+    if (body.startsWith(tag)) body = body.slice(tag.length).replace(/^\r?\n/, "");
+    body = body.replace(new RegExp(`\\n?\\d+ ${tag}\\r?\\n__exception__\\r?\\n?$`), "");
+  }
   return exceptionFromText(body);
 }
 
 function splitStreamException(
   buf: Uint8Array,
   requireLineStart: boolean,
+  tag?: string,
 ): { prefix: Uint8Array; error: ClickHouseException } | null {
-  const pos = findExceptionMarker(buf, requireLineStart);
+  const pos = findExceptionMarker(buf, requireLineStart, tag);
   if (pos < 0) return null;
   return {
     prefix: buf.subarray(0, pos),
-    error: parseStreamException(buf.subarray(pos)),
+    error: parseStreamException(buf.subarray(pos), tag),
   };
 }
 
@@ -826,6 +847,8 @@ async function* queryImpl(
   // Always scan for it; the format only decides the guard: text rows let us
   // require the marker to start a line, binary cannot (see findExceptionMarker).
   const requireLineStart = isTextFormat(extractResponseFormat(sql, options));
+  // 26.x servers announce a random tag and frame the trailer with it.
+  const exceptionTag = response.headers.get("X-ClickHouse-Exception-Tag") ?? undefined;
 
   async function* createStream(): AsyncGenerator<Uint8Array, void, unknown> {
     try {
@@ -836,7 +859,7 @@ async function* queryImpl(
 
         for await (const value of readChunks(reader)) {
           const combined = pending.length === 0 ? value : concat([pending, value]);
-          const match = splitStreamException(combined, requireLineStart);
+          const match = splitStreamException(combined, requireLineStart, exceptionTag);
 
           if (match) {
             pending = new Uint8Array(0);
@@ -853,7 +876,7 @@ async function* queryImpl(
         // tail's offset 0 can match here even when it didn't mid-stream, since
         // findExceptionMarker drops the preceding-newline requirement at offset 0.
         if (pending.length > 0) {
-          const match = splitStreamException(pending, requireLineStart);
+          const match = splitStreamException(pending, requireLineStart, exceptionTag);
           if (match) {
             if (match.prefix.length > 0) yield match.prefix;
             throw match.error;
@@ -862,6 +885,7 @@ async function* queryImpl(
         }
       } else {
         const streamBuffer = new BlockBuffer(64 * 1024);
+        const exceptionTagBytes = exceptionTag ? encoder.encode(exceptionTag) : undefined;
 
         for await (const value of readChunks(reader)) {
           streamBuffer.append(value);
@@ -873,8 +897,8 @@ async function* queryImpl(
             // An uncompressed __exception__ trailer sits at the buffer start once
             // every complete block ahead of it has been consumed. Offset 0 only,
             // so the line-start guard is moot — check it directly and cheaply.
-            if (isFramedExceptionAt(bufferView, 0)) {
-              throw parseStreamException(bufferView);
+            if (isFramedExceptionAt(bufferView, 0, exceptionTagBytes)) {
+              throw parseStreamException(bufferView, exceptionTag);
             }
 
             const compressedSize = readUInt32LE(bufferView, 17);
@@ -886,7 +910,11 @@ async function* queryImpl(
 
             try {
               const decompressed = decodeBlock(block);
-              const decompressedMatch = splitStreamException(decompressed, requireLineStart);
+              const decompressedMatch = splitStreamException(
+                decompressed,
+                requireLineStart,
+                exceptionTag,
+              );
               // In-place consume is safe here: nothing aliasing streamBuffer
               // escapes this loop — decodeBlock always returns an independent
               // buffer (including the None method, which copies).
@@ -904,8 +932,8 @@ async function* queryImpl(
               if (err instanceof ClickHouseException) throw err;
               // A failed decode at the buffer start is usually the exception
               // trailer being mistaken for a block — surface it as the real error.
-              if (isFramedExceptionAt(streamBuffer.view, 0)) {
-                throw parseStreamException(streamBuffer.view);
+              if (isFramedExceptionAt(streamBuffer.view, 0, exceptionTagBytes)) {
+                throw parseStreamException(streamBuffer.view, exceptionTag);
               }
               const message = err instanceof Error ? err.message : String(err);
               throw new Error(`Block decompression failed: ${message}`);
@@ -916,8 +944,8 @@ async function* queryImpl(
         // after stream ends: any remaining bytes mean an incomplete compressed
         // block, or the exception trailer left after the last complete block.
         if (streamBuffer.available > 0) {
-          if (isFramedExceptionAt(streamBuffer.view, 0)) {
-            throw parseStreamException(streamBuffer.view);
+          if (isFramedExceptionAt(streamBuffer.view, 0, exceptionTagBytes)) {
+            throw parseStreamException(streamBuffer.view, exceptionTag);
           }
           throw new Error("Incomplete block");
         }
