@@ -7,10 +7,12 @@
  * block-by-block streaming round-trip.
  */
 
+import * as fs from "node:fs";
+import * as path from "node:path";
 import { collectText, dataChunks, init, insert, query } from "../client.ts";
 import { type ColumnDef, encodeNative, streamDecodeNative } from "../native/index.ts";
 import { startClickHouse, stopClickHouse } from "../test/setup.ts";
-import { type Compression } from "./config.ts";
+import type { Compression } from "./config.ts";
 import { defineIntegrationFuzz, type FuzzTransport, type TransportHandle } from "./integration.ts";
 import { consume, uniqueSuffix } from "./util.ts";
 
@@ -51,21 +53,51 @@ defineIntegrationFuzz({
           sessionId,
           { baseUrl, auth, compression },
         );
+        // Decode failures here are usually data-dependent (unseeded
+        // generateRandom), so capture the exact bytes the decoder saw for
+        // offline analysis - a replay of the structure alone won't reproduce.
+        const captured: Uint8Array[] = [];
+        let capturedBytes = 0;
+        const CAPTURE_CAP = 256 * 1024 * 1024;
+        async function* tee(src: AsyncIterable<Uint8Array>): AsyncGenerator<Uint8Array> {
+          for await (const chunk of src) {
+            if (capturedBytes < CAPTURE_CAP) {
+              captured.push(chunk);
+              capturedBytes += chunk.length;
+            }
+            yield chunk;
+          }
+        }
         let columns: ColumnDef[] = [];
-        for await (const block of streamDecodeNative(dataChunks(result), {
-          mapAsArray: true,
-          debug: false,
-        })) {
-          columns = block.columns;
-          await insert(
-            `INSERT INTO ${dstTable} FORMAT Native`,
-            encodeNative(block),
-            insertSessionId,
-            {
-              baseUrl,
-              auth,
-            },
-          );
+        try {
+          for await (const block of streamDecodeNative(tee(dataChunks(result)), {
+            mapAsArray: true,
+            debug: false,
+          })) {
+            columns = block.columns;
+            await insert(
+              `INSERT INTO ${dstTable} FORMAT Native`,
+              encodeNative(block),
+              insertSessionId,
+              {
+                baseUrl,
+                auth,
+              },
+            );
+          }
+        } catch (err) {
+          const dir = ".tmp/fuzz-artifacts";
+          const file = path.join(dir, `${dstTable}.nativestream`);
+          try {
+            fs.mkdirSync(dir, { recursive: true });
+            fs.writeFileSync(file, Buffer.concat(captured));
+            console.error(
+              `[http fuzz] select stream failed after ${capturedBytes} bytes; raw decoder input saved to ${file}`,
+            );
+          } catch {
+            /* artifact capture must never mask the real error */
+          }
+          throw err;
         }
         return columns;
       },
