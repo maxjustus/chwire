@@ -3,8 +3,10 @@
 build:
 	npm run build
 
+# Full suite across ClickHouse versions (CH_VERSIONS to customize).
+# For a single quick run use `npm test` (or CH_VERSION=26.4 npm test).
 test: build
-	npm test
+	npm run test:matrix
 
 test-tcp: build
 	npm run test:tcp
