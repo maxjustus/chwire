@@ -331,7 +331,21 @@ export async function* streamDecodeNative(
   // Final: decode remaining data (no more chunks coming)
   while (blockBuffer.available > 0) {
     const reader = new BufferReader(blockBuffer.view, 0, options);
-    const block = decodeNativeBlockWithReader(reader, options, partial);
+    let block: ReturnType<typeof decodeNativeBlockWithReader>;
+    try {
+      block = decodeNativeBlockWithReader(reader, options, partial);
+    } catch (e) {
+      if (e instanceof BlockUnderflowError || e instanceof BufferUnderflowError) {
+        // The source is done but a block is incomplete: the stream was
+        // truncated (or an earlier block desynced the parser). Name the
+        // condition instead of surfacing a bare buffer-underflow.
+        throw new Error(
+          `Native stream ended mid-block after ${blocksDecoded} blocks ` +
+            `(${blockBuffer.available} unconsumed bytes, ${totalBytesReceived} received): ${e.message}`,
+        );
+      }
+      throw e;
+    }
     blockBuffer.startNextBlock(block.bytesConsumed);
     partial = undefined;
 

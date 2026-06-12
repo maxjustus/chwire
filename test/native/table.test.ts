@@ -1,7 +1,6 @@
 import assert from "node:assert";
 import { describe, it } from "node:test";
 import {
-  BufferUnderflowError,
   BufferWriter,
   batchFromCols,
   batchFromRows,
@@ -97,7 +96,7 @@ describe("streamDecodeNative", () => {
     await assert.rejects(iter.next(), /Unknown type: NotAType/);
   });
 
-  it("throws BufferUnderflowError on truncated final block at EOF", async () => {
+  it("names the truncation when the final block is incomplete at EOF", async () => {
     const columns: ColumnDef[] = [{ name: "id", type: "Int32" }];
     const block1 = encodeNativeRows(columns, [[1], [2]]);
     const block2 = encodeNativeRows(columns, [[3], [4]]);
@@ -110,7 +109,7 @@ describe("streamDecodeNative", () => {
 
     assert.strictEqual(first.done, false);
     assert.deepStrictEqual(toArrayRows(first.value), [[1], [2]]);
-    await assert.rejects(iter.next(), BufferUnderflowError);
+    await assert.rejects(iter.next(), /Native stream ended mid-block after 1 blocks/);
   });
 
   it("RecordBatch iteration yields stable row objects that can be collected", async () => {
