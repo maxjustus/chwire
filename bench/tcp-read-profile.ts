@@ -9,7 +9,12 @@
  * showed one per ~64KB (the stream highWaterMark).
  *
  * Usage:
- *   npx tsx bench/tcp-read-profile.ts [--http] [--runs N]
+ *   npx tsx bench/tcp-read-profile.ts [--http] [--cli] [--runs N]
+ *
+ * --cli also times the official clickhouse-client (`--format Null`) against
+ * the same server and reports the chwire/cli wall-time ratio. The CLI never
+ * materializes columns, so the ratio's absolute value is not parity; track
+ * its drift over time to catch read-path regressions.
  *
  * Environment:
  *   CH_HOST      - host (default: localhost)
@@ -23,6 +28,7 @@
  *   COMPRESSION  - lz4 | zstd | false (default: lz4)
  *   QUERY        - override the query entirely
  */
+import { spawnSync } from "node:child_process";
 import { TcpClient } from "../tcp_client/client.ts";
 
 const HOST = process.env.CH_HOST ?? "localhost";
@@ -38,6 +44,7 @@ const QUERY =
 
 const RUNS = Number(process.argv[process.argv.indexOf("--runs") + 1] || 3);
 const INCLUDE_HTTP = process.argv.includes("--http");
+const INCLUDE_CLI = process.argv.includes("--cli");
 
 type SocketHandle = Record<string, (...args: unknown[]) => unknown>;
 
@@ -67,7 +74,7 @@ function instrumentHandle(socket: unknown) {
   return counters;
 }
 
-async function runTcp(): Promise<number> {
+async function runTcp(): Promise<{ mbps: number; wallMs: number }> {
   const client = new TcpClient({
     host: HOST,
     port: PORT,
@@ -108,7 +115,45 @@ async function runTcp(): Promise<number> {
         : "");
   }
   console.log(line);
-  return mbps;
+  return { mbps, wallMs };
+}
+
+/** The official client binary, as argv prefix: ["clickhouse-client"] or ["clickhouse", "client"]. */
+function findOfficialCli(): string[] | null {
+  for (const candidate of [["clickhouse-client"], ["clickhouse", "client"]]) {
+    const probe = spawnSync(candidate[0]!, [...candidate.slice(1), "--version"], {
+      stdio: "ignore",
+    });
+    if (probe.status === 0) return candidate;
+  }
+  return null;
+}
+
+function runCli(cli: string[], query: string): number {
+  const args = [
+    ...cli.slice(1),
+    "--host",
+    HOST,
+    "--port",
+    String(PORT),
+    "--user",
+    USER,
+    "--format",
+    "Null",
+  ];
+  if (PASSWORD) args.push("--password", PASSWORD);
+  if (TLS) args.push("--secure");
+  if (COMPRESSION === "false") args.push("--compression", "0");
+  else args.push("--network_compression_method", COMPRESSION.toUpperCase());
+  args.push("--query", query);
+
+  const t0 = performance.now();
+  const res = spawnSync(cli[0]!, args, { stdio: ["ignore", "ignore", "pipe"] });
+  const wallMs = performance.now() - t0;
+  if (res.status !== 0) {
+    throw new Error(`clickhouse-client failed: ${res.stderr}`);
+  }
+  return wallMs;
 }
 
 async function runHttp(): Promise<number> {
@@ -147,13 +192,38 @@ async function main() {
   console.log(
     `target=${HOST}:${PORT} tls=${TLS} compression=${COMPRESSION} runs=${RUNS}\nquery: ${QUERY}\n`,
   );
+  const cli = INCLUDE_CLI ? findOfficialCli() : null;
+  if (INCLUDE_CLI && !cli) {
+    console.log("cli:  clickhouse-client not found in PATH, skipping comparison\n");
+  }
+  // One trivial query approximates the CLI's fixed process startup cost.
+  const cliStartupMs = cli ? runCli(cli, "SELECT 1") : 0;
+
   const tcpRates: number[] = [];
+  const tcpWalls: number[] = [];
+  const cliWalls: number[] = [];
   const httpRates: number[] = [];
   for (let i = 0; i < RUNS; i++) {
-    tcpRates.push(await runTcp());
+    const tcp = await runTcp();
+    tcpRates.push(tcp.mbps);
+    tcpWalls.push(tcp.wallMs);
+    if (cli) {
+      const wallMs = runCli(cli, QUERY);
+      cliWalls.push(wallMs);
+      console.log(
+        `cli:  ${wallMs.toFixed(0)}ms wall (official client, --format Null, ~${cliStartupMs.toFixed(0)}ms of it process startup)`,
+      );
+    }
     if (INCLUDE_HTTP) httpRates.push(await runHttp());
   }
   console.log(`\nmedian tcp: ${median(tcpRates).toFixed(1)}MB/s`);
+  if (cli) {
+    const ratio = median(tcpWalls) / median(cliWalls);
+    console.log(
+      `median cli: ${median(cliWalls).toFixed(0)}ms, chwire/cli wall ratio: ${ratio.toFixed(2)} ` +
+        `(cli skips column materialization; watch this ratio for drift, not parity)`,
+    );
+  }
   if (INCLUDE_HTTP) console.log(`median http: ${median(httpRates).toFixed(1)}MB/s`);
 }
 

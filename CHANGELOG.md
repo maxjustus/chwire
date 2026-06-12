@@ -47,6 +47,6 @@ release includes the unreleased changes since `@maxjustus/chttp@1.15.0`.
 - Cleaned package contents with an explicit publish allowlist.
 - Added `clean` before `build` so stale `dist` files cannot ship.
 - Restored the main Native vs JSON format benchmark.
-- Added `bench/tcp-read-profile.ts` for profiling TCP bulk-read throughput, kernel read stop/start churn, and an HTTP transport comparison against local or remote servers.
+- Added `bench/tcp-read-profile.ts` (`bench:tcp`) for profiling TCP bulk-read throughput, kernel read stop/start churn, an HTTP transport comparison, and a wall-time ratio against the official clickhouse-client for regression tracking.
 - Added `bench:check` to type-check benchmark code.
 - Repaired `test:integration` and removed broken benchmark script targets.
