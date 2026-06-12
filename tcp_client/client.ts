@@ -955,7 +955,6 @@ export class TcpClient {
     afterDecode?: (bytesConsumed: number) => void,
   ): Promise<RecordBatch> {
     const debug = this.options.debug;
-    const start = debug ? performance.now() : 0;
     const buffer = new BlockBuffer();
     const reader = new BufferReader(buffer.view, 0, options);
     let partial: PartialBlockState | undefined;
@@ -974,26 +973,22 @@ export class TcpClient {
       reader.replaceBuffer(buffer.view);
       if (!partial) reader.offset = 0;
 
-      const decodeStart = debug ? performance.now() : 0;
+      const decodeStart = performance.now();
       try {
         const result = decodeNativeBlockWithReader(reader, options, partial);
-        if (debug) {
-          decodeTimeMs += performance.now() - decodeStart;
-          result.decodeTimeMs = performance.now() - start;
-          if (chunksRead > 1) {
-            const resumeInfo = resumedFromCol >= 0 ? ` resumed@col${resumedFromCol}` : "";
-            this.log(
-              `block: ${chunksRead} chunks, ${buffer.available} bytes, ` +
-                `read=${readTimeMs.toFixed(1)}ms decode=${decodeTimeMs.toFixed(1)}ms${resumeInfo}`,
-            );
-          }
-        } else {
-          result.decodeTimeMs = performance.now() - decodeStart;
+        decodeTimeMs += performance.now() - decodeStart;
+        result.decodeTimeMs = decodeTimeMs;
+        if (debug && chunksRead > 1) {
+          const resumeInfo = resumedFromCol >= 0 ? ` resumed@col${resumedFromCol}` : "";
+          this.log(
+            `block: ${chunksRead} chunks, ${buffer.available} bytes, ` +
+              `read=${readTimeMs.toFixed(1)}ms decode=${decodeTimeMs.toFixed(1)}ms${resumeInfo}`,
+          );
         }
         afterDecode?.(result.bytesConsumed);
         return RecordBatch.from(result);
       } catch (err) {
-        if (debug) decodeTimeMs += performance.now() - decodeStart;
+        decodeTimeMs += performance.now() - decodeStart;
         if (err instanceof BlockUnderflowError) {
           partial = err.partial;
           resumedFromCol = partial.nextColIndex;
