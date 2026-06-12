@@ -11,13 +11,14 @@ concurrency:
 
 jobs:
   test:
-    name: Test (Node ${{ matrix.node }})
+    name: Test (Node ${{ matrix.node }}, CH ${{ matrix.clickhouse }})
     runs-on: ubuntu-latest
     timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
         node: [20, 22]
+        clickhouse: ["25.8", "26.4"]
     steps:
       - uses: actions/checkout@v4
 
@@ -37,9 +38,13 @@ jobs:
 
       - name: ClickHouse image (cached)
         uses: ./.github/actions/clickhouse-image
+        with:
+          image: clickhouse/clickhouse-server:${{ matrix.clickhouse }}
 
       - name: Unit + Integration Tests
         run: npm test
+        env:
+          CH_VERSION: ${{ matrix.clickhouse }}
 
   dist:
     name: Dist Build
