@@ -17,7 +17,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        node: [20, 22]
+        node: [22, 24]
         clickhouse: ["25.8", "26.4"]
     steps:
       - uses: actions/checkout@v4

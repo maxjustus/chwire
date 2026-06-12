@@ -3,6 +3,9 @@
   "version": "1.0.0",
   "description": "ClickHouse HTTP/TCP client and Native wire format toolkit for TypeScript",
   "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
   "main": "./dist/chwire.js",
   "bin": {
     "chwire": "./dist/cli.js"

@@ -47,6 +47,7 @@ release includes the unreleased changes since `@maxjustus/chttp@1.15.0`.
 
 ### Package
 
+- Declared `engines.node >= 22` (the package uses Node 22 APIs such as `Array.fromAsync`); CI tests Node 22 and 24.
 - Cleaned package contents with an explicit publish allowlist.
 - Added `clean` before `build` so stale `dist` files cannot ship.
 - Restored the main Native vs JSON format benchmark.
