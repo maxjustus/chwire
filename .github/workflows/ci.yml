@@ -65,9 +65,13 @@ jobs:
         run: npm run test:dist
 
   fuzz:
-    name: Fuzz Tests
+    name: Fuzz Tests (CH ${{ matrix.clickhouse }})
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        clickhouse: ["25.8", "26.4"]
     steps:
       - uses: actions/checkout@v4
 
@@ -84,6 +88,10 @@ jobs:
 
       - name: ClickHouse image (cached)
         uses: ./.github/actions/clickhouse-image
+        with:
+          image: clickhouse/clickhouse-server:${{ matrix.clickhouse }}
 
       - name: Fuzz Tests (quick mode, 3K rows)
         run: FUZZ_ITERATIONS=3 FUZZ_ROWS=3000 npm run test:fuzz
+        env:
+          CH_VERSION: ${{ matrix.clickhouse }}
