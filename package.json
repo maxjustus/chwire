@@ -55,6 +55,7 @@
     "build:types": "tsc -p tsconfig.build.json",
     "build:copy-wasm": "cp node_modules/@bokuweb/zstd-wasm/dist/common/zstd.wasm dist/",
     "test": "tsc --noEmit && tsx --test test/native/*.test.ts test/*.test.ts tcp_client/test/*.test.ts",
+    "test:matrix": "node scripts/test-matrix.mjs",
     "test:compression": "tsx --test test/compression.test.ts",
     "test:integration": "tsx --test test/http-integration.test.ts test/native/integration.test.ts test/native/integration_matrix.test.ts",
     "test:native": "tsx --test test/native/*.test.ts",

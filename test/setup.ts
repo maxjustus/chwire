@@ -66,7 +66,13 @@ function createTlsFixtureDir(): string {
   return dir;
 }
 
-export async function startClickHouse(version = "25.8", options: { tls?: boolean } = {}) {
+/** Pinned default; override per-run with CH_VERSION (see `npm run test:matrix`). */
+const DEFAULT_CH_VERSION = "25.8";
+
+export async function startClickHouse(
+  version = process.env.CH_VERSION || DEFAULT_CH_VERSION,
+  options: { tls?: boolean } = {},
+) {
   // Reuse an externally-managed server (set by fuzz/parallel.ts) so parallel
   // fuzz processes share one ClickHouse instead of each starting a container.
   // TLS needs a purpose-built container, so it always starts its own.
