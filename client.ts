@@ -778,6 +778,11 @@ async function* queryImpl(
   const headers: Record<string, string> = {
     Connection: "close",
     "User-Agent": `chwire/${options.clientVersion || "1.0"}`,
+    // The client does its own block compression (compress=1), so HTTP content
+    // coding on top only adds CPU - and it breaks against 26.x: with
+    // compress=1 plus a non-identity Accept-Encoding the server sends empty
+    // error bodies, and gzip framing perturbs mid-stream exception delivery.
+    "Accept-Encoding": "identity",
   };
 
   let response: Response;
