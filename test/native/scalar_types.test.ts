@@ -167,6 +167,24 @@ describe("encodeNative", () => {
     assert.deepStrictEqual(toArrayRows(decoded), rows);
   });
 
+  it("decodes String across the short-ASCII fast-path boundaries", async () => {
+    const columns: ColumnDef[] = [{ name: "text", type: "String" }];
+    // BufferReader.readString hand-decodes ASCII strings of <= 64 bytes and
+    // falls back to TextDecoder past the limit or on the first non-ASCII byte.
+    const rows = [
+      ["a".repeat(63)],
+      ["a".repeat(64)],
+      ["a".repeat(65)],
+      [`${"a".repeat(40)}é${"b".repeat(10)}`], // non-ASCII mid-string within the limit
+      [`${"a".repeat(70)}é`], // non-ASCII past the limit
+      ["\x00\x7f"], // ASCII edge bytes
+    ];
+    const encoded = encodeNativeRows(columns, rows);
+    const decoded = await decodeBatch(encoded);
+
+    assert.deepStrictEqual(toArrayRows(decoded), rows);
+  });
+
   it("coerces arrays/objects to JSON strings for String", async () => {
     const columns: ColumnDef[] = [{ name: "s", type: "String" }];
     const rows = [[{ a: 1 }], [[1, 2, 3]], [new Map([["x", 1]])], [1n], [new Uint8Array([1, 2])]];

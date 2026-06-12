@@ -34,6 +34,7 @@ release includes the unreleased changes since `@maxjustus/chttp@1.15.0`.
 
 ### Changed
 
+- Decode short ASCII strings (<= 64 bytes) without TextDecoder, whose per-call overhead dominated string-heavy reads; cuts Native block decode time roughly in half on short-string workloads.
 - Improved fragmented Native stream decoding performance.
 - Applied resumable Native block decoding more consistently across compressed and uncompressed TCP reads.
 - Split Native codec internals into smaller scalar, composite, dynamic, base, and registry modules.

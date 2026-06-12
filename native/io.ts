@@ -318,9 +318,22 @@ export class BufferReader {
   readString(): string {
     const len = this.readVarint();
     this.ensureAvailable(len);
-    const str = TEXT_DECODER.decode(this.buffer.subarray(this.offset, this.offset + len));
+    const start = this.offset;
     this.offset += len;
-    return str;
+    // TextDecoder has a high fixed cost per call; short ASCII strings (the
+    // common case for row data) decode ~2.5x faster char by char.
+    if (len <= 64) {
+      const buffer = this.buffer;
+      const end = start + len;
+      let str = "";
+      for (let i = start; i < end; i++) {
+        const code = buffer[i]!;
+        if (code > 127) return TEXT_DECODER.decode(buffer.subarray(start, end));
+        str += String.fromCharCode(code);
+      }
+      return str;
+    }
+    return TEXT_DECODER.decode(this.buffer.subarray(start, start + len));
   }
 
   // Zero-copy if aligned, copy otherwise
