@@ -3,13 +3,16 @@ import { before, describe, it } from "node:test";
 
 import {
   concat,
+  cityHash128LE,
   decodeBlock,
   decodeBlocks,
   encodeBlock,
   init,
+  MAX_DECOMPRESSED_BLOCK_SIZE,
   Method,
   readUInt32LE,
   usingNativeLz4,
+  writeUInt32LE,
   usingNativeZstd,
 } from "../compression.ts";
 
@@ -18,7 +21,7 @@ const decoder = new TextDecoder();
 
 describe("Compression", () => {
   before(async () => {
-    await init();
+    await Promise.all(Array.from({ length: 8 }, () => init()));
   });
 
   describe("LZ4 compression", () => {
@@ -192,6 +195,26 @@ describe("Compression", () => {
         const result = await processChunks(chunks);
         assert.strictEqual(result, decoder.decode(data), `Failed for: ${testCase.name}`);
       }
+    });
+  });
+
+  describe("Block size validation", () => {
+    it("rejects decompressed size mismatches", () => {
+      const data = encoder.encode("size-mismatch");
+      const block = encodeBlock(data, false).slice();
+      writeUInt32LE(block, data.length + 1, 21);
+      block.set(cityHash128LE(block.subarray(16)), 0);
+
+      assert.throws(() => decodeBlock(block), /decompressed_size mismatch/);
+    });
+
+    it("rejects decompressed sizes above the cap before allocation", () => {
+      const data = encoder.encode("too-large");
+      const block = encodeBlock(data, false).slice();
+      writeUInt32LE(block, MAX_DECOMPRESSED_BLOCK_SIZE + 1, 21);
+      block.set(cityHash128LE(block.subarray(16)), 0);
+
+      assert.throws(() => decodeBlock(block), /Decompressed block too large/);
     });
   });
 

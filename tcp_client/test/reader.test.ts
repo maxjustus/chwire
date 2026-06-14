@@ -2,6 +2,7 @@ import assert from "node:assert";
 import { once } from "node:events";
 import * as net from "node:net";
 import { after, describe, test } from "node:test";
+import { encodeBlock } from "../../compression.ts";
 import { varIntSize, writeVarInt } from "../../native/io.ts";
 import { StreamingReader } from "../reader.ts";
 
@@ -109,6 +110,20 @@ describe("StreamingReader", () => {
 
     const reader = new StreamingReader(client);
     await assert.rejects(reader.readU64LE(), /Unexpected end of stream/);
+  });
+
+  test("discards a compressed block without decoding it", async () => {
+    const frame = encodeBlock(new Uint8Array([1, 2, 3, 4]), false);
+    const suffix = encodeString("after");
+    const { client, close } = await socketPair((sock) => {
+      sock.write(frame);
+      sock.write(suffix);
+    });
+    cleanups.push(close);
+
+    const reader = new StreamingReader(client);
+    await reader.discardCompressedBlock();
+    assert.strictEqual(await reader.readString(), "after");
   });
 
   test("bulk reads keep the socket flowing (no per-chunk kernel read stops)", async () => {

@@ -32,6 +32,16 @@ describe("TCP Client Reliability", () => {
 
   const withClient = <T>(fn: (client: TcpClient) => Promise<T>) => withClientBase(options, fn);
 
+  test("connect refuses to replace an active socket", async () => {
+    const client = new TcpClient(toClientOptions(options));
+    await client.connect();
+    try {
+      await assert.rejects(() => client.connect(), /Already connected/);
+    } finally {
+      client.close();
+    }
+  });
+
   async function withAbortOnPacket<T>(
     client: TcpClient,
     controller: AbortController,

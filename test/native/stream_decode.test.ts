@@ -26,6 +26,26 @@ async function* chunked(data: Uint8Array, size: number): AsyncIterable<Uint8Arra
 }
 
 describe("streamDecodeNative", () => {
+  test("default buffer does not make tiny numeric blocks pin 2MiB", async () => {
+    const batch = batchFromCols({
+      id: getCodec("UInt32").fromValues(new Uint32Array([1, 2, 3, 4])),
+    });
+    const encoded = encodeNative(batch);
+
+    const decoded: RecordBatch[] = [];
+    for await (const decodedBatch of streamDecodeNative(chunked(encoded, encoded.length))) {
+      decoded.push(decodedBatch);
+    }
+
+    assert.strictEqual(decoded.length, 1);
+    const col = decoded[0]!.getColumnAt(0) as unknown as { data: Uint32Array };
+    assert.ok(col.data instanceof Uint32Array);
+    assert.ok(
+      col.data.buffer.byteLength < 1024 * 1024,
+      `tiny block should not retain a huge backing buffer, got ${col.data.buffer.byteLength}`,
+    );
+  });
+
   test("decodes tiny chunks across multiple blocks while keeping yielded columns stable", async () => {
     const first = batchFromCols({
       id: getCodec("UInt32").fromValues(new Uint32Array([1, 2, 3, 4])),

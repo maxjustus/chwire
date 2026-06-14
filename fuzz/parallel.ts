@@ -19,6 +19,8 @@
  *   FUZZ_TYPE_SOURCE - generated-suite type source: ch | local | mix (default: mix).
  *                      ch = CH generateRandomStructure; local = offline genType;
  *                      mix = per-seed choice of either.
+ *   FUZZ_MEMORY_POLL_MS - child RSS sampling interval (default: 250, 0 disables).
+ *   FUZZ_MEMORY_WARN_MB - print jobs whose peak RSS exceeds this many MiB (default: off).
  *
  * Examples:
  *   tsx fuzz/parallel.ts --all
@@ -26,7 +28,7 @@
  *   tsx fuzz/parallel.ts --tcp --verbose
  */
 
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { startClickHouse, stopClickHouse } from "../test/setup.ts";
 import { config } from "./config.ts";
 
@@ -41,9 +43,36 @@ interface JobResult {
   success: boolean;
   duration: number;
   output: string;
+  peakRssBytes: number | null;
 }
 
 type Suite = "unit" | "http" | "tcp" | "generated";
+
+const memoryPollMs = readPositiveIntEnv("FUZZ_MEMORY_POLL_MS", 250);
+const memoryWarnBytes = readPositiveIntEnv("FUZZ_MEMORY_WARN_MB", 0) * 1024 * 1024;
+
+function readPositiveIntEnv(name: string, fallback: number): number {
+  const value = process.env[name];
+  if (value === undefined) return fallback;
+  const parsed = parseInt(value, 10);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
+}
+
+function readRssBytes(pid: number): number | null {
+  if (process.platform === "win32") return null;
+  const res = spawnSync("ps", ["-o", "rss=", "-p", String(pid)], {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "ignore"],
+  });
+  if (res.status !== 0) return null;
+  const rssKb = parseInt(res.stdout.trim(), 10);
+  return Number.isFinite(rssKb) ? rssKb * 1024 : null;
+}
+
+function formatBytes(bytes: number | null): string {
+  if (bytes === null) return "n/a";
+  return `${(bytes / 1024 / 1024).toFixed(1)}MiB`;
+}
 
 function parseArgs(): {
   suites: Suite[];
@@ -113,11 +142,35 @@ async function runJob(job: Job, verbose: boolean): Promise<JobResult> {
   let output = "";
 
   return new Promise((resolve) => {
+    let peakRssBytes: number | null = null;
+    let memoryTimer: ReturnType<typeof setInterval> | null = null;
+    const sampleMemory = () => {
+      if (proc.pid === undefined) return;
+      const rss = readRssBytes(proc.pid);
+      if (rss !== null && (peakRssBytes === null || rss > peakRssBytes)) peakRssBytes = rss;
+    };
+    const finish = (success: boolean) => {
+      if (memoryTimer) clearInterval(memoryTimer);
+      sampleMemory();
+      resolve({
+        job,
+        success,
+        duration: Date.now() - start,
+        output,
+        peakRssBytes,
+      });
+    };
+
     const proc = spawn("tsx", ["--test", job.file], {
       env: { ...process.env, ...job.env },
       cwd: process.cwd(),
       stdio: ["ignore", "pipe", "pipe"],
     });
+
+    if (memoryPollMs > 0) {
+      sampleMemory();
+      memoryTimer = setInterval(sampleMemory, memoryPollMs);
+    }
 
     proc.stdout?.on("data", (data) => {
       const text = data.toString();
@@ -135,22 +188,12 @@ async function runJob(job: Job, verbose: boolean): Promise<JobResult> {
     });
 
     proc.on("close", (code) => {
-      resolve({
-        job,
-        success: code === 0,
-        duration: Date.now() - start,
-        output,
-      });
+      finish(code === 0);
     });
 
     proc.on("error", (err) => {
       output += `\nProcess error: ${err.message}`;
-      resolve({
-        job,
-        success: false,
-        duration: Date.now() - start,
-        output,
-      });
+      finish(false);
     });
   });
 }
@@ -178,7 +221,9 @@ async function runParallel(
 
     const status = result.success ? "pass" : "FAIL";
     const duration = (result.duration / 1000).toFixed(1);
-    console.log(`[${status}] ${job.name} (${duration}s)`);
+    console.log(
+      `[${status}] ${job.name} (${duration}s, peak RSS ${formatBytes(result.peakRssBytes)})`,
+    );
 
     if (!result.success && !verbose) {
       console.log(`\n--- ${job.name} output ---\n${result.output}\n---\n`);
@@ -208,6 +253,11 @@ async function main() {
   console.log(`  Suites: ${suites.join(", ")}`);
   console.log(`  Iterations: ${config.iterations}`);
   console.log(`  Total jobs: ${jobs.length}`);
+  console.log(
+    `  Memory: ${memoryPollMs > 0 ? `poll ${memoryPollMs}ms` : "disabled"}${
+      memoryWarnBytes > 0 ? `, warn > ${formatBytes(memoryWarnBytes)}` : ""
+    }`,
+  );
   console.log();
 
   // Start one ClickHouse server shared by every worker process (each connects
@@ -230,6 +280,28 @@ async function main() {
     console.log(`Passed: ${passed}/${results.length}`);
     console.log(`Failed: ${failed}`);
     console.log(`Total time: ${totalDuration}s`);
+    const memoryResults = results.filter((r) => r.peakRssBytes !== null);
+    if (memoryResults.length > 0) {
+      const sortedByPeak = [...memoryResults].sort(
+        (a, b) => (b.peakRssBytes ?? 0) - (a.peakRssBytes ?? 0),
+      );
+      console.log(`Peak RSS max: ${formatBytes(sortedByPeak[0]!.peakRssBytes)}`);
+      const warned =
+        memoryWarnBytes > 0
+          ? sortedByPeak.filter((r) => (r.peakRssBytes ?? 0) > memoryWarnBytes)
+          : [];
+      if (warned.length > 0) {
+        console.log(`\nMemory warnings (> ${formatBytes(memoryWarnBytes)}):`);
+        for (const r of warned.slice(0, 10)) {
+          console.log(`  - ${r.job.name}: ${formatBytes(r.peakRssBytes)}`);
+        }
+        if (warned.length > 10) console.log(`  ... ${warned.length - 10} more`);
+      }
+      console.log("\nTop peak RSS jobs:");
+      for (const r of sortedByPeak.slice(0, 10)) {
+        console.log(`  - ${r.job.name}: ${formatBytes(r.peakRssBytes)}`);
+      }
+    }
 
     if (failed > 0) {
       console.log("\nFailed jobs:");

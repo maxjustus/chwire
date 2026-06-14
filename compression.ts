@@ -14,6 +14,9 @@ let zstdDecompressFn: ((source: Uint8Array) => Uint8Array) | undefined;
 
 // Module state - initialized by init()
 let initialized = false;
+let initPromise: Promise<void> | undefined;
+
+export const MAX_DECOMPRESSED_BLOCK_SIZE = 1024 * 1024 * 1024;
 
 /** True if using native lz4-napi, false if using WASM */
 export let usingNativeLz4 = false;
@@ -83,16 +86,26 @@ async function initZstd(): Promise<void> {
 
 export async function init(): Promise<void> {
   if (initialized) return;
+  if (initPromise) return initPromise;
 
-  // Initialize LZ4 (always needed)
-  await initLz4();
+  initPromise = (async () => {
+    // Initialize LZ4 (always needed)
+    await initLz4();
 
-  // Use BUILD_WITH_ZSTD directly for tree-shaking, fallback to true for dev
-  if (typeof BUILD_WITH_ZSTD === "undefined" || BUILD_WITH_ZSTD) {
-    await initZstd();
+    // Use BUILD_WITH_ZSTD directly for tree-shaking, fallback to true for dev
+    if (typeof BUILD_WITH_ZSTD === "undefined" || BUILD_WITH_ZSTD) {
+      await initZstd();
+    }
+
+    initialized = true;
+  })();
+
+  try {
+    await initPromise;
+  } catch (err) {
+    initPromise = undefined;
+    throw err;
   }
-
-  initialized = true;
 }
 
 // Uint8Array helpers
@@ -116,7 +129,7 @@ export function readUInt32LE(arr: Uint8Array, offset: number): number {
   );
 }
 
-function writeUInt32LE(arr: Uint8Array, value: number, offset: number): void {
+export function writeUInt32LE(arr: Uint8Array, value: number, offset: number): void {
   arr[offset] = value & 0xff;
   arr[offset + 1] = (value >> 8) & 0xff;
   arr[offset + 2] = (value >> 16) & 0xff;
@@ -294,21 +307,35 @@ export function decodeBlock(block: Uint8Array): Uint8Array {
       `compressed_size mismatch: expected ${compressedSize}, got ${HEADER_SIZE + compressed.length}`,
     );
   }
+  if (uncompressedSize > MAX_DECOMPRESSED_BLOCK_SIZE) {
+    throw new Error(`Decompressed block too large: ${uncompressedSize} bytes`);
+  }
 
+  let result: Uint8Array;
   switch (mode) {
     case Method.None:
       // Copy: callers may recycle the block's underlying buffer after decode,
       // and the LZ4/ZSTD branches already return fresh buffers.
-      return compressed.slice();
+      result = compressed.slice();
+      break;
     case Method.LZ4:
-      return lz4Decompress(compressed, uncompressedSize);
+      result = lz4Decompress(compressed, uncompressedSize);
+      break;
     case Method.ZSTD:
-      return zstdDecompress(compressed);
+      result = zstdDecompress(compressed);
+      break;
     default: {
       const _: never = mode;
       throw new Error(`Unsupported compression method 0x${(_ as number).toString(16)}`);
     }
   }
+
+  if (result.length !== uncompressedSize) {
+    throw new Error(
+      `decompressed_size mismatch: expected ${uncompressedSize}, got ${result.length}`,
+    );
+  }
+  return result;
 }
 
 export function decodeBlocks(data: Uint8Array): Uint8Array {

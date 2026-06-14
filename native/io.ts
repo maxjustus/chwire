@@ -285,12 +285,20 @@ export class BufferWriter {
     }
   }
 
-  reset() {
+  reset(maxRetainedCapacity = Number.POSITIVE_INFINITY) {
+    if (this.buffer.length > maxRetainedCapacity) {
+      this.buffer = new Uint8Array(BufferSize.DEFAULT_WRITER);
+      this.view = new DataView(this.buffer.buffer);
+    }
     this.offset = 0;
   }
 
   finish(): Uint8Array {
     return this.buffer.subarray(0, this.offset);
+  }
+
+  finishCopy(): Uint8Array {
+    return this.buffer.slice(0, this.offset);
   }
 }
 

@@ -1,5 +1,5 @@
 import type * as net from "node:net";
-import { decodeBlock, readUInt32LE } from "../compression.ts";
+import { decodeBlock, MAX_DECOMPRESSED_BLOCK_SIZE, readUInt32LE } from "../compression.ts";
 import { BufferUnderflowError, Compression, readVarInt64, TEXT_DECODER } from "../native/index.ts";
 import { ClickHouseException } from "./types.ts";
 
@@ -228,23 +228,36 @@ export class StreamingReader {
     return new ClickHouseException(code, name, message, stackTrace, hasNested, nested);
   }
 
-  async readCompressedBlock(): Promise<Uint8Array> {
-    await this.ensure(Compression.FULL_HEADER_SIZE);
+  private readCompressedFrameSize(): number {
     // Frame layout: 16-byte checksum, 1-byte method, u32 size counting the
     // 9-byte header plus the compressed payload, u32 decompressed size.
-    const compressedSizeWithHeader = readUInt32LE(
-      this.buffer,
-      this.offset + Compression.CHECKSUM_SIZE + 1,
-    );
+    const metadataOffset = this.offset + Compression.CHECKSUM_SIZE;
+    const compressedSizeWithHeader = readUInt32LE(this.buffer, metadataOffset + 1);
+    const uncompressedSize = readUInt32LE(this.buffer, metadataOffset + 5);
     const dataSize = compressedSizeWithHeader - Compression.HEADER_SIZE;
     if (dataSize < 0 || dataSize > StreamingReader.MAX_COMPRESSED_BLOCK_SIZE) {
       throw new Error(`Invalid compressed block size: ${compressedSizeWithHeader}`);
     }
-    const frameSize = Compression.CHECKSUM_SIZE + compressedSizeWithHeader;
+    if (uncompressedSize > MAX_DECOMPRESSED_BLOCK_SIZE) {
+      throw new Error(`Decompressed block too large: ${uncompressedSize} bytes`);
+    }
+    return Compression.CHECKSUM_SIZE + compressedSizeWithHeader;
+  }
+
+  async readCompressedBlock(): Promise<Uint8Array> {
+    await this.ensure(Compression.FULL_HEADER_SIZE);
+    const frameSize = this.readCompressedFrameSize();
     await this.ensure(frameSize);
     const frame = this.buffer.subarray(this.offset, this.offset + frameSize);
     const decoded = decodeBlock(frame);
     this.advance(frameSize);
     return decoded;
+  }
+
+  async discardCompressedBlock(): Promise<void> {
+    await this.ensure(Compression.FULL_HEADER_SIZE);
+    const frameSize = this.readCompressedFrameSize();
+    await this.ensure(frameSize);
+    this.advance(frameSize);
   }
 }

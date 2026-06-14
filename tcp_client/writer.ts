@@ -9,6 +9,8 @@ import {
   REVISIONS,
 } from "./types.ts";
 
+const MAX_RETAINED_WRITER_CAPACITY = 256 * 1024;
+
 /**
  * Handles encoding and writing ClickHouse protocol packets.
  * Uses optimized BufferWriter internally.
@@ -45,8 +47,8 @@ export class StreamingWriter {
   }
 
   flush(): Uint8Array {
-    const data = this.writer.finish();
-    this.writer.reset();
+    const data = this.writer.finishCopy();
+    this.writer.reset(MAX_RETAINED_WRITER_CAPACITY);
     return data;
   }
 
@@ -207,10 +209,16 @@ export class StreamingWriter {
       return result;
     }
 
-    this.writeVarInt(ClientPacketId.Data);
-    this.writeString(tableName);
-    this.writer.write(this.encodeDataBlockContent(rowsCount, columns, revision));
-    return this.flush();
+    const headerWriter = new BufferWriter(64);
+    headerWriter.writeVarint(ClientPacketId.Data);
+    headerWriter.writeString(tableName);
+    const headerBytes = headerWriter.finish();
+
+    const payload = this.encodeDataBlockContent(rowsCount, columns, revision);
+    const result = new Uint8Array(headerBytes.length + payload.length);
+    result.set(headerBytes, 0);
+    result.set(payload, headerBytes.length);
+    return result;
   }
 
   private encodeDataBlockContent(

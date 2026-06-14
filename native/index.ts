@@ -280,7 +280,7 @@ export async function* streamDecodeNative(
   chunks: AsyncIterable<Uint8Array>,
   options?: DecodeOptions & { debug?: boolean; minBufferSize?: number },
 ): AsyncGenerator<RecordBatch> {
-  const minBuffer = options?.minBufferSize ?? 2 * 1024 * 1024;
+  const minBuffer = options?.minBufferSize ?? 64 * 1024;
   const blockBuffer = new BlockBuffer(minBuffer);
   let columns: ColumnDef[] = [];
   let totalBytesReceived = 0;

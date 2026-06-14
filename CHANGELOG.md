@@ -34,6 +34,11 @@ release includes the unreleased changes since `@maxjustus/chttp@1.15.0`.
 - Surfaced mid-stream server exceptions consistently across text and binary (Native) HTTP responses.
 - Cancelled the HTTP response reader on early generator exit so the connection returns to the pool instead of being held until GC.
 - Copied `Method.None` decode output so in-place HTTP buffer compaction cannot corrupt uncompressed blocks.
+- Fixed TCP packet buffer ownership so queued writes cannot alias later `StreamingWriter` reuse, and large uncompressed Data packets no longer bloat the reusable writer buffer.
+- Reduced retained memory for small Native/TCP result blocks by lowering stream decode buffer defaults.
+- Hardened TCP lifecycle and draining: repeated `connect()` now refuses to replace an active socket, and compressed query drains can discard Data packets without materializing ignored batches.
+- Hardened Native compression decode with decompressed-size caps and size verification.
+- Fixed stateful `Dynamic(...)` codecs bypassing the Native codec cache, matching `Dynamic`/`JSON` cache behavior.
 
 ### Changed
 

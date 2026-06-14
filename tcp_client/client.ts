@@ -256,6 +256,9 @@ export class TcpClient {
   async connect(options: { signal?: AbortSignal } = {}): Promise<void> {
     const signal = options.signal;
     if (signal?.aborted) throw createAbortError("Connect aborted before start");
+    if (this.socket || this.reader || this._serverHello) {
+      throw new Error("Already connected");
+    }
 
     await initCompression();
     const timeout = this.options.connectTimeout ?? 10000;
@@ -357,7 +360,7 @@ export class TcpClient {
       this.options.user!,
       this.options.password!,
     );
-    this.socket.write(hello);
+    await this.socketWrite(hello);
 
     const packetId = Number(await this.reader.readVarint());
     if (packetId === ServerPacketId.Exception) {
@@ -658,7 +661,7 @@ export class TcpClient {
         useCompression,
         compression,
       );
-      this.socket!.write(delimiter);
+      await this.writeWithBackpressure(delimiter);
       sentDataDelimiter = true;
       throwIfAborted();
 
@@ -771,7 +774,7 @@ export class TcpClient {
       useCompression,
       {},
     );
-    this.socket!.write(queryPacket);
+    await this.writeWithBackpressure(queryPacket);
 
     const delimiter = this.writer.encodeData(
       "",
@@ -781,7 +784,7 @@ export class TcpClient {
       useCompression,
       compression,
     );
-    this.socket!.write(delimiter);
+    await this.writeWithBackpressure(delimiter);
 
     while (true) {
       if (isCancelled()) {
@@ -976,7 +979,7 @@ export class TcpClient {
     afterDecode?: (bytesConsumed: number) => void,
   ): Promise<RecordBatch> {
     const debug = this.options.debug;
-    const buffer = new BlockBuffer();
+    const buffer = new BlockBuffer(64 * 1024);
     const reader = new BufferReader(buffer.view, 0, options);
     let partial: PartialBlockState | undefined;
     let chunksRead = 0;
@@ -1190,7 +1193,7 @@ export class TcpClient {
       this.log(
         `[query] sending query packet (${queryPacket.length} bytes), compression=${useCompression}`,
       );
-      this.socket!.write(queryPacket);
+      await this.writeWithBackpressure(queryPacket);
       throwIfAborted();
 
       // Send external tables if provided
@@ -1211,7 +1214,7 @@ export class TcpClient {
       this.log(
         `[query] sending delimiter (${delimiter.length} bytes, compressed=${useCompression})`,
       );
-      this.socket!.write(delimiter);
+      await this.writeWithBackpressure(delimiter);
       startTimeout();
       throwIfAborted();
 
@@ -1386,6 +1389,53 @@ export class TcpClient {
     }
   }
 
+  /** Drain one packet, discarding large compressed data payloads when framing allows it. */
+  private async drainServerPacket(useCompression: boolean): Promise<boolean> {
+    const id = Number(await this.reader!.readVarint());
+    switch (id) {
+      case ServerPacketId.Data:
+      case ServerPacketId.Totals:
+      case ServerPacketId.Extremes:
+        if (useCompression) {
+          await this.reader!.readString();
+          await this.reader!.discardCompressedBlock();
+        } else {
+          // Raw Native blocks are not length-framed, so preserving connection
+          // reuse still requires parsing the block to find its end.
+          await this.readBlock(false);
+        }
+        return false;
+      case ServerPacketId.ProfileEvents:
+      case ServerPacketId.Log:
+        await this.readBlock(false);
+        return false;
+      case ServerPacketId.Progress:
+        await this.readProgress();
+        return false;
+      case ServerPacketId.ProfileInfo:
+        await this.readProfileInfo();
+        return false;
+      case ServerPacketId.Exception: {
+        const exception = await this.reader!.readException();
+        this.log(`Exception during drain: ${exception.message}`);
+        return true;
+      }
+      case ServerPacketId.TimezoneUpdate:
+        this.sessionTimezone = await this.reader!.readString();
+        return false;
+      case ServerPacketId.TableColumns:
+        await this.reader!.readString();
+        await this.reader!.readString();
+        return false;
+      case ServerPacketId.EndOfStream:
+        return true;
+      case ServerPacketId.Pong:
+        return false;
+      default:
+        throw new Error(`Unknown packet ID during drain: ${id}. Cannot proceed.`);
+    }
+  }
+
   /** Drain remaining packets until EndOfStream or Exception. Used when query is abandoned early. */
   private async drainPackets(useCompression: boolean): Promise<void> {
     const socket = this.socket;
@@ -1397,13 +1447,7 @@ export class TcpClient {
     }, this.options.drainTimeoutMs ?? 5000);
     try {
       while (true) {
-        const packet = await this.readServerPacket(useCompression);
-        if (packet.id === ServerPacketId.EndOfStream) return;
-        if (packet.id === ServerPacketId.Exception) {
-          this.log(`Exception during drain: ${packet.exception.message}`);
-          return;
-        }
-        // All other packets: payload already consumed, keep draining.
+        if (await this.drainServerPacket(useCompression)) return;
       }
     } finally {
       clearTimeout(timer);
