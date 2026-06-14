@@ -66,6 +66,25 @@ describe("TCP handshake revision gating", { timeout: 300000, concurrency: 1 }, (
 
         const versionValue = await queryScalar(client, "SELECT version()");
         assert.ok(typeof versionValue === "string" && (versionValue as string).length > 0);
+
+        // Regression coverage for the settings serialization revision gate:
+        // ClickHouse 23.8 advertises revision 54465 and still supports
+        // string-serialized settings. ZSTD mirroring sends
+        // network_compression_method/network_zstd_compression_level; if the
+        // gate is too high, the server closes the connection mid-query.
+        const zstdClient = new TcpClient({
+          host: ch.host,
+          port: ch.tcpPort,
+          user: ch.username,
+          password: ch.password,
+          compression: { method: "zstd", level: 3 },
+        });
+        try {
+          await zstdClient.connect();
+          assert.strictEqual(await queryScalar(zstdClient, "SELECT count() FROM numbers(10)"), 10n);
+        } finally {
+          zstdClient.close();
+        }
       } finally {
         client.close();
         await stopClickHouse();

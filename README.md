@@ -704,7 +704,7 @@ await insert(query, data, sessionId, {
 });
 ```
 
-Requires Node.js 20+, Bun, Deno, or modern browsers (Chrome 116+, Firefox 124+, Safari 17.4+) for `AbortSignal.any()`.
+For Node.js users, this package requires Node.js 22+. `AbortSignal.any()` is also available in Bun, Deno, and modern browsers (Chrome 116+, Firefox 124+, Safari 17.4+).
 
 ## Error Handling
 
@@ -773,12 +773,16 @@ try {
 
 ## Compression
 
-Set `compression` in options:
+Set `compression` in HTTP or TCP options:
 
-- `"lz4"` - fast, uses native bindings when available with WASM fallback (default)
+- `"lz4"` - fast, uses native bindings when available with WASM fallback
 - `"zstd"` - ~2x better compression, uses native bindings when available with WASM fallback
-- `false` - no compression
+- `false` - no ClickHouse block compression
 - `{ method: "zstd", level }` - ZSTD with an explicit level (1-22, default: 3)
+
+HTTP queries, HTTP inserts, and TCP all default to `"lz4"`. Set TCP `compression: false` to disable bidirectional TCP compression, or use `"zstd"` / `{ method: "zstd", level }` for ZSTD.
+
+For HTTP query-body `Content-Encoding` (separate from ClickHouse block compression), set `compressQuery` to `"zstd"`, `"lz4"`, or `{ method: "zstd", level }`; this requires the server setting `enable_http_compression=1`.
 
 ZSTD and LZ4 use native bindings in Node.js/Bun when available, falling back to WASM in browsers and Deno.
 
@@ -817,12 +821,15 @@ Run `node --experimental-strip-types bench/formats.ts` to reproduce.
 ## Development
 
 ```bash
-npm test       # runs integration tests against ClickHouse via testcontainers
-make test-tcp  # TCP client tests (requires local ClickHouse on port 9000)
-make fuzz-tcp  # TCP fuzz tests (FUZZ_ITERATIONS=10 FUZZ_ROWS=20000)
+npm test                 # type-checks and runs HTTP/Native/TCP tests via Testcontainers
+CH_VERSION=26.4 npm test # run the suite against one ClickHouse version
+npm run test:matrix      # run the default ClickHouse version matrix
+npm run test:tcp         # TCP client tests
+npm run test:fuzz        # generated/native fuzz suite
+npm run bench:tcp        # TCP read-path benchmark/profile
 ```
 
-Requires Node.js 20+, Bun, or Deno.
+Requires Node.js 22+ for development.
 
 ## CLI
 

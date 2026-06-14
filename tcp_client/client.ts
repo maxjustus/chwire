@@ -69,7 +69,7 @@ export interface TcpClientOptions {
   password?: string;
   debug?: boolean;
   /**
-   * Compression: 'lz4', 'zstd', or false to disable.
+   * Compression: 'lz4' (default), 'zstd', or false to disable.
    * Use `{ method: "zstd", level }` to set an explicit ZSTD level (1-22, default: 3).
    */
   compression?: Compression;
@@ -247,7 +247,7 @@ export class TcpClient {
       user: "default",
       password: "",
       debug: false,
-      compression: false,
+      compression: "lz4",
       ...options,
     };
     this.defaultSettings = options.settings ?? {};
@@ -406,8 +406,8 @@ export class TcpClient {
       assertNotChunkedCompatible(serverSend, serverRecv);
     }
 
-    if (effectiveRevision >= REVISIONS.DBMS_MIN_REVISION_WITH_EXOTIC_STUFF) {
-      // Read rules for parameters or similar exotic metadata
+    if (effectiveRevision >= REVISIONS.DBMS_MIN_PROTOCOL_VERSION_WITH_PASSWORD_COMPLEXITY_RULES) {
+      // Password complexity rules are advertised in ServerHello.
       const rulesSize = Number(await this.reader.readVarint());
       for (let i = 0; i < rulesSize; i++) {
         await this.reader.readString();
@@ -415,27 +415,26 @@ export class TcpClient {
       }
     }
 
-    if (effectiveRevision >= REVISIONS.DBMS_MIN_REVISION_WITH_EXTRA_U64) {
-      // Extra metadata field (currently unused in most drivers)
+    if (effectiveRevision >= REVISIONS.DBMS_MIN_REVISION_WITH_INTERSERVER_SECRET_V2) {
+      // Interserver-secret V2 nonce; unused for normal client authentication.
       await this.reader.readU64LE();
     }
 
-    if (effectiveRevision >= REVISIONS.DBMS_MIN_REVISION_WITH_PASSWORD_PARAMS_IN_HELLO) {
-      // Server might send parameters for password verification (e.g. Salt)
+    if (effectiveRevision >= REVISIONS.DBMS_MIN_REVISION_WITH_SERVER_SETTINGS) {
+      // Server settings are encoded as STRINGS_WITH_FLAGS. We don't currently
+      // need them, but must consume them to keep the stream aligned.
       while (true) {
         const name = await this.reader.readString();
         if (name === "") break;
-        await this.reader.readVarint(); // value type
+        await this.reader.readVarint(); // flags
         await this.reader.readString(); // value
       }
     }
 
-    if (effectiveRevision >= REVISIONS.DBMS_MIN_REVISION_WITH_TCP_PROTOCOL_VERSION) {
-      // Server reports its native TCP protocol version
+    if (effectiveRevision >= REVISIONS.DBMS_MIN_REVISION_WITH_QUERY_PLAN_SERIALIZATION) {
       await this.reader.readVarint();
     }
-    if (effectiveRevision >= REVISIONS.DBMS_MIN_REVISION_WITH_PARALLEL_REPLICAS_CUSTOM_KEY) {
-      // Additional parallel replicas metadata
+    if (effectiveRevision >= REVISIONS.DBMS_MIN_REVISION_WITH_VERSIONED_CLUSTER_FUNCTION_PROTOCOL) {
       await this.reader.readVarint();
     }
 
@@ -818,16 +817,16 @@ export class TcpClient {
       totalRowsToRead:
         rev >= REVISIONS.DBMS_MIN_REVISION_WITH_SERVER_LOGS ? await this.reader!.readVarint() : 0n,
     };
-    if (rev >= REVISIONS.DBMS_MIN_REVISION_WITH_TOTAL_BYTES_TO_READ) {
+    if (rev >= REVISIONS.DBMS_MIN_PROTOCOL_VERSION_WITH_TOTAL_BYTES_IN_PROGRESS) {
       progress.totalBytesToRead = await this.reader!.readVarint();
     }
-    // writtenRows/writtenBytes added between DBMS_MIN_REVISION_WITH_SERVER_LOGS and DBMS_MIN_REVISION_WITH_TOTAL_BYTES_TO_READ
+    // writtenRows/writtenBytes added between DBMS_MIN_REVISION_WITH_SERVER_LOGS and DBMS_MIN_PROTOCOL_VERSION_WITH_TOTAL_BYTES_IN_PROGRESS
     // The exact revision is 54420, which isn't in our named constants (falls in the 54401-54441 gap)
     if (rev >= 54420n) {
       progress.writtenRows = await this.reader!.readVarint();
       progress.writtenBytes = await this.reader!.readVarint();
     }
-    if (rev >= REVISIONS.DBMS_MIN_PROTOCOL_VERSION_WITH_ELAPSED_NS_IN_PROGRESS) {
+    if (rev >= REVISIONS.DBMS_MIN_PROTOCOL_VERSION_WITH_SERVER_QUERY_TIME_IN_PROGRESS) {
       progress.elapsedNs = await this.reader!.readVarint();
     }
     return progress;
@@ -957,15 +956,14 @@ export class TcpClient {
   }
 
   /**
-   * The server compresses its blocks per network_compression_method (server
-   * default LZ4) regardless of what codec the client sends, so an explicit
-   * compression choice is mirrored as a query setting to apply to both
-   * directions. Merged at lowest precedence: settings can override it.
+   * The query packet's compression flag enables compressed client/server Data
+   * blocks. ClickHouse's server-side default is LZ4, so LZ4 needs no setting
+   * mirror; only ZSTD has to be requested via network_compression_method.
+   * Merged at lowest precedence: settings can override it.
    */
   private networkCompressionSettings(): ClickHouseSettings {
     const compression = this.options.compression;
-    if (!compression) return {};
-    if (compression === "lz4") return { network_compression_method: "LZ4" };
+    if (!compression || compression === "lz4") return {};
     const settings: ClickHouseSettings = { network_compression_method: "ZSTD" };
     if (typeof compression === "object" && compression.level !== undefined) {
       settings.network_zstd_compression_level = BigInt(compression.level);

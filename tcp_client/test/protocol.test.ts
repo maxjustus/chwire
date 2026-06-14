@@ -73,8 +73,8 @@ describe("TCP Client Protocol Features", () => {
     }
   });
 
-  test("should use LZ4 compression by default when enabled", async () => {
-    const client = new TcpClient({ ...toClientOptions(options), compression: "lz4" });
+  test("should use LZ4 compression by default", async () => {
+    const client = new TcpClient(toClientOptions(options));
     await client.connect();
     try {
       let rows = 0;

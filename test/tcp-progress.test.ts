@@ -1,7 +1,7 @@
 import assert from "node:assert";
 import { after, before, describe, it } from "node:test";
 import { TcpClient } from "../tcp_client/client.ts";
-import type { AccumulatedProgress } from "../tcp_client/types.ts";
+import { type AccumulatedProgress, REVISIONS } from "../tcp_client/types.ts";
 import { startClickHouse, stopClickHouse } from "./setup.ts";
 
 function sameProgress(a: AccumulatedProgress, b: AccumulatedProgress): boolean {
@@ -222,6 +222,52 @@ describe("TCP progress accumulation", { timeout: 60000 }, () => {
       firstProfileEventsSnapshot,
       "Earlier ProfileEvents packet should remain an immutable snapshot",
     );
+  });
+
+  it("yields ProfileEvents packets from insert()", async () => {
+    if (
+      !client.serverHello ||
+      client.serverHello.revision <
+        REVISIONS.DBMS_MIN_PROTOCOL_VERSION_WITH_PROFILE_EVENTS_IN_INSERT
+    ) {
+      return;
+    }
+
+    const tableName = `test_insert_profile_events_${Date.now()}`;
+    await client.query(`CREATE TABLE ${tableName} (id UInt64, name String) ENGINE = Memory`);
+
+    try {
+      async function* rows() {
+        for (let i = 0; i < 10000; i++) yield { id: BigInt(i), name: `row_${i}` };
+      }
+
+      let profileEventsCount = 0;
+      let lastAccumulated: Map<string, bigint> | null = null;
+      let endOfStreamCount = 0;
+
+      for await (const packet of client.insert(`INSERT INTO ${tableName} VALUES`, rows(), {
+        batchSize: 1000,
+        settings: { send_profile_events: true, profile_events_delay_ms: 10n },
+      })) {
+        if (packet.type === "ProfileEvents") {
+          profileEventsCount++;
+          lastAccumulated = packet.accumulated;
+        } else if (packet.type === "EndOfStream") {
+          endOfStreamCount++;
+        }
+      }
+
+      assert.strictEqual(endOfStreamCount, 1, "Expected exactly one EndOfStream packet");
+      assert.ok(profileEventsCount > 0, "Expected ProfileEvents packets during insert");
+      assert.ok(lastAccumulated, "Expected accumulated ProfileEvents");
+      assert.strictEqual(lastAccumulated.get("InsertQuery"), 1n);
+      assert.ok(
+        (lastAccumulated.get("ReadCompressedBytes") ?? 0n) > 0n,
+        "Expected insert ProfileEvents to include read bytes",
+      );
+    } finally {
+      await client.query(`DROP TABLE ${tableName}`);
+    }
   });
 
   it("yields progress packets from insert()", async () => {

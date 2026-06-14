@@ -102,7 +102,7 @@ export class StreamingWriter {
     this.writeString(""); // initial_query_id
     this.writeString("0.0.0.0:0"); // initial_address
 
-    if (revision >= REVISIONS.DBMS_MIN_PROTOCOL_VERSION_WITH_QUERY_START_TIME) {
+    if (revision >= REVISIONS.DBMS_MIN_PROTOCOL_VERSION_WITH_INITIAL_QUERY_START_TIME) {
       this.writeU64LE(BigInt(Date.now()) * 1000n);
     }
 
@@ -135,7 +135,7 @@ export class StreamingWriter {
       this.writeVarInt(0); // query_id (secondary)
       this.writeVarInt(0); // query_line_number
     }
-    if (revision >= REVISIONS.DBMS_MIN_REVISION_WITH_JWT_IN_INTERSERVER) {
+    if (revision >= REVISIONS.DBMS_MIN_REVISON_WITH_JWT_IN_INTERSERVER) {
       this.writeU8(0); // jwt
     }
 
@@ -143,7 +143,7 @@ export class StreamingWriter {
     for (const [key, val] of Object.entries(settings)) {
       this.writeString(key);
       if (revision >= REVISIONS.DBMS_MIN_REVISION_WITH_SETTINGS_SERIALIZED_AS_STRINGS) {
-        this.writeVarInt(0); // Flags: 0 = IMPORTANT
+        this.writeVarInt(0); // Flags: no important/custom bits
       }
       this.writeString(String(val));
     }

@@ -48,9 +48,10 @@ describe("TCP Client Stress Tests", () => {
           setTimeout(() => controller.abort(), 30);
 
           try {
-            for await (const _ of client.query(`SELECT number, 'value' FROM numbers(1000000)`, {
-              signal: controller.signal,
-            })) {
+            for await (const _ of client.query(
+              "SELECT number, 'value' FROM numbers(1000) WHERE sleepEachRow(0.02) = 0 SETTINGS max_block_size = 1",
+              { signal: controller.signal },
+            )) {
             }
             assert.fail("Should have thrown an abort error");
           } catch (err: any) {
