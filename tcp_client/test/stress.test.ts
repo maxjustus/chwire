@@ -13,19 +13,8 @@ import { batchFromCols, batchFromRows, getCodec } from "../../native/index.ts";
 import { ClickHouseException, TcpClient } from "../index.ts";
 
 async function settleHeap(): Promise<void> {
-  if (typeof global.gc !== "function") {
-    // Without --expose-gc, let any already-scheduled cleanup run, but treat memory
-    // assertions as a coarse smoke test rather than a strict leak check.
-    await new Promise<void>((resolve) => setImmediate(resolve));
-    return;
-  }
-
-  // V8 can finish GC-related work after the current JS turn. Run a few GC/yield
-  // cycles before sampling to reduce false positives from delayed collection.
-  for (let i = 0; i < 5; i++) {
-    await new Promise<void>((resolve) => setImmediate(resolve));
-    global.gc();
-  }
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  global.gc?.();
 }
 
 describe("TCP Client Stress Tests", () => {
