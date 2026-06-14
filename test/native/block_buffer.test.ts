@@ -6,6 +6,10 @@ function bytes(...vals: number[]): Uint8Array {
   return new Uint8Array(vals);
 }
 
+function byteValue(n: number): number {
+  return n % 256;
+}
+
 describe("BlockBuffer", () => {
   it("frames blocks across chunk boundaries with consume", () => {
     const buf = new BlockBuffer(4);
@@ -28,11 +32,16 @@ describe("BlockBuffer", () => {
     let expected = 0;
     for (let round = 0; round < 1000; round++) {
       const chunk = new Uint8Array(7);
-      for (let i = 0; i < chunk.length; i++) chunk[i] = next++ & 0xff;
+      for (let i = 0; i < chunk.length; i++) {
+        chunk[i] = byteValue(next);
+        next++;
+      }
       buf.append(chunk);
       while (buf.available >= 5) {
-        for (const b of buf.view.subarray(0, 5)) {
-          assert.strictEqual(b, expected++ & 0xff);
+        for (const actual of buf.view.subarray(0, 5)) {
+          const expectedByte = byteValue(expected);
+          assert.strictEqual(actual, expectedByte);
+          expected++;
         }
         buf.consume(5);
       }
