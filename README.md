@@ -70,29 +70,26 @@ await client.insert("INSERT INTO table", [{ id: 1, name: "alice" }]);
 client.close();
 ```
 
-## Query Parameters
+## HTTP Client
 
-Both HTTP and TCP clients support ClickHouse's native query parameters:
+`query()` returns a `CollectableAsyncGenerator` that yields `Data` packets (raw `Uint8Array` chunks), `Progress` packets, and a final `Summary`. Use `await` to collect all packets into an array, or pipe through helpers like `collectText` and `streamDecodeJsonEachRow` which consume the Data chunks for you.
+
+`insert()` returns `Promise<InsertResult>` — an object with `summary` (containing `written_rows`, `written_bytes`, `elapsed_ns`, etc.) and `queryId`.
+
+### Query Parameters
 
 ```ts
-// HTTP
 const result = await collectText(
   query("SELECT {id: UInt64} as id, {name: String} as name FORMAT JSON", {
     ...connectionConfig,
     params: { id: 42, name: "Alice" },
   }),
 );
-
-// TCP (same syntax)
-for await (const packet of client.query(
-  "SELECT * FROM users WHERE age > {min_age: UInt32}",
-  { ...connectionConfig, params: { min_age: 18 } }
-)) { /* ... */ }
 ```
 
 Parameters are type-safe and prevent SQL injection. The type annotation (e.g., `{name: String}`) tells ClickHouse how to parse the value.
 
-For HTTP client queries, unknown root-level option keys are also forwarded as raw request URL params:
+Unknown root-level option keys are forwarded as raw ClickHouse URL params:
 
 ```ts
 const result = await collectText(query("SELECT 42 as value", {
@@ -106,9 +103,49 @@ The transport keys `url`, `auth`, `compression`, `compressQuery`, `signal`, `tim
 `clientVersion`, `settings`, `params`, `externalTables`, `queryId`, and `sessionId` are reserved
 and are not forwarded as raw URL params.
 
-## Streaming Large Inserts (HTTP)
+### Parsing Query Results
 
-The HTTP `insert` function accepts `Uint8Array`, `Uint8Array[]`, or `AsyncIterable<Uint8Array>`. For TCP streaming inserts, see the TCP Insert API section below. Use `streamEncodeJsonEachRow` for JSON data:
+The `query()` function yields raw `Uint8Array` chunks aligned to compression blocks, not rows. Use helpers to parse:
+
+```ts
+import {
+  query,
+  streamText,
+  streamLines,
+  streamDecodeJsonEachRow,
+  collectJsonEachRow,
+  collectText,
+  collectBytes,
+} from "@maxjustus/chwire";
+
+// JSONEachRow - streaming parsed objects
+for await (const row of streamDecodeJsonEachRow(
+  query("SELECT * FROM t FORMAT JSONEachRow", connectionConfig),
+)) {
+  console.log(row.id, row.name);
+}
+
+const res = await collectJsonEachRow(
+  query("SELECT * FROM t FORMAT JSONEachRow", connectionConfig),
+);
+
+// CSV/TSV - streaming raw lines
+for await (const line of streamLines(
+  query("SELECT * FROM t FORMAT CSV", connectionConfig),
+)) {
+  const [id, name] = line.split(",");
+}
+
+// JSON format - buffer entire response
+const json = await collectText(
+  query("SELECT * FROM t FORMAT JSON", connectionConfig),
+);
+const data = JSON.parse(json);
+```
+
+### Streaming Large Inserts
+
+The HTTP `insert` function accepts `Uint8Array`, `Uint8Array[]`, or `AsyncIterable<Uint8Array>`. Use `streamEncodeJsonEachRow` for JSON data:
 
 ```ts
 // Streaming JSON objects
@@ -150,255 +187,98 @@ await insert(
 );
 ```
 
-## Parsing Query Results
+### External Tables
 
-The `query()` function yields raw `Uint8Array` chunks aligned to compression blocks, not rows. Use helpers to parse:
-
-```ts
-import {
-  query,
-  streamText,
-  streamLines,
-  streamDecodeJsonEachRow,
-  collectJsonEachRow,
-  collectText,
-  collectBytes,
-} from "@maxjustus/chwire";
-
-// JSONEachRow - streaming parsed objects
-for await (const row of streamDecodeJsonEachRow(
-  query("SELECT * FROM t FORMAT JSONEachRow", connectionConfig),
-)) {
-  console.log(row.id, row.name);
-}
-
-const res = await collectJsonEachRow(
-  query("SELECT * FROM t FORMAT JSONEachRow", connectionConfig),
-);
-
-// CSV/TSV - streaming raw lines
-for await (const line of streamLines(
-  query("SELECT * FROM t FORMAT CSV", connectionConfig),
-)) {
-  const [id, name] = line.split(",");
-}
-
-// JSON format - buffer entire response
-const json = await collectText(
-  query("SELECT * FROM t FORMAT JSON", connectionConfig),
-);
-const data = JSON.parse(json);
-```
-
-## Native Format
-
-Native is ClickHouse's columnar binary wire format. It's generally faster and smaller to serialize/deserialize vs JSON (see Performance below). Data arrives as RecordBatch objects. RecordBatch wraps typed column arrays you can iterate by row or access by column. Use it when throughput matters; use JSON when you want plain objects and don't need the speed.
-
-### RecordBatch Construction
+Send temporary in-memory tables with your query. Schema is auto-extracted from RecordBatch:
 
 ```ts
-import {
-  insert,
-  query,
-  encodeNative,
-  streamDecodeNative,
-  rows,
-  collectRows,
-  batchFromRows,
-  batchFromCols,
-  getCodec,
-  DynamicValue,
-} from "@maxjustus/chwire";
+import { batchFromCols, getCodec, query, collectText } from "@maxjustus/chwire";
 
-const schema = [
-  { name: "id", type: "UInt32" },
-  { name: "name", type: "String" },
-];
-
-// From row arrays
-const batch = batchFromRows(schema, [
-  [1, "alice"],
-  [2, "bob"],
-  [3, "charlie"],
-]);
-
-// From pre-built columns (zero-copy for TypedArrays)
-const batch2 = batchFromCols({
+const users = batchFromCols({
   id: getCodec("UInt32").fromValues(new Uint32Array([1, 2, 3])),
-  name: getCodec("String").fromValues(["alice", "bob", "charlie"]),
+  name: getCodec("String").fromValues(["Alice", "Bob", "Charlie"]),
 });
 
-// From generators (streaming row construction)
-function* generateRows() {
-  yield [1, "alice"];
-  yield [2, "bob"];
-  yield [3, "charlie"];
-}
-const batch3 = batchFromRows(schema, generateRows());
-
-// Encode and insert
-await insert(
-  "INSERT INTO t FORMAT Native",
-  encodeNative(batch),
-  connectionConfig,
-);
-
-// Query returns columnar data as RecordBatch - stream rows directly
-for await (const row of rows(
-  streamDecodeNative(query("SELECT * FROM t FORMAT Native", connectionConfig)),
-)) {
-  console.log(row.id, row.name);
-}
-
-// Or collect all rows at once (materialized to plain objects)
-const allRows = await collectRows(
-  streamDecodeNative(query("SELECT * FROM t FORMAT Native", connectionConfig)),
-);
-
-// Work with batches directly for columnar access
-for await (const batch of streamDecodeNative(
-  query("SELECT * FROM t FORMAT Native", connectionConfig),
-)) {
-  const ids = batch.getColumn("id")!;
-  for (let i = 0; i < ids.length; i++) {
-    console.log(ids.get(i));
-  }
-}
+const result = await collectText(query(
+  "SELECT * FROM users WHERE id > 1 FORMAT JSON",
+  { url, auth, externalTables: { users } }
+));
 ```
 
-### Building Columns from Values
-
-Build columns independently with `getCodec().fromValues()`:
+For raw TSV/CSV/JSON data, use the explicit structure form:
 
 ```ts
-const idCol = getCodec("UInt32").fromValues([1, 2, 3]);
-const nameCol = getCodec("String").fromValues(["alice", "bob", "charlie"]);
-
-// Columns carry their type - schema is derived automatically
-const batch = batchFromCols({ id: idCol, name: nameCol });
-// batch.schema = [{ name: "id", type: "UInt32" }, { name: "name", type: "String" }]
-```
-
-For numeric columns, pass TypedArrays (e.g., `Uint32Array`, `Float64Array`) for zero-copy construction.
-
-### Complex Types
-
-```ts
-// Array(Int32)
-batchFromCols({
-  tags: getCodec("Array(Int32)").fromValues([[1, 2], [3, 4, 5], [6]]),
-});
-
-// Tuple(Float64, Float64) - positional
-batchFromCols({
-  point: getCodec("Tuple(Float64, Float64)").fromValues([[1.0, 2.0], [3.0, 4.0]]),
-});
-
-// Tuple(x Float64, y Float64) - named tuples use objects
-batchFromCols({
-  point: getCodec("Tuple(x Float64, y Float64)").fromValues([
-    { x: 1.0, y: 2.0 },
-    { x: 3.0, y: 4.0 },
-  ]),
-});
-
-// Map(String, Int32)
-batchFromCols({
-  meta: getCodec("Map(String, Int32)").fromValues([{ a: 1, b: 2 }, new Map([["c", 3]])]),
-});
-
-// Nullable(String)
-batchFromCols({
-  note: getCodec("Nullable(String)").fromValues(["hello", null, "world"]),
-});
-
-// Variant(String, Int64, Bool) - type inferred from values
-batchFromCols({
-  val: getCodec("Variant(String, Int64, Bool)").fromValues(["hello", 42n, true, null]),
-});
-
-// Variant with explicit discriminators (for ambiguous cases)
-batchFromCols({
-  val: getCodec("Variant(String, Int64, Bool)").fromValues([
-    [0, "hello"], [1, 42n], [2, true], null
-  ]),
-});
-
-// Dynamic - types inferred automatically
-batchFromCols({
-  dyn: getCodec("Dynamic").fromValues(["hello", 42, true, [1, 2, 3], null]),
-});
-
-// Dynamic with an explicit per-value type (skips inference) via DynamicValue
-batchFromCols({
-  dyn: getCodec("Dynamic").fromValues([new DynamicValue("Int8", 5), new DynamicValue("Float64", 3)]),
-});
-
-// JSON - plain objects
-batchFromCols({
-  data: getCodec("JSON").fromValues([{ a: 1, b: "x" }, { a: 2, c: true }]),
-});
-
-// Nested(a UInt32, b String) - encoded as Array(Tuple(a UInt32, b String)).
-// A top-level Nested column only round-trips when the target table was created
-// with flatten_nested=0 (see the note below).
-batchFromCols({
-  n: getCodec("Nested(a UInt32, b String)").fromValues([
-    [{ a: 1, b: "x" }, { a: 2, b: "y" }],
-    [],
-  ]),
-});
-```
-
-### Streaming Insert
-
-```ts
-import { insert, streamEncodeNative, batchFromCols, getCodec } from "@maxjustus/chwire";
-
-async function* generateBatches() {
-  const batchSize = 10000;
-  for (let i = 0; i < 100; i++) {
-    const ids = new Uint32Array(batchSize);
-    const values = new Float64Array(batchSize);
-    for (let j = 0; j < batchSize; j++) {
-      ids[j] = i * batchSize + j;
-      values[j] = Math.random();
+const result = await collectText(query(
+  "SELECT * FROM mydata ORDER BY id FORMAT JSON",
+  {
+    url, auth,
+    externalTables: {
+      mydata: {
+        structure: "id UInt32, name String",
+        format: "TabSeparated",  // or JSONEachRow, CSV, etc.
+        data: "1\tAlice\n2\tBob\n"
+      }
     }
-    yield batchFromCols({
-      id: getCodec("UInt32").fromValues(ids),
-      value: getCodec("Float64").fromValues(values),
-    });
   }
-}
-
-await insert(
-  "INSERT INTO t FORMAT Native",
-  streamEncodeNative(generateBatches()),
-  connectionConfig,
-);
+));
 ```
 
-Supports all ClickHouse types, with the two caveats below.
+### Timeout and Cancellation
 
-**Limitation**: `Dynamic` and `JSON` types require V3 flattened format. On ClickHouse 25.6+, set `output_format_native_use_flattened_dynamic_and_json_serialization=1`.
-
-**Limitation**: A top-level `Nested` column is encoded as a single `Array(Tuple(...))` column. It only round-trips when the target table was created with `flatten_nested=0`. Under the default `flatten_nested=1`, ClickHouse stores the group as separate `<name>.<field>` Array columns; inserting the single Nested column then matches no physical column and the rows are silently stored as empty arrays (no error). `Nested` used inside another type is unaffected.
-
-### BigInt Handling
-
-ClickHouse 64-bit+ integers (Int64, UInt64, Int128, etc.) are returned as JavaScript BigInt. Pass `{ bigIntAsString: true }` to convert to strings for consumer code / JSON serialization:
+Configure with `timeout` (ms) or provide an `AbortSignal` for manual cancellation:
 
 ```ts
-const row = batch.get(0, { bigIntAsString: true });
-const obj = row.toObject({ bigIntAsString: true });
-const allRows = batch.toArray({ bigIntAsString: true });
+// Custom timeout
+await insert(sql, data, { ...connectionConfig, timeout: 60_000 });
+
+// Manual cancellation
+const controller = new AbortController();
+setTimeout(() => controller.abort(), 5000);
+await insert(sql, data, { ...connectionConfig, signal: controller.signal });
+
+// Both (whichever triggers first)
+await insert(sql, data, {
+  ...connectionConfig,
+  signal: controller.signal,
+  timeout: 60_000,
+});
 ```
 
-> **Global alternative**: Add `BigInt.prototype.toJSON = function() { return this.toString(); };` at startup. See [MDN](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/BigInt#use_within_json).
+### Error Handling
+
+The HTTP client throws `ClickHouseException` for server errors:
+
+```ts
+import { ClickHouseException } from "@maxjustus/chwire";
+
+try {
+  for await (const _ of query("SELECT * FROM nonexistent", config)) {}
+} catch (err) {
+  if (err instanceof ClickHouseException) {
+    console.log(err.code);          // 60 (UNKNOWN_TABLE)
+    console.log(err.exceptionName); // "DB::Exception"
+    console.log(err.message);       // "Table ... doesn't exist"
+  }
+}
+```
+
+Insert errors follow the same pattern:
+
+```ts
+try {
+  await insert("INSERT INTO t FORMAT JSONEachRow", data, config);
+} catch (err) {
+  if (err instanceof ClickHouseException) {
+    console.log(err.code);
+    console.log(err.message);
+  }
+}
+```
 
 ## TCP Client
 
-Direct TCP protocol. Single connection per client - use separate clients for concurrent operations.
+Uses ClickHouse's native TCP protocol. TCP Single connection per client; use separate clients for concurrent operations.
+Note that the TCP protocol only sends/recieves data in Native format.
 
 ### Basic Usage
 
@@ -573,6 +453,53 @@ for await (const packet of client.insert("INSERT INTO t", generateRows())) {
 }
 ```
 
+### Query Parameters
+
+```ts
+for await (const packet of client.query(
+  "SELECT * FROM users WHERE age > {min_age: UInt32}",
+  { params: { min_age: 18 } }
+)) { /* ... */ }
+```
+
+Same `{name: Type}` syntax as HTTP. Parameters are type-safe and prevent SQL injection.
+
+### External Tables
+
+Pass RecordBatches directly:
+
+```ts
+import { batchFromCols, getCodec } from "@maxjustus/chwire";
+
+const users = batchFromCols({
+  id: getCodec("UInt32").fromValues(new Uint32Array([1, 2, 3])),
+  name: getCodec("String").fromValues(["Alice", "Bob", "Charlie"]),
+});
+
+for await (const packet of client.query(
+  "SELECT * FROM users WHERE id > 1",
+  { externalTables: { users } }
+)) {
+  if (packet.type === "Data") {
+    for (const row of packet.batch) console.log(row.name);
+  }
+}
+```
+
+Supports streaming via iterables/async iterables of RecordBatch:
+
+```ts
+async function* generateBatches() {
+  for (let i = 0; i < 10; i++) {
+    yield batchFromCols({ id: getCodec("UInt32").fromValues([i]) });
+  }
+}
+
+await client.query("SELECT sum(id) FROM data", {
+  externalTables: { data: generateBatches() }
+});
+```
+
 ### Streaming Between Tables
 
 Use separate connections for concurrent read/write:
@@ -606,140 +533,16 @@ for await (const p of client.query(sql, { signal: controller.signal })) {
 }
 ```
 
-### Auto-Close TCP connection on scope exit
+### Auto-Close on Scope Exit
 
 ```ts
 await using client = await TcpClient.connect(options);
 // automatically closed when scope exits
 ```
 
-## External Tables
+### Error Handling
 
-Send temporary in-memory tables with your query. Schema is auto-extracted from RecordBatch.
-
-### Unified API (RecordBatch)
-
-Pass RecordBatches directly to either client:
-
-```ts
-import { batchFromCols, getCodec, query, collectText } from "@maxjustus/chwire";
-
-const users = batchFromCols({
-  id: getCodec("UInt32").fromValues(new Uint32Array([1, 2, 3])),
-  name: getCodec("String").fromValues(["Alice", "Bob", "Charlie"]),
-});
-
-// TCP
-for await (const packet of client.query(
-  "SELECT * FROM users WHERE id > 1",
-  { externalTables: { users } }
-)) {
-  if (packet.type === "Data") {
-    for (const row of packet.batch) console.log(row.name);
-  }
-}
-
-// HTTP - same API
-const result = await collectText(query(
-  "SELECT * FROM users WHERE id > 1 FORMAT JSON",
-  { url, auth, externalTables: { users } }
-));
-```
-
-Supports streaming via iterables/async iterables of RecordBatch:
-
-```ts
-async function* generateBatches() {
-  for (let i = 0; i < 10; i++) {
-    yield batchFromCols({ id: getCodec("UInt32").fromValues([i]) });
-  }
-}
-
-// Works with both TCP and HTTP
-await client.query("SELECT sum(id) FROM data", {
-  externalTables: { data: generateBatches() }
-});
-```
-
-### HTTP with Raw Data
-
-For raw TSV/CSV/JSON data, use the explicit structure form:
-
-```ts
-const result = await collectText(query(
-  "SELECT * FROM mydata ORDER BY id FORMAT JSON",
-  {
-    url, auth,
-    externalTables: {
-      mydata: {
-        structure: "id UInt32, name String",
-        format: "TabSeparated",  // or JSONEachRow, CSV, etc.
-        data: "1\tAlice\n2\tBob\n"
-      }
-    }
-  }
-));
-```
-
-## Timeout and Cancellation
-
-Configure with `timeout` (ms) or provide an `AbortSignal` for manual cancellation:
-
-```ts
-// Custom timeout
-await insert(sql, data, { ...connectionConfig, timeout: 60_000 });
-
-// Manual cancellation
-const controller = new AbortController();
-setTimeout(() => controller.abort(), 5000);
-await insert(sql, data, { ...connectionConfig, signal: controller.signal });
-
-// Both (whichever triggers first)
-await insert(sql, data, {
-  ...connectionConfig,
-  signal: controller.signal,
-  timeout: 60_000,
-});
-```
-
-For Node.js users, this package requires Node.js 22+. `AbortSignal.any()` is also available in Bun, Deno, and modern browsers (Chrome 116+, Firefox 124+, Safari 17.4+).
-
-## Error Handling
-
-### HTTP Client
-
-The HTTP client throws `ClickHouseException` for server errors:
-
-```ts
-import { ClickHouseException } from "@maxjustus/chwire";
-
-try {
-  for await (const _ of query("SELECT * FROM nonexistent", config)) {}
-} catch (err) {
-  if (err instanceof ClickHouseException) {
-    console.log(err.code);          // 60 (UNKNOWN_TABLE)
-    console.log(err.exceptionName); // "DB::Exception"
-    console.log(err.message);       // "Table ... doesn't exist"
-  }
-}
-```
-
-Insert errors follow the same pattern:
-
-```ts
-try {
-  await insert("INSERT INTO t FORMAT JSONEachRow", data, config);
-} catch (err) {
-  if (err instanceof ClickHouseException) {
-    console.log(err.code);
-    console.log(err.message);
-  }
-}
-```
-
-### TCP Client
-
-The TCP client throws `ClickHouseException` for server errors, which includes structured details:
+The TCP client throws `ClickHouseException` for server errors:
 
 ```ts
 import { TcpClient, ClickHouseException } from "@maxjustus/chwire/tcp";
@@ -768,6 +571,212 @@ try {
   // err.message: "Connection busy - cannot run concurrent operations..."
 }
 ```
+
+## Native Format
+
+Native is ClickHouse's columnar binary wire format. It's generally faster and smaller to serialize/deserialize vs JSON (see Performance below). Data arrives as RecordBatch objects. RecordBatch wraps typed column arrays you can iterate by row or access by column. Use it when throughput matters; use JSON when you want plain objects and don't need the speed.
+
+### RecordBatch Construction
+
+```ts
+import {
+  insert,
+  query,
+  encodeNative,
+  streamDecodeNative,
+  rows,
+  collectRows,
+  batchFromRows,
+  batchFromCols,
+  getCodec,
+  DynamicValue,
+} from "@maxjustus/chwire";
+
+const schema = [
+  { name: "id", type: "UInt32" },
+  { name: "name", type: "String" },
+];
+
+// From row arrays
+const batch = batchFromRows(schema, [
+  [1, "alice"],
+  [2, "bob"],
+  [3, "charlie"],
+]);
+
+// From pre-built columns (zero-copy for TypedArrays)
+const batch2 = batchFromCols({
+  id: getCodec("UInt32").fromValues(new Uint32Array([1, 2, 3])),
+  name: getCodec("String").fromValues(["alice", "bob", "charlie"]),
+});
+
+// From generators (streaming row construction)
+function* generateRows() {
+  yield [1, "alice"];
+  yield [2, "bob"];
+  yield [3, "charlie"];
+}
+const batch3 = batchFromRows(schema, generateRows());
+
+// Encode and insert (HTTP)
+await insert(
+  "INSERT INTO t FORMAT Native",
+  encodeNative(batch),
+  connectionConfig,
+);
+
+// Query returns columnar data as RecordBatch - stream rows directly
+for await (const row of rows(
+  streamDecodeNative(query("SELECT * FROM t FORMAT Native", connectionConfig)),
+)) {
+  console.log(row.id, row.name);
+}
+
+// Or collect all rows at once (materialized to plain objects)
+const allRows = await collectRows(
+  streamDecodeNative(query("SELECT * FROM t FORMAT Native", connectionConfig)),
+);
+
+// Work with batches directly for columnar access
+for await (const batch of streamDecodeNative(
+  query("SELECT * FROM t FORMAT Native", connectionConfig),
+)) {
+  const ids = batch.getColumn("id")!;
+  for (let i = 0; i < ids.length; i++) {
+    console.log(ids.get(i));
+  }
+}
+```
+
+### Building Columns from Values
+
+Build columns independently with `getCodec().fromValues()`:
+
+```ts
+const idCol = getCodec("UInt32").fromValues([1, 2, 3]);
+const nameCol = getCodec("String").fromValues(["alice", "bob", "charlie"]);
+
+// Columns carry their type - schema is derived automatically
+const batch = batchFromCols({ id: idCol, name: nameCol });
+// batch.schema = [{ name: "id", type: "UInt32" }, { name: "name", type: "String" }]
+```
+
+For numeric columns, pass TypedArrays (e.g., `Uint32Array`, `Float64Array`) for zero-copy construction.
+
+### Complex Types
+
+```ts
+// Array(Int32)
+batchFromCols({
+  tags: getCodec("Array(Int32)").fromValues([[1, 2], [3, 4, 5], [6]]),
+});
+
+// Tuple(Float64, Float64) - positional
+batchFromCols({
+  point: getCodec("Tuple(Float64, Float64)").fromValues([[1.0, 2.0], [3.0, 4.0]]),
+});
+
+// Tuple(x Float64, y Float64) - named tuples use objects
+batchFromCols({
+  point: getCodec("Tuple(x Float64, y Float64)").fromValues([
+    { x: 1.0, y: 2.0 },
+    { x: 3.0, y: 4.0 },
+  ]),
+});
+
+// Map(String, Int32)
+batchFromCols({
+  meta: getCodec("Map(String, Int32)").fromValues([{ a: 1, b: 2 }, new Map([["c", 3]])]),
+});
+
+// Nullable(String)
+batchFromCols({
+  note: getCodec("Nullable(String)").fromValues(["hello", null, "world"]),
+});
+
+// Variant(String, Int64, Bool) - type inferred from values
+batchFromCols({
+  val: getCodec("Variant(String, Int64, Bool)").fromValues(["hello", 42n, true, null]),
+});
+
+// Variant with explicit discriminators (for ambiguous cases)
+batchFromCols({
+  val: getCodec("Variant(String, Int64, Bool)").fromValues([
+    [0, "hello"], [1, 42n], [2, true], null
+  ]),
+});
+
+// Dynamic - types inferred automatically
+batchFromCols({
+  dyn: getCodec("Dynamic").fromValues(["hello", 42, true, [1, 2, 3], null]),
+});
+
+// Dynamic with an explicit per-value type (skips inference) via DynamicValue
+batchFromCols({
+  dyn: getCodec("Dynamic").fromValues([new DynamicValue("Int8", 5), new DynamicValue("Float64", 3)]),
+});
+
+// JSON - plain objects
+batchFromCols({
+  data: getCodec("JSON").fromValues([{ a: 1, b: "x" }, { a: 2, c: true }]),
+});
+
+// Nested(a UInt32, b String) - encoded as Array(Tuple(a UInt32, b String)).
+// A top-level Nested column only round-trips when the target table was created
+// with flatten_nested=0 (see the note below).
+batchFromCols({
+  n: getCodec("Nested(a UInt32, b String)").fromValues([
+    [{ a: 1, b: "x" }, { a: 2, b: "y" }],
+    [],
+  ]),
+});
+```
+
+### Streaming Native Insert
+
+```ts
+import { insert, streamEncodeNative, batchFromCols, getCodec } from "@maxjustus/chwire";
+
+async function* generateBatches() {
+  const batchSize = 10000;
+  for (let i = 0; i < 100; i++) {
+    const ids = new Uint32Array(batchSize);
+    const values = new Float64Array(batchSize);
+    for (let j = 0; j < batchSize; j++) {
+      ids[j] = i * batchSize + j;
+      values[j] = Math.random();
+    }
+    yield batchFromCols({
+      id: getCodec("UInt32").fromValues(ids),
+      value: getCodec("Float64").fromValues(values),
+    });
+  }
+}
+
+await insert(
+  "INSERT INTO t FORMAT Native",
+  streamEncodeNative(generateBatches()),
+  connectionConfig,
+);
+```
+
+Supports all ClickHouse types, with the two caveats below.
+
+**Limitation**: `Dynamic` and `JSON` types require V3 flattened format. On ClickHouse 25.6+, set `output_format_native_use_flattened_dynamic_and_json_serialization=1`.
+
+**Limitation**: A top-level `Nested` column is encoded as a single `Array(Tuple(...))` column. It only round-trips when the target table was created with `flatten_nested=0`. Under the default `flatten_nested=1`, ClickHouse stores the group as separate `<name>.<field>` Array columns; inserting the single Nested column then matches no physical column and the rows are silently stored as empty arrays (no error). `Nested` used inside another type is unaffected.
+
+### BigInt Handling
+
+ClickHouse 64-bit+ integers (Int64, UInt64, Int128, etc.) are returned as JavaScript BigInt. Pass `{ bigIntAsString: true }` to convert to strings for consumer code / JSON serialization:
+
+```ts
+const row = batch.get(0, { bigIntAsString: true });
+const obj = row.toObject({ bigIntAsString: true });
+const allRows = batch.toArray({ bigIntAsString: true });
+```
+
+> **Global alternative**: Add `BigInt.prototype.toJSON = function() { return this.toString(); };` at startup. See [MDN](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/BigInt#use_within_json).
 
 ## Compression
 
@@ -814,26 +823,20 @@ Run `make bench-formats` to reproduce.
 
 ## Development
 
-```bash
-npm test                 # type-checks and runs HTTP/Native/TCP tests via Testcontainers
-CH_VERSION=26.4 npm test # run the suite against one ClickHouse version
-npm run test:matrix      # run the default ClickHouse version matrix
-npm run test:tcp         # TCP client tests
-npm run test:fuzz        # generated/native fuzz suite
-npm run bench:tcp        # TCP read-path benchmark/profile
-```
-
-Requires Node.js 22+ for development.
-
-### Updating Generated Settings
-
-When a new ClickHouse version adds or changes server settings, run:
+Requires Node.js 22+.
 
 ```bash
-make update-settings
+make test              # build + run full test matrix across ClickHouse versions
+make test-tcp          # TCP client tests only
+make fuzz              # generated/native fuzz suite
+make format            # run Biome formatter
+make bench-formats     # Native vs JSON encode/compress benchmark
+npm run bench:tcp      # TCP bulk-read throughput + wall-time ratio vs official clickhouse-client
+make bench-profile ARGS="-f native -o encode -d complex"  # CPU profile a specific scenario
+make update-settings   # regenerate ClickHouseSettings types from latest CH source
 ```
 
-This regenerates `settings.generated.ts` from the latest ClickHouse source, keeping the typed `ClickHouseSettings` interface current.
+For a quick single-version test run: `npm test` (or `CH_VERSION=26.4 npm test`).
 
 ## CLI test client
 
