@@ -15,14 +15,14 @@ const encoder = new TextEncoder();
 
 describe("ClickHouse Integration Tests", { timeout: 60000 }, () => {
   let clickhouse: Awaited<ReturnType<typeof startClickHouse>>;
-  let baseUrl: string;
+  let url: string;
   let auth: { username: string; password: string };
   const sessionId = generateSessionId("integration");
 
   before(async () => {
     await init();
     clickhouse = await startClickHouse();
-    baseUrl = `${clickhouse.url}/`;
+    url = `${clickhouse.url}/`;
     auth = { username: clickhouse.username, password: clickhouse.password };
   });
 
@@ -34,11 +34,12 @@ describe("ClickHouse Integration Tests", { timeout: 60000 }, () => {
     it("should create and query a table", async () => {
       // Create table
       await consume(
-        query(
-          "CREATE TABLE IF NOT EXISTS test_basic (id UInt32, name String) ENGINE = Memory",
+        query("CREATE TABLE IF NOT EXISTS test_basic (id UInt32, name String) ENGINE = Memory", {
+          url,
+          auth,
           sessionId,
-          { baseUrl, auth, compression: false },
-        ),
+          compression: false,
+        }),
       );
 
       // Insert data using streamEncodeJsonEachRow helper
@@ -48,18 +49,18 @@ describe("ClickHouse Integration Tests", { timeout: 60000 }, () => {
         { id: 3, name: "Charlie" },
       ];
 
-      await insert(
-        "INSERT INTO test_basic FORMAT JSONEachRow",
-        streamEncodeJsonEachRow(data),
+      await insert("INSERT INTO test_basic FORMAT JSONEachRow", streamEncodeJsonEachRow(data), {
+        url,
+        auth,
         sessionId,
-        { baseUrl, auth },
-      );
+      });
 
       // Query data
       const result = await collectText(
-        query("SELECT * FROM test_basic ORDER BY id FORMAT JSON", sessionId, {
-          baseUrl,
+        query("SELECT * FROM test_basic ORDER BY id FORMAT JSON", {
+          url,
           auth,
+          sessionId,
         }),
       );
 
@@ -70,9 +71,10 @@ describe("ClickHouse Integration Tests", { timeout: 60000 }, () => {
 
       // Clean up
       await consume(
-        query("DROP TABLE test_basic", sessionId, {
-          baseUrl,
+        query("DROP TABLE test_basic", {
+          url,
           auth,
+          sessionId,
           compression: false,
         }),
       );
@@ -83,11 +85,12 @@ describe("ClickHouse Integration Tests", { timeout: 60000 }, () => {
     for (const compression of [false, "lz4", "zstd"] as const) {
       it(`should insert with ${compression} compression`, async () => {
         await consume(
-          query(
-            "CREATE TABLE IF NOT EXISTS test_compression (value String) ENGINE = Memory",
+          query("CREATE TABLE IF NOT EXISTS test_compression (value String) ENGINE = Memory", {
+            url,
+            auth,
             sessionId,
-            { baseUrl, auth, compression },
-          ),
+            compression,
+          }),
         );
 
         const rows = Array.from({ length: 1000 }, (_, i) => ({
@@ -95,16 +98,18 @@ describe("ClickHouse Integration Tests", { timeout: 60000 }, () => {
         }));
         const data = encoder.encode(`${rows.map((r) => JSON.stringify(r)).join("\n")}\n`);
 
-        await insert(`INSERT INTO test_compression FORMAT JSONEachRow`, data, sessionId, {
-          baseUrl,
+        await insert(`INSERT INTO test_compression FORMAT JSONEachRow`, data, {
+          url,
           auth,
+          sessionId,
           compression,
         });
 
         const result = await collectText(
-          query("SELECT count(*) as cnt FROM test_compression FORMAT JSON", sessionId, {
-            baseUrl,
+          query("SELECT count(*) as cnt FROM test_compression FORMAT JSON", {
+            url,
             auth,
+            sessionId,
           }),
         );
 
@@ -112,9 +117,10 @@ describe("ClickHouse Integration Tests", { timeout: 60000 }, () => {
         assert.strictEqual(Number(parsed.data[0].cnt), 1000);
 
         await consume(
-          query("DROP TABLE test_compression", sessionId, {
-            baseUrl,
+          query("DROP TABLE test_compression", {
+            url,
             auth,
+            sessionId,
             compression,
           }),
         );
@@ -128,8 +134,7 @@ describe("ClickHouse Integration Tests", { timeout: 60000 }, () => {
       await consume(
         query(
           "CREATE TABLE IF NOT EXISTS test_generator (id UInt32, value String) ENGINE = Memory",
-          sessionId,
-          { baseUrl, auth, compression: false },
+          { url, auth, sessionId, compression: false },
         ),
       );
 
@@ -149,9 +154,10 @@ describe("ClickHouse Integration Tests", { timeout: 60000 }, () => {
       }
 
       let progressUpdates = 0;
-      await insert("INSERT INTO test_generator FORMAT JSONEachRow", generateBatches(), sessionId, {
-        baseUrl,
+      await insert("INSERT INTO test_generator FORMAT JSONEachRow", generateBatches(), {
+        url,
         auth,
+        sessionId,
         compression: "lz4",
         onProgress: (progress) => {
           progressUpdates++;
@@ -163,9 +169,10 @@ describe("ClickHouse Integration Tests", { timeout: 60000 }, () => {
 
       // Verify count
       const result = await collectText(
-        query("SELECT count(*) as cnt FROM test_generator FORMAT JSON", sessionId, {
-          baseUrl,
+        query("SELECT count(*) as cnt FROM test_generator FORMAT JSON", {
+          url,
           auth,
+          sessionId,
         }),
       );
 
@@ -174,9 +181,10 @@ describe("ClickHouse Integration Tests", { timeout: 60000 }, () => {
 
       // Clean up
       await consume(
-        query("DROP TABLE test_generator", sessionId, {
-          baseUrl,
+        query("DROP TABLE test_generator", {
+          url,
           auth,
+          sessionId,
           compression: false,
         }),
       );
@@ -185,9 +193,10 @@ describe("ClickHouse Integration Tests", { timeout: 60000 }, () => {
     it("should handle generator that yields single rows", async () => {
       // Create table
       await consume(
-        query("CREATE TABLE IF NOT EXISTS test_single (id UInt32) ENGINE = Memory", sessionId, {
-          baseUrl,
+        query("CREATE TABLE IF NOT EXISTS test_single (id UInt32) ENGINE = Memory", {
+          url,
           auth,
+          sessionId,
           compression: false,
         }),
       );
@@ -202,13 +211,12 @@ describe("ClickHouse Integration Tests", { timeout: 60000 }, () => {
       await insert(
         "INSERT INTO test_single FORMAT JSONEachRow",
         streamEncodeJsonEachRow(generateSingle()),
-        sessionId,
-        { baseUrl, auth, compression: { method: "zstd", level: 6 } },
+        { url, auth, sessionId, compression: { method: "zstd", level: 6 } },
       );
 
       // Verify
       const result = await collectText(
-        query("SELECT count(*) as cnt FROM test_single FORMAT JSON", sessionId, { baseUrl, auth }),
+        query("SELECT count(*) as cnt FROM test_single FORMAT JSON", { url, auth, sessionId }),
       );
 
       const parsed = JSON.parse(result);
@@ -216,9 +224,10 @@ describe("ClickHouse Integration Tests", { timeout: 60000 }, () => {
 
       // Clean up
       await consume(
-        query("DROP TABLE test_single", sessionId, {
-          baseUrl,
+        query("DROP TABLE test_single", {
+          url,
           auth,
+          sessionId,
           compression: false,
         }),
       );
@@ -229,30 +238,31 @@ describe("ClickHouse Integration Tests", { timeout: 60000 }, () => {
     it("should stream compressed query results", async () => {
       // Setup: Create table with data
       await consume(
-        query("CREATE TABLE IF NOT EXISTS test_stream (id UInt32) ENGINE = Memory", sessionId, {
-          baseUrl,
+        query("CREATE TABLE IF NOT EXISTS test_stream (id UInt32) ENGINE = Memory", {
+          url,
           auth,
+          sessionId,
           compression: false,
         }),
       );
 
       // Insert test data
       const rows = Array.from({ length: 10000 }, (_, i) => ({ id: i }));
-      await insert(
-        "INSERT INTO test_stream FORMAT JSONEachRow",
-        streamEncodeJsonEachRow(rows),
+      await insert("INSERT INTO test_stream FORMAT JSONEachRow", streamEncodeJsonEachRow(rows), {
+        url,
+        auth,
         sessionId,
-        { baseUrl, auth },
-      );
+      });
 
       // Query with compression
       let chunks = 0;
       let totalRows = 0;
 
       for await (const chunk of streamText(
-        query("SELECT * FROM test_stream FORMAT JSONEachRow", sessionId, {
-          baseUrl,
+        query("SELECT * FROM test_stream FORMAT JSONEachRow", {
+          url,
           auth,
+          sessionId,
         }),
       )) {
         chunks++;
@@ -265,9 +275,10 @@ describe("ClickHouse Integration Tests", { timeout: 60000 }, () => {
 
       // Clean up
       await consume(
-        query("DROP TABLE test_stream", sessionId, {
-          baseUrl,
+        query("DROP TABLE test_stream", {
+          url,
           auth,
+          sessionId,
           compression: false,
         }),
       );
@@ -279,9 +290,10 @@ describe("ClickHouse Integration Tests", { timeout: 60000 }, () => {
       let totalRows = 0;
 
       for await (const chunk of streamText(
-        query("SELECT number FROM system.numbers LIMIT 100000 FORMAT CSV", sessionId, {
-          baseUrl,
+        query("SELECT number FROM system.numbers LIMIT 100000 FORMAT CSV", {
+          url,
           auth,
+          sessionId,
         }),
       )) {
         chunks++;
@@ -299,9 +311,10 @@ describe("ClickHouse Integration Tests", { timeout: 60000 }, () => {
     it("should handle invalid queries", async () => {
       try {
         await consume(
-          query("SELECT * FROM non_existent_table", sessionId, {
-            baseUrl,
+          query("SELECT * FROM non_existent_table", {
+            url,
             auth,
+            sessionId,
             compression: false,
           }),
         );
@@ -317,9 +330,10 @@ describe("ClickHouse Integration Tests", { timeout: 60000 }, () => {
     it("should handle insert errors", async () => {
       // Create table with specific schema
       await consume(
-        query("CREATE TABLE IF NOT EXISTS test_error (id UInt32) ENGINE = Memory", sessionId, {
-          baseUrl,
+        query("CREATE TABLE IF NOT EXISTS test_error (id UInt32) ENGINE = Memory", {
+          url,
           auth,
+          sessionId,
           compression: false,
         }),
       );
@@ -328,9 +342,10 @@ describe("ClickHouse Integration Tests", { timeout: 60000 }, () => {
       const invalidData = encoder.encode(`${JSON.stringify({ id: "not_a_number" })}\n`);
 
       try {
-        await insert("INSERT INTO test_error FORMAT JSONEachRow", invalidData, sessionId, {
-          baseUrl,
+        await insert("INSERT INTO test_error FORMAT JSONEachRow", invalidData, {
+          url,
           auth,
+          sessionId,
         });
         assert.fail("Should have thrown an error");
       } catch (err) {
@@ -342,9 +357,10 @@ describe("ClickHouse Integration Tests", { timeout: 60000 }, () => {
 
       // Clean up
       await consume(
-        query("DROP TABLE test_error", sessionId, {
-          baseUrl,
+        query("DROP TABLE test_error", {
+          url,
           auth,
+          sessionId,
           compression: false,
         }),
       );
@@ -357,8 +373,7 @@ describe("ClickHouse Integration Tests", { timeout: 60000 }, () => {
       await consume(
         query(
           "CREATE TABLE IF NOT EXISTS test_stream_error (id UInt32, value String) ENGINE = Memory",
-          sessionId,
-          { baseUrl, auth, compression: false },
+          { url, auth, sessionId, compression: false },
         ),
       );
 
@@ -371,12 +386,12 @@ describe("ClickHouse Integration Tests", { timeout: 60000 }, () => {
       }
 
       try {
-        await insert(
-          "INSERT INTO test_stream_error FORMAT JSONEachRow",
-          errorGenerator(),
+        await insert("INSERT INTO test_stream_error FORMAT JSONEachRow", errorGenerator(), {
+          url,
+          auth,
           sessionId,
-          { baseUrl, auth, bufferSize: 128 },
-        );
+          bufferSize: 128,
+        });
         assert.fail("Should have thrown an error");
       } catch (err) {
         const error = err as Error;
@@ -386,16 +401,17 @@ describe("ClickHouse Integration Tests", { timeout: 60000 }, () => {
 
       // Clean up
       await consume(
-        query("DROP TABLE test_stream_error", sessionId, { baseUrl, auth, compression: false }),
+        query("DROP TABLE test_stream_error", { url, auth, sessionId, compression: false }),
       );
     });
 
     it("should handle AbortSignal cancellation", async () => {
       // Create table
       await consume(
-        query("CREATE TABLE IF NOT EXISTS test_abort (id UInt32) ENGINE = Memory", sessionId, {
-          baseUrl,
+        query("CREATE TABLE IF NOT EXISTS test_abort (id UInt32) ENGINE = Memory", {
+          url,
           auth,
+          sessionId,
           compression: false,
         }),
       );
@@ -414,9 +430,10 @@ describe("ClickHouse Integration Tests", { timeout: 60000 }, () => {
       }
 
       try {
-        await insert("INSERT INTO test_abort FORMAT JSONEachRow", slowGenerator(), sessionId, {
-          baseUrl,
+        await insert("INSERT INTO test_abort FORMAT JSONEachRow", slowGenerator(), {
+          url,
           auth,
+          sessionId,
           signal: controller.signal,
         });
         assert.fail("Should have aborted");
@@ -431,9 +448,10 @@ describe("ClickHouse Integration Tests", { timeout: 60000 }, () => {
 
       // Clean up
       await consume(
-        query("DROP TABLE test_abort", sessionId, {
-          baseUrl,
+        query("DROP TABLE test_abort", {
+          url,
           auth,
+          sessionId,
           compression: false,
         }),
       );
@@ -442,9 +460,10 @@ describe("ClickHouse Integration Tests", { timeout: 60000 }, () => {
     it("should fire progress callbacks during compression", async () => {
       // Create table
       await consume(
-        query("CREATE TABLE IF NOT EXISTS test_progress (id UInt32) ENGINE = Memory", sessionId, {
-          baseUrl,
+        query("CREATE TABLE IF NOT EXISTS test_progress (id UInt32) ENGINE = Memory", {
+          url,
           auth,
+          sessionId,
           compression: false,
         }),
       );
@@ -461,10 +480,10 @@ describe("ClickHouse Integration Tests", { timeout: 60000 }, () => {
       const insertPromise = insert(
         "INSERT INTO test_progress FORMAT JSONEachRow",
         dataGenerator(),
-        sessionId,
         {
-          baseUrl,
+          url,
           auth,
+          sessionId,
           bufferSize: 1024,
           threshold: 512,
           onProgress: (progress) => {
@@ -485,9 +504,10 @@ describe("ClickHouse Integration Tests", { timeout: 60000 }, () => {
 
       // Clean up
       await consume(
-        query("DROP TABLE test_progress", sessionId, {
-          baseUrl,
+        query("DROP TABLE test_progress", {
+          url,
           auth,
+          sessionId,
           compression: false,
         }),
       );
@@ -507,9 +527,10 @@ describe("ClickHouse Integration Tests", { timeout: 60000 }, () => {
       let lastChunkSize = 0;
 
       // Iterate over packets from query()
-      for await (const packet of query("SELECT * FROM system.numbers LIMIT 1000000", sessionId, {
-        baseUrl,
+      for await (const packet of query("SELECT * FROM system.numbers LIMIT 1000000", {
+        url,
         auth,
+        sessionId,
       })) {
         // Each Data packet contains a decompressed block
         if (packet.type === "Data") {
@@ -528,9 +549,10 @@ describe("ClickHouse Integration Tests", { timeout: 60000 }, () => {
   describe("Query parameters", () => {
     it("should forward raw root-level HTTP params for unmodeled URL options", async () => {
       const result = await collectText(
-        query("SELECT 42 as value", sessionId, {
-          baseUrl,
+        query("SELECT 42 as value", {
+          url,
           auth,
+          sessionId,
           compression: false,
           default_format: "TSV",
         }),
@@ -541,9 +563,10 @@ describe("ClickHouse Integration Tests", { timeout: 60000 }, () => {
 
     it("should let raw root-level HTTP params override settings for the same URL key", async () => {
       const result = await collectText(
-        query("SELECT 7 as value", sessionId, {
-          baseUrl,
+        query("SELECT 7 as value", {
+          url,
           auth,
+          sessionId,
           compression: false,
           settings: { default_format: "JSONEachRow" },
           default_format: "TSV",
@@ -555,9 +578,10 @@ describe("ClickHouse Integration Tests", { timeout: 60000 }, () => {
 
     it("should use query parameters with UInt64", async () => {
       const result = await collectText(
-        query("SELECT {value:UInt64} as v FORMAT JSON", sessionId, {
-          baseUrl,
+        query("SELECT {value:UInt64} as v FORMAT JSON", {
+          url,
           auth,
+          sessionId,
           params: { value: 42 },
         }),
       );
@@ -568,9 +592,10 @@ describe("ClickHouse Integration Tests", { timeout: 60000 }, () => {
 
     it("should use query parameters with String", async () => {
       const result = await collectText(
-        query("SELECT {name:String} as s FORMAT JSON", sessionId, {
-          baseUrl,
+        query("SELECT {name:String} as s FORMAT JSON", {
+          url,
           auth,
+          sessionId,
           params: { name: "hello world" },
         }),
       );
@@ -582,9 +607,10 @@ describe("ClickHouse Integration Tests", { timeout: 60000 }, () => {
     it("should use query parameters with String containing special chars", async () => {
       const testString = "it's 5 o'clock\nnewline\ttab\\backslash";
       const result = await collectText(
-        query("SELECT {s:String} as s FORMAT JSON", sessionId, {
-          baseUrl,
+        query("SELECT {s:String} as s FORMAT JSON", {
+          url,
           auth,
+          sessionId,
           params: { s: testString },
         }),
       );
@@ -595,9 +621,10 @@ describe("ClickHouse Integration Tests", { timeout: 60000 }, () => {
 
     it("should use query parameters with multiple values", async () => {
       const result = await collectText(
-        query("SELECT {a:UInt32} + {b:UInt32} as sum, {msg:String} as msg FORMAT JSON", sessionId, {
-          baseUrl,
+        query("SELECT {a:UInt32} + {b:UInt32} as sum, {msg:String} as msg FORMAT JSON", {
+          url,
           auth,
+          sessionId,
           params: { a: 10, b: 32, msg: "test" },
         }),
       );
@@ -610,9 +637,10 @@ describe("ClickHouse Integration Tests", { timeout: 60000 }, () => {
     it("should use query parameters with BigInt", async () => {
       // Use JSONStringsEachRow to preserve precision for large integers
       const result = await collectText(
-        query("SELECT {big:UInt64} as v FORMAT JSONStringsEachRow", sessionId, {
-          baseUrl,
+        query("SELECT {big:UInt64} as v FORMAT JSONStringsEachRow", {
+          url,
           auth,
+          sessionId,
           params: { big: 9007199254740993n },
         }),
       );
@@ -623,9 +651,10 @@ describe("ClickHouse Integration Tests", { timeout: 60000 }, () => {
 
     it("should use query parameters with Array", async () => {
       const result = await collectText(
-        query("SELECT arraySum({ids: Array(UInt64)}) as sum FORMAT JSON", sessionId, {
-          baseUrl,
+        query("SELECT arraySum({ids: Array(UInt64)}) as sum FORMAT JSON", {
+          url,
           auth,
+          sessionId,
           params: { ids: [1, 2, 3, 4, 5] },
         }),
       );
@@ -638,10 +667,10 @@ describe("ClickHouse Integration Tests", { timeout: 60000 }, () => {
       const result = await collectText(
         query(
           "SELECT tupleElement({point: Tuple(Int32, Int32)}, 1) as x, tupleElement({point: Tuple(Int32, Int32)}, 2) as y FORMAT JSON",
-          sessionId,
           {
-            baseUrl,
+            url,
             auth,
+            sessionId,
             params: { point: [10, 20] },
           },
         ),
@@ -656,10 +685,10 @@ describe("ClickHouse Integration Tests", { timeout: 60000 }, () => {
       const result = await collectText(
         query(
           "SELECT {m: Map(String, UInt32)}['a'] as a, {m: Map(String, UInt32)}['b'] as b FORMAT JSON",
-          sessionId,
           {
-            baseUrl,
+            url,
             auth,
+            sessionId,
             params: { m: { a: 1, b: 2 } },
           },
         ),
@@ -674,10 +703,10 @@ describe("ClickHouse Integration Tests", { timeout: 60000 }, () => {
       const result = await collectText(
         query(
           "SELECT arrayMap(t -> tupleElement(t, 1) + tupleElement(t, 2), {points: Array(Tuple(Int32, Int32))}) as sums FORMAT JSON",
-          sessionId,
           {
-            baseUrl,
+            url,
             auth,
+            sessionId,
             params: {
               points: [
                 [1, 2],
@@ -696,9 +725,10 @@ describe("ClickHouse Integration Tests", { timeout: 60000 }, () => {
     it("should use query parameters with DateTime64", async () => {
       const testDate = new Date("2024-06-15T10:30:45.123Z");
       const result = await collectText(
-        query("SELECT toUnixTimestamp64Milli({ts: DateTime64(3)}) as ms FORMAT JSON", sessionId, {
-          baseUrl,
+        query("SELECT toUnixTimestamp64Milli({ts: DateTime64(3)}) as ms FORMAT JSON", {
+          url,
           auth,
+          sessionId,
           params: { ts: testDate },
         }),
       );
@@ -709,9 +739,10 @@ describe("ClickHouse Integration Tests", { timeout: 60000 }, () => {
 
     it("should use the same param multiple times", async () => {
       const result = await collectText(
-        query("SELECT {id: UInt64} as a, {id: UInt64} + 1 as b FORMAT JSON", sessionId, {
-          baseUrl,
+        query("SELECT {id: UInt64} as a, {id: UInt64} + 1 as b FORMAT JSON", {
+          url,
           auth,
+          sessionId,
           params: { id: 42 },
         }),
       );
@@ -723,9 +754,10 @@ describe("ClickHouse Integration Tests", { timeout: 60000 }, () => {
 
     it("should use query parameters with Enum", async () => {
       const result = await collectText(
-        query("SELECT {status: Enum8('active' = 1, 'inactive' = 2)} as s FORMAT JSON", sessionId, {
-          baseUrl,
+        query("SELECT {status: Enum8('active' = 1, 'inactive' = 2)} as s FORMAT JSON", {
+          url,
           auth,
+          sessionId,
           params: { status: "active" },
         }),
       );
@@ -737,9 +769,10 @@ describe("ClickHouse Integration Tests", { timeout: 60000 }, () => {
     it("should use query parameters with UUID", async () => {
       const testUUID = "550e8400-e29b-41d4-a716-446655440000";
       const result = await collectText(
-        query("SELECT {id: UUID} as u FORMAT JSON", sessionId, {
-          baseUrl,
+        query("SELECT {id: UUID} as u FORMAT JSON", {
+          url,
           auth,
+          sessionId,
           params: { id: testUUID },
         }),
       );
@@ -750,9 +783,10 @@ describe("ClickHouse Integration Tests", { timeout: 60000 }, () => {
 
     it("should use query parameters with IPv4", async () => {
       const result = await collectText(
-        query("SELECT {ip: IPv4} as ip FORMAT JSON", sessionId, {
-          baseUrl,
+        query("SELECT {ip: IPv4} as ip FORMAT JSON", {
+          url,
           auth,
+          sessionId,
           params: { ip: "192.168.1.1" },
         }),
       );
@@ -763,9 +797,10 @@ describe("ClickHouse Integration Tests", { timeout: 60000 }, () => {
 
     it("should use query parameters with IPv6", async () => {
       const result = await collectText(
-        query("SELECT {ip: IPv6} as ip FORMAT JSON", sessionId, {
-          baseUrl,
+        query("SELECT {ip: IPv6} as ip FORMAT JSON", {
+          url,
           auth,
+          sessionId,
           params: { ip: "2001:db8::1" },
         }),
       );
@@ -776,9 +811,10 @@ describe("ClickHouse Integration Tests", { timeout: 60000 }, () => {
 
     it("should use query parameters with Date", async () => {
       const result = await collectText(
-        query("SELECT {d: Date} as d FORMAT JSON", sessionId, {
-          baseUrl,
+        query("SELECT {d: Date} as d FORMAT JSON", {
+          url,
           auth,
+          sessionId,
           params: { d: new Date("2024-06-15") },
         }),
       );
@@ -789,9 +825,10 @@ describe("ClickHouse Integration Tests", { timeout: 60000 }, () => {
 
     it("should use query parameters with Decimal", async () => {
       const result = await collectText(
-        query("SELECT {d: Decimal(10, 2)} as d FORMAT JSON", sessionId, {
-          baseUrl,
+        query("SELECT {d: Decimal(10, 2)} as d FORMAT JSON", {
+          url,
           auth,
+          sessionId,
           params: { d: "123.45" },
         }),
       );
@@ -802,9 +839,10 @@ describe("ClickHouse Integration Tests", { timeout: 60000 }, () => {
 
     it("should use query parameters with Nullable(String) null value", async () => {
       const result = await collectText(
-        query("SELECT {s: Nullable(String)} as s FORMAT JSON", sessionId, {
-          baseUrl,
+        query("SELECT {s: Nullable(String)} as s FORMAT JSON", {
+          url,
           auth,
+          sessionId,
           params: { s: null },
         }),
       );
@@ -815,9 +853,10 @@ describe("ClickHouse Integration Tests", { timeout: 60000 }, () => {
 
     it("should preserve string 'NULL' distinct from SQL NULL", async () => {
       const result = await collectText(
-        query("SELECT {s: String} as s FORMAT JSON", sessionId, {
-          baseUrl,
+        query("SELECT {s: String} as s FORMAT JSON", {
+          url,
           auth,
+          sessionId,
           params: { s: "NULL" },
         }),
       );
@@ -829,9 +868,10 @@ describe("ClickHouse Integration Tests", { timeout: 60000 }, () => {
     it("should handle Array(Nullable(String)) with null elements", async () => {
       const arr = ["foo", null, "bar"];
       const result = await collectText(
-        query("SELECT {arr: Array(Nullable(String))} as arr FORMAT JSON", sessionId, {
-          baseUrl,
+        query("SELECT {arr: Array(Nullable(String))} as arr FORMAT JSON", {
+          url,
           auth,
+          sessionId,
           params: { arr },
         }),
       );
@@ -841,9 +881,10 @@ describe("ClickHouse Integration Tests", { timeout: 60000 }, () => {
 
     it("should handle Map with Nullable values containing null", async () => {
       const result = await collectText(
-        query("SELECT {m: Map(String, Nullable(Int32))}['b'] as v FORMAT JSON", sessionId, {
-          baseUrl,
+        query("SELECT {m: Map(String, Nullable(Int32))}['b'] as v FORMAT JSON", {
+          url,
           auth,
+          sessionId,
           params: { m: { a: 1, b: null, c: 3 } },
         }),
       );
@@ -853,15 +894,12 @@ describe("ClickHouse Integration Tests", { timeout: 60000 }, () => {
 
     it("should handle Tuple with Nullable element containing null", async () => {
       const result = await collectText(
-        query(
-          "SELECT tupleElement({t: Tuple(Nullable(String), Int32)}, 1) as v FORMAT JSON",
+        query("SELECT tupleElement({t: Tuple(Nullable(String), Int32)}, 1) as v FORMAT JSON", {
+          url,
+          auth,
           sessionId,
-          {
-            baseUrl,
-            auth,
-            params: { t: [null, 42] },
-          },
-        ),
+          params: { t: [null, 42] },
+        }),
       );
       const parsed = JSON.parse(result);
       assert.strictEqual(parsed.data[0].v, null);
@@ -877,9 +915,10 @@ describe("ClickHouse Integration Tests", { timeout: 60000 }, () => {
         // Use a unique session per iteration to avoid ClickHouse session locking
         // (the server keeps a session locked until the query finishes on its side).
         const iterSession = generateSessionId(`abandon_${i}`);
-        const gen = query(`SELECT number FROM numbers(100000)`, iterSession, {
-          baseUrl,
+        const gen = query(`SELECT number FROM numbers(100000)`, {
+          url,
           auth,
+          sessionId: iterSession,
           compression: false,
         });
         // Pull one packet then abandon the rest.
@@ -889,9 +928,10 @@ describe("ClickHouse Integration Tests", { timeout: 60000 }, () => {
 
       // If connections leaked, this would hang until the test timeout.
       const result = await collectText(
-        query("SELECT 42 FORMAT JSONEachRow", generateSessionId("abandon_final"), {
-          baseUrl,
+        query("SELECT 42 FORMAT JSONEachRow", {
+          url,
           auth,
+          sessionId: generateSessionId("abandon_final"),
           compression: false,
         }),
       );
@@ -901,9 +941,10 @@ describe("ClickHouse Integration Tests", { timeout: 60000 }, () => {
     it("should handle DateTime with timezone param", async () => {
       const testDate = new Date("2024-06-15T10:30:45Z");
       const result = await collectText(
-        query("SELECT toUnixTimestamp({ts: DateTime('UTC')}) as ts FORMAT JSON", sessionId, {
-          baseUrl,
+        query("SELECT toUnixTimestamp({ts: DateTime('UTC')}) as ts FORMAT JSON", {
+          url,
           auth,
+          sessionId,
           params: { ts: testDate },
         }),
       );

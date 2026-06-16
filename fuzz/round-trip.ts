@@ -1,6 +1,4 @@
 /**
- * Shared round-trip oracle for client-generated columns.
- *
  * Both the random fuzz (fuzz/generated.ts) and the curated corpus
  * (test/type-corpus.test.ts) validate a column the same way: declare it, send
  * client-encoded rows, read them back through ClickHouse's own re-serialization,
@@ -37,7 +35,7 @@ export const COMPLEX_TYPE_SETTINGS = {
 };
 
 export interface Conn {
-  baseUrl: string;
+  url: string;
   auth: { username: string; password: string };
 }
 
@@ -79,13 +77,14 @@ export async function roundTripCells(opts: {
   replayHint?: string;
 }): Promise<void> {
   const { declaredType, codec, cells, compression, conn, table } = opts;
-  const { baseUrl, auth } = conn;
+  const { url, auth } = conn;
 
   if (!opts.preCreated) {
     await consume(
-      query(`CREATE TABLE ${table} (v ${declaredType}) ENGINE = Memory`, opts.sessionId, {
-        baseUrl,
+      query(`CREATE TABLE ${table} (v ${declaredType}) ENGINE = Memory`, {
+        url,
         auth,
+        sessionId: opts.sessionId,
         compression: false,
         settings: COMPLEX_TYPE_SETTINGS,
       }),
@@ -96,15 +95,17 @@ export async function roundTripCells(opts: {
   const rows: unknown[][] = cells.map((c) => [c]);
   const encoded = encodeNative(batchFromRows(schema, rows));
 
-  await insert(`INSERT INTO ${table} FORMAT Native`, encoded, opts.insertSessionId, {
-    baseUrl,
+  await insert(`INSERT INTO ${table} FORMAT Native`, encoded, {
+    url,
     auth,
+    sessionId: opts.insertSessionId,
     settings: COMPLEX_TYPE_SETTINGS,
   });
 
-  const queryResult = query(`SELECT v FROM ${table} FORMAT Native`, opts.sessionId, {
-    baseUrl,
+  const queryResult = query(`SELECT v FROM ${table} FORMAT Native`, {
+    url,
     auth,
+    sessionId: opts.sessionId,
     compression,
     settings: COMPLEX_TYPE_SETTINGS,
   });

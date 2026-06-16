@@ -10,14 +10,14 @@ import { startClickHouse, stopClickHouse } from "./setup.ts";
 import { generateSessionId } from "./test_utils.ts";
 
 describe("HTTP external tables", { timeout: 120000 }, () => {
-  let baseUrl: string;
+  let url: string;
   let auth: { username: string; password: string };
   const sessionId = generateSessionId("http-ext");
 
   before(async () => {
     await init();
     const ch = await startClickHouse();
-    baseUrl = `${ch.url}/`;
+    url = `${ch.url}/`;
     auth = { username: ch.username, password: ch.password };
   });
 
@@ -27,9 +27,10 @@ describe("HTTP external tables", { timeout: 120000 }, () => {
 
   it("queries a single external table with TSV data", async () => {
     const result = await collectText(
-      query("SELECT * FROM mydata ORDER BY id FORMAT JSONEachRow", sessionId, {
-        baseUrl,
+      query("SELECT * FROM mydata ORDER BY id FORMAT JSONEachRow", {
+        url,
         auth,
+        sessionId,
         externalTables: {
           mydata: {
             structure: "id UInt32, name String",
@@ -52,9 +53,10 @@ describe("HTTP external tables", { timeout: 120000 }, () => {
 
   it("queries with JSONEachRow format", async () => {
     const result = await collectText(
-      query("SELECT sum(value) as total FROM numbers FORMAT JSONEachRow", sessionId, {
-        baseUrl,
+      query("SELECT sum(value) as total FROM numbers FORMAT JSONEachRow", {
+        url,
         auth,
+        sessionId,
         externalTables: {
           numbers: {
             structure: "value Int64",
@@ -78,10 +80,10 @@ describe("HTTP external tables", { timeout: 120000 }, () => {
        GROUP BY u.name
        ORDER BY u.name
        FORMAT JSONEachRow`,
-        sessionId,
         {
-          baseUrl,
+          url,
           auth,
+          sessionId,
           externalTables: {
             users: {
               structure: "id UInt32, name String",
@@ -112,9 +114,10 @@ describe("HTTP external tables", { timeout: 120000 }, () => {
     const data = encoder.encode("1\ttest1\n2\ttest2\n3\ttest3\n");
 
     const result = await collectText(
-      query("SELECT count() as cnt FROM binary_data FORMAT JSONEachRow", sessionId, {
-        baseUrl,
+      query("SELECT count() as cnt FROM binary_data FORMAT JSONEachRow", {
+        url,
         auth,
+        sessionId,
         externalTables: {
           binary_data: {
             structure: "id UInt32, value String",
@@ -140,9 +143,10 @@ describe("HTTP external tables", { timeout: 120000 }, () => {
     }
 
     const result = await collectText(
-      query("SELECT sum(id) as total FROM async_data FORMAT JSONEachRow", sessionId, {
-        baseUrl,
+      query("SELECT sum(id) as total FROM async_data FORMAT JSONEachRow", {
+        url,
         auth,
+        sessionId,
         externalTables: {
           async_data: {
             structure: "id UInt32, value String",
@@ -158,20 +162,17 @@ describe("HTTP external tables", { timeout: 120000 }, () => {
 
   it("filters external table data in query", async () => {
     const result = await collectText(
-      query(
-        "SELECT id FROM filter_test WHERE active = 1 ORDER BY id FORMAT JSONEachRow",
+      query("SELECT id FROM filter_test WHERE active = 1 ORDER BY id FORMAT JSONEachRow", {
+        url,
+        auth,
         sessionId,
-        {
-          baseUrl,
-          auth,
-          externalTables: {
-            filter_test: {
-              structure: "id UInt32, active UInt8",
-              data: "1\t1\n2\t0\n3\t1\n4\t0\n5\t1\n",
-            },
+        externalTables: {
+          filter_test: {
+            structure: "id UInt32, active UInt8",
+            data: "1\t1\n2\t0\n3\t1\n4\t0\n5\t1\n",
           },
         },
-      ),
+      }),
     );
 
     const rows = result
@@ -186,9 +187,10 @@ describe("HTTP external tables", { timeout: 120000 }, () => {
 
   it("handles empty external table", async () => {
     const result = await collectText(
-      query("SELECT count() as cnt FROM empty_table FORMAT JSONEachRow", sessionId, {
-        baseUrl,
+      query("SELECT count() as cnt FROM empty_table FORMAT JSONEachRow", {
+        url,
         auth,
+        sessionId,
         externalTables: {
           empty_table: {
             structure: "id UInt32",
@@ -204,9 +206,10 @@ describe("HTTP external tables", { timeout: 120000 }, () => {
 
   it("uses external table in subquery", async () => {
     const result = await collectText(
-      query("SELECT (SELECT max(val) FROM vals) as max_val FORMAT JSONEachRow", sessionId, {
-        baseUrl,
+      query("SELECT (SELECT max(val) FROM vals) as max_val FORMAT JSONEachRow", {
+        url,
         auth,
+        sessionId,
         externalTables: {
           vals: {
             structure: "val UInt32",
@@ -222,9 +225,10 @@ describe("HTTP external tables", { timeout: 120000 }, () => {
 
   it("queries with CSV format", async () => {
     const result = await collectText(
-      query("SELECT * FROM csv_data ORDER BY id FORMAT JSONEachRow", sessionId, {
-        baseUrl,
+      query("SELECT * FROM csv_data ORDER BY id FORMAT JSONEachRow", {
+        url,
         auth,
+        sessionId,
         externalTables: {
           csv_data: {
             structure: "id UInt32, name String",
@@ -253,9 +257,10 @@ describe("HTTP external tables", { timeout: 120000 }, () => {
     });
 
     const result = await collectText(
-      query("SELECT * FROM mydata ORDER BY id FORMAT JSONEachRow", sessionId, {
-        baseUrl,
+      query("SELECT * FROM mydata ORDER BY id FORMAT JSONEachRow", {
+        url,
         auth,
+        sessionId,
         externalTables: { mydata: batch },
       }),
     );
@@ -278,9 +283,10 @@ describe("HTTP external tables", { timeout: 120000 }, () => {
     ];
 
     const result = await collectText(
-      query("SELECT sum(val) as total FROM vals FORMAT JSONEachRow", sessionId, {
-        baseUrl,
+      query("SELECT sum(val) as total FROM vals FORMAT JSONEachRow", {
+        url,
         auth,
+        sessionId,
         externalTables: { vals: batches },
       }),
     );
@@ -297,9 +303,10 @@ describe("HTTP external tables", { timeout: 120000 }, () => {
     }
 
     const result = await collectText(
-      query("SELECT sum(n) as total FROM nums FORMAT JSONEachRow", sessionId, {
-        baseUrl,
+      query("SELECT sum(n) as total FROM nums FORMAT JSONEachRow", {
+        url,
         auth,
+        sessionId,
         externalTables: { nums: generateBatches() },
       }),
     );

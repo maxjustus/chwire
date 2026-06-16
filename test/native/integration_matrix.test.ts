@@ -11,14 +11,14 @@ import { startClickHouse, stopClickHouse } from "../setup.ts";
 import { consume, decodeBatch, encodeNativeRows, toArrayRows } from "../test_utils.ts";
 
 describe("Native integration type matrix", { timeout: 120000 }, () => {
-  let baseUrl: string;
+  let url: string;
   let auth: { username: string; password: string };
   const sessionId = `native_matrix_${Date.now()}`;
 
   before(async () => {
     await init();
     const ch = await startClickHouse();
-    baseUrl = `${ch.url}/`;
+    url = `${ch.url}/`;
     auth = { username: ch.username, password: ch.password };
   });
 
@@ -28,7 +28,7 @@ describe("Native integration type matrix", { timeout: 120000 }, () => {
 
   it("round-trips a deterministic matrix of server-sensitive types", async () => {
     const table = "test_native_matrix";
-    await consume(query(`DROP TABLE IF EXISTS ${table}`, sessionId, { baseUrl, auth }));
+    await consume(query(`DROP TABLE IF EXISTS ${table}`, { url, auth, sessionId }));
     await consume(
       query(
         `
@@ -46,8 +46,7 @@ describe("Native integration type matrix", { timeout: 120000 }, () => {
         p Point
       ) ENGINE = Memory
     `,
-        sessionId,
-        { baseUrl, auth },
+        { url, auth, sessionId },
       ),
     );
 
@@ -96,10 +95,10 @@ describe("Native integration type matrix", { timeout: 120000 }, () => {
       ];
 
       const encoded = encodeNativeRows(columns, rows);
-      await insert(`INSERT INTO ${table} FORMAT Native`, encoded, sessionId, { baseUrl, auth });
+      await insert(`INSERT INTO ${table} FORMAT Native`, encoded, { url, auth, sessionId });
 
       const data = await collectBytes(
-        query(`SELECT * FROM ${table} ORDER BY id FORMAT Native`, sessionId, { baseUrl, auth }),
+        query(`SELECT * FROM ${table} ORDER BY id FORMAT Native`, { url, auth, sessionId }),
       );
       const decoded = await decodeBatch(data);
       const decodedRows = toArrayRows(decoded);
@@ -143,7 +142,7 @@ describe("Native integration type matrix", { timeout: 120000 }, () => {
       assert.deepStrictEqual(decodedRows[0]![10], [1.5, 2.5]);
       assert.deepStrictEqual(decodedRows[1]![10], [0.0, 0.0]);
     } finally {
-      await consume(query(`DROP TABLE ${table}`, sessionId, { baseUrl, auth }));
+      await consume(query(`DROP TABLE ${table}`, { url, auth, sessionId }));
     }
   });
 });

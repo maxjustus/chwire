@@ -36,7 +36,7 @@ async function collectNativeRows(data: Uint8Array): Promise<unknown[][]> {
 }
 
 describe("JSONEachRow parity (row-object insert)", { timeout: 120000 }, () => {
-  let baseUrl: string;
+  let url: string;
   let auth: { username: string; password: string };
   let tcp: { host: string; port: number; user: string; password: string };
   const sessionId = `json_each_row_parity_${Date.now()}`;
@@ -44,7 +44,7 @@ describe("JSONEachRow parity (row-object insert)", { timeout: 120000 }, () => {
   before(async () => {
     await init();
     const ch = await startClickHouse();
-    baseUrl = `${ch.url}/`;
+    url = `${ch.url}/`;
     auth = { username: ch.username, password: ch.password };
     tcp = { host: ch.host, port: ch.tcpPort, user: ch.username, password: ch.password };
   });
@@ -72,10 +72,10 @@ describe("JSONEachRow parity (row-object insert)", { timeout: 120000 }, () => {
       ) ENGINE = Memory
     `;
 
-    await consume(query(`DROP TABLE IF EXISTS ${tableNative}`, sessionId, { baseUrl, auth }));
-    await consume(query(`DROP TABLE IF EXISTS ${tableJson}`, sessionId, { baseUrl, auth }));
-    await consume(query(schemaSql(tableNative), sessionId, { baseUrl, auth }));
-    await consume(query(schemaSql(tableJson), sessionId, { baseUrl, auth }));
+    await consume(query(`DROP TABLE IF EXISTS ${tableNative}`, { url, auth, sessionId }));
+    await consume(query(`DROP TABLE IF EXISTS ${tableJson}`, { url, auth, sessionId }));
+    await consume(query(schemaSql(tableNative), { url, auth, sessionId }));
+    await consume(query(schemaSql(tableJson), { url, auth, sessionId }));
 
     try {
       const rows: Record<string, unknown>[] = [
@@ -124,21 +124,21 @@ describe("JSONEachRow parity (row-object insert)", { timeout: 120000 }, () => {
         tcpClient.close();
       }
 
-      await insert(
-        `INSERT INTO ${tableJson} FORMAT JSONEachRow`,
-        streamEncodeJsonEachRow(rows),
+      await insert(`INSERT INTO ${tableJson} FORMAT JSONEachRow`, streamEncodeJsonEachRow(rows), {
+        url,
+        auth,
         sessionId,
-        { baseUrl, auth },
-      );
+      });
 
       const nativeBytes = await collectBytes(
-        query(`SELECT * FROM ${tableNative} ORDER BY id FORMAT Native`, sessionId, {
-          baseUrl,
+        query(`SELECT * FROM ${tableNative} ORDER BY id FORMAT Native`, {
+          url,
           auth,
+          sessionId,
         }),
       );
       const jsonBytes = await collectBytes(
-        query(`SELECT * FROM ${tableJson} ORDER BY id FORMAT Native`, sessionId, { baseUrl, auth }),
+        query(`SELECT * FROM ${tableJson} ORDER BY id FORMAT Native`, { url, auth, sessionId }),
       );
 
       const nativeRows = (await collectNativeRows(nativeBytes)).map((r) => r.map(normalizeValue));
@@ -146,8 +146,8 @@ describe("JSONEachRow parity (row-object insert)", { timeout: 120000 }, () => {
 
       assert.deepStrictEqual(nativeRows, jsonRows);
     } finally {
-      await consume(query(`DROP TABLE ${tableNative}`, sessionId, { baseUrl, auth }));
-      await consume(query(`DROP TABLE ${tableJson}`, sessionId, { baseUrl, auth }));
+      await consume(query(`DROP TABLE ${tableNative}`, { url, auth, sessionId }));
+      await consume(query(`DROP TABLE ${tableJson}`, { url, auth, sessionId }));
     }
   });
 });

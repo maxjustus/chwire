@@ -10,14 +10,14 @@ import { generateSessionId } from "./test_utils.ts";
 
 describe("HTTP query body compression", { timeout: 60000 }, () => {
   let clickhouse: Awaited<ReturnType<typeof startClickHouse>>;
-  let baseUrl: string;
+  let url: string;
   let auth: { username: string; password: string };
   const sessionId = generateSessionId("http-compress");
 
   before(async () => {
     await init();
     clickhouse = await startClickHouse();
-    baseUrl = `${clickhouse.url}/`;
+    url = `${clickhouse.url}/`;
     auth = { username: clickhouse.username, password: clickhouse.password };
   });
 
@@ -34,9 +34,10 @@ describe("HTTP query body compression", { timeout: 60000 }, () => {
     const queryStr = `SELECT number FROM system.numbers WHERE number IN (${values}) LIMIT 500 FORMAT JSONEachRow`;
 
     const rows = await collectJsonEachRow(
-      query(queryStr, sessionId, {
-        baseUrl,
+      query(queryStr, {
+        url,
         auth,
+        sessionId,
         compression: "zstd",
         ...(compressQuery !== undefined ? { compressQuery } : {}),
       }),

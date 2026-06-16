@@ -191,14 +191,14 @@ describe("createSignal", () => {
 
 describe("HTTP error handling (integration)", { timeout: 60000 }, () => {
   let clickhouse: Awaited<ReturnType<typeof startClickHouse>>;
-  let baseUrl: string;
+  let url: string;
   let auth: { username: string; password: string };
   const sessionId = generateSessionId("error-handling");
 
   before(async () => {
     await init();
     clickhouse = await startClickHouse();
-    baseUrl = `${clickhouse.url}/`;
+    url = `${clickhouse.url}/`;
     auth = { username: clickhouse.username, password: clickhouse.password };
   });
 
@@ -211,9 +211,10 @@ describe("HTTP error handling (integration)", { timeout: 60000 }, () => {
       let thrownError: unknown = null;
       try {
         await collectText(
-          query("SELECT * FROM nonexistent_table_xyz", sessionId, {
-            baseUrl,
+          query("SELECT * FROM nonexistent_table_xyz", {
+            url,
             auth,
+            sessionId,
             compression: false,
           }),
         );
@@ -234,9 +235,10 @@ describe("HTTP error handling (integration)", { timeout: 60000 }, () => {
       let thrownError: unknown = null;
       try {
         await collectText(
-          query("SELECT * FROM nonexistent_table_xyz", sessionId, {
-            baseUrl,
+          query("SELECT * FROM nonexistent_table_xyz", {
+            url,
             auth,
+            sessionId,
             compression: "lz4",
           }),
         );
@@ -264,9 +266,10 @@ describe("HTTP error handling (integration)", { timeout: 60000 }, () => {
       let thrownError: unknown = null;
 
       try {
-        for await (const packet of query(sql, sessionId, {
-          baseUrl,
+        for await (const packet of query(sql, {
+          url,
           auth,
+          sessionId,
           compression: false,
           settings: { default_format: "TSV" },
         })) {
@@ -300,9 +303,10 @@ describe("HTTP error handling (integration)", { timeout: 60000 }, () => {
       let thrownError: unknown = null;
       try {
         // eslint-disable-next-line @typescript-eslint/no-unused-vars
-        for await (const _packet of query(sql, sessionId, {
-          baseUrl,
+        for await (const _packet of query(sql, {
+          url,
           auth,
+          sessionId,
           compression: "lz4",
           settings: { default_format: "TSV" },
         })) {
@@ -339,7 +343,7 @@ describe("HTTP error handling (integration)", { timeout: 60000 }, () => {
         let dataChunksReceived = 0;
         let thrownError: unknown = null;
         try {
-          for await (const packet of query(sql, sessionId, { baseUrl, auth, compression })) {
+          for await (const packet of query(sql, { url, auth, sessionId, compression })) {
             if (packet.type === "Data") dataChunksReceived++;
           }
         } catch (err) {

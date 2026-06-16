@@ -14,14 +14,14 @@ import { generateSessionId } from "./test_utils.ts";
 
 describe("HTTP error response with compression", { timeout: 60000 }, () => {
   let clickhouse: Awaited<ReturnType<typeof startClickHouse>>;
-  let baseUrl: string;
+  let url: string;
   let auth: { username: string; password: string };
   const sessionId = generateSessionId("error-compress");
 
   before(async () => {
     await init();
     clickhouse = await startClickHouse();
-    baseUrl = `${clickhouse.url}/`;
+    url = `${clickhouse.url}/`;
     auth = { username: clickhouse.username, password: clickhouse.password };
   });
 
@@ -36,9 +36,10 @@ describe("HTTP error response with compression", { timeout: 60000 }, () => {
 
       try {
         await collectText(
-          query(invalidQuery, sessionId, {
-            baseUrl,
+          query(invalidQuery, {
+            url,
             auth,
+            sessionId,
             compression,
           }),
         );
@@ -77,9 +78,10 @@ describe("HTTP error response with compression", { timeout: 60000 }, () => {
 
     try {
       await collectText(
-        query(invalidQuery, sessionId, {
-          baseUrl,
+        query(invalidQuery, {
+          url,
           auth,
+          sessionId,
           compression: false,
         }),
       );

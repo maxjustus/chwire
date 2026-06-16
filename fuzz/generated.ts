@@ -197,9 +197,10 @@ async function fetchRandomStructureType(
   const chSeed = rng.int(0, 0x7fffffff);
   const structure = (
     await collectText(
-      query(`SELECT generateRandomStructure(1, ${chSeed}) FORMAT TabSeparated`, sessionId, {
-        baseUrl: conn.baseUrl,
+      query(`SELECT generateRandomStructure(1, ${chSeed}) FORMAT TabSeparated`, {
+        url: conn.url,
         auth: conn.auth,
+        sessionId,
       }),
     )
   ).trim();
@@ -362,9 +363,10 @@ async function rollComplexType(
     // drop the oracle one and let runColumn create it (no preCreated reuse).
     if (rng.int(0, 2) === 0) {
       await consume(
-        query(`DROP TABLE IF EXISTS ${v.table} SYNC`, sessionId, {
-          baseUrl: conn.baseUrl,
+        query(`DROP TABLE IF EXISTS ${v.table} SYNC`, {
+          url: conn.url,
           auth: conn.auth,
+          sessionId,
           compression: false,
         }),
       );
@@ -462,9 +464,10 @@ async function rollVariantType(
   const table = `variant_canon_${uniqueSuffix()}`;
   const drop = () =>
     consume(
-      query(`DROP TABLE IF EXISTS ${table} SYNC`, sessionId, {
-        baseUrl: conn.baseUrl,
+      query(`DROP TABLE IF EXISTS ${table} SYNC`, {
+        url: conn.url,
         auth: conn.auth,
+        sessionId,
         compression: false,
       }),
     );
@@ -472,9 +475,10 @@ async function rollVariantType(
   let canonical: string;
   try {
     await consume(
-      query(`CREATE TABLE ${table} (v Variant(${arms.join(", ")})) ENGINE = Memory`, sessionId, {
-        baseUrl: conn.baseUrl,
+      query(`CREATE TABLE ${table} (v Variant(${arms.join(", ")})) ENGINE = Memory`, {
+        url: conn.url,
         auth: conn.auth,
+        sessionId,
         compression: false,
         settings: COMPLEX_TYPE_SETTINGS,
       }),
@@ -484,8 +488,7 @@ async function rollVariantType(
         await collectText(
           query(
             `SELECT type FROM system.columns WHERE database = currentDatabase() AND table = '${table}' AND name = 'v' FORMAT TabSeparated`,
-            sessionId,
-            { baseUrl: conn.baseUrl, auth: conn.auth },
+            { url: conn.url, auth: conn.auth, sessionId },
           ),
         )
       ).trim(),
@@ -778,7 +781,7 @@ async function runColumn(opts: {
   seed: number;
   rowCount: number;
   compression: Compression;
-  baseUrl: string;
+  url: string;
   auth: { username: string; password: string };
   sessionId: string;
   insertSessionId: string;
@@ -811,7 +814,7 @@ async function runColumn(opts: {
     codec,
     cells,
     compression: opts.compression,
-    conn: { baseUrl: opts.baseUrl, auth: opts.auth },
+    conn: { url: opts.url, auth: opts.auth },
     sessionId: opts.sessionId,
     insertSessionId: opts.insertSessionId,
     table: opts.table,
@@ -827,7 +830,7 @@ describe("Native client-generated Fuzz Tests", { timeout: 600000 }, () => {
 
       await init();
       const clickhouse = await startClickHouse();
-      const baseUrl = `${clickhouse.url}/`;
+      const url = `${clickhouse.url}/`;
       const auth = { username: clickhouse.username, password: clickhouse.password };
 
       try {
@@ -835,7 +838,7 @@ describe("Native client-generated Fuzz Tests", { timeout: 600000 }, () => {
         const N = config.iterations;
         const iterations = iterationIndex !== null ? 1 : N;
         const startIdx = iterationIndex ?? 0;
-        const conn: Conn = { baseUrl, auth };
+        const conn: Conn = { url, auth };
         const mode = typeSourceMode();
 
         for (let i = startIdx; i < startIdx + iterations; i++) {
@@ -884,7 +887,7 @@ describe("Native client-generated Fuzz Tests", { timeout: 600000 }, () => {
               seed,
               rowCount,
               compression,
-              baseUrl,
+              url,
               auth,
               sessionId,
               insertSessionId,
@@ -907,9 +910,10 @@ describe("Native client-generated Fuzz Tests", { timeout: 600000 }, () => {
             throw err;
           } finally {
             await consume(
-              query(`DROP TABLE IF EXISTS ${table} SYNC`, insertSessionId, {
-                baseUrl,
+              query(`DROP TABLE IF EXISTS ${table} SYNC`, {
+                url,
                 auth,
+                sessionId: insertSessionId,
                 compression: false,
               }),
             );

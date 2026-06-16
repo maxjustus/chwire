@@ -71,7 +71,7 @@ describe("type corpus round-trips", { timeout: 600000 }, () => {
   before(async () => {
     await init();
     const ch = await startClickHouse();
-    conn = { baseUrl: `${ch.url}/`, auth: { username: ch.username, password: ch.password } };
+    conn = { url: `${ch.url}/`, auth: { username: ch.username, password: ch.password } };
   });
 
   after(async () => {
@@ -110,9 +110,10 @@ describe("type corpus round-trips", { timeout: 600000 }, () => {
         failures.push({ type, error: (err as Error).message });
       } finally {
         await consume(
-          query(`DROP TABLE IF EXISTS ${table} SYNC`, sessionId, {
-            baseUrl: conn.baseUrl,
+          query(`DROP TABLE IF EXISTS ${table} SYNC`, {
+            url: conn.url,
             auth: conn.auth,
+            sessionId,
             compression: false,
           }),
         );

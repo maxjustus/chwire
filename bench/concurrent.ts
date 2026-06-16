@@ -35,13 +35,9 @@ function readConfig() {
   };
 }
 
-async function drainHttpQuery(
-  sql: string,
-  baseUrl: string,
-  compression: Compression,
-): Promise<void> {
+async function drainHttpQuery(sql: string, url: string, compression: Compression): Promise<void> {
   const sessionId = randomUUID();
-  for await (const _ of httpQuery(sql, sessionId, { baseUrl, compression })) {
+  for await (const _ of httpQuery(sql, { url, compression, sessionId })) {
     // Drain response
   }
 }

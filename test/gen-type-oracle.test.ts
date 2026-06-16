@@ -44,7 +44,7 @@ interface Failure {
 }
 
 describe("genType type-only oracle", { timeout: 120000 }, () => {
-  let baseUrl: string;
+  let url: string;
   let auth: { username: string; password: string };
   const sid = "type-oracle";
   let table = 0;
@@ -52,7 +52,7 @@ describe("genType type-only oracle", { timeout: 120000 }, () => {
   before(async () => {
     await init();
     const ch = await startClickHouse();
-    baseUrl = `${ch.url}/`;
+    url = `${ch.url}/`;
     auth = { username: ch.username, password: ch.password };
   });
 
@@ -64,7 +64,8 @@ describe("genType type-only oracle", { timeout: 120000 }, () => {
     for await (const _ of it) {
     }
   };
-  const run = (sql: string) => consume(query(sql, sid, { baseUrl, auth, compression: false }));
+  const run = (sql: string) =>
+    consume(query(sql, { url, auth, sessionId: sid, compression: false }));
   const drop = (name: string) => run(`DROP TABLE IF EXISTS ${name} SYNC`);
 
   /** name -> CH-normalized type for every column of `name`, system.columns TSV unescaped. */
@@ -72,8 +73,7 @@ describe("genType type-only oracle", { timeout: 120000 }, () => {
     const tsv = await collectText(
       query(
         `SELECT name, type FROM system.columns WHERE database = currentDatabase() AND table = '${name}' FORMAT TabSeparated`,
-        sid,
-        { baseUrl, auth },
+        { url, auth, sessionId: sid },
       ),
     );
     const map = new Map<string, string>();

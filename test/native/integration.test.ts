@@ -10,14 +10,14 @@ import { startClickHouse, stopClickHouse } from "../setup.ts";
 import { consume, decodeBatch, encodeNativeRows, toArrayRows } from "../test_utils.ts";
 
 describe("Native format integration", { timeout: 120000 }, () => {
-  let baseUrl: string;
+  let url: string;
   let auth: { username: string; password: string };
   const sessionId = `native_int_${Date.now()}`;
 
   before(async () => {
     await init();
     const ch = await startClickHouse();
-    baseUrl = `${ch.url}/`;
+    url = `${ch.url}/`;
     auth = { username: ch.username, password: ch.password };
   });
 
@@ -34,24 +34,25 @@ describe("Native format integration", { timeout: 120000 }, () => {
     settings?: string;
   }) {
     const { table, createSql, columns, rows, orderBy, settings } = options;
-    await consume(query(`DROP TABLE IF EXISTS ${table}`, sessionId, { baseUrl, auth }));
-    await consume(query(createSql, sessionId, { baseUrl, auth }));
+    await consume(query(`DROP TABLE IF EXISTS ${table}`, { url, auth, sessionId }));
+    await consume(query(createSql, { url, auth, sessionId }));
     try {
       const encoded = encodeNativeRows(columns, rows);
-      await insert(`INSERT INTO ${table} FORMAT Native`, encoded, sessionId, { baseUrl, auth });
+      await insert(`INSERT INTO ${table} FORMAT Native`, encoded, { url, auth, sessionId });
 
       const orderClause = orderBy ? ` ORDER BY ${orderBy}` : "";
       const settingsClause = settings ? ` SETTINGS ${settings}` : "";
       const data = await collectBytes(
-        query(`SELECT * FROM ${table}${orderClause} FORMAT Native${settingsClause}`, sessionId, {
-          baseUrl,
+        query(`SELECT * FROM ${table}${orderClause} FORMAT Native${settingsClause}`, {
+          url,
           auth,
+          sessionId,
         }),
       );
       const decoded = await decodeBatch(data);
       return { decoded, decodedRows: toArrayRows(decoded) };
     } finally {
-      await consume(query(`DROP TABLE ${table}`, sessionId, { baseUrl, auth }));
+      await consume(query(`DROP TABLE ${table}`, { url, auth, sessionId }));
     }
   }
 
@@ -167,24 +168,26 @@ describe("Native format integration", { timeout: 120000 }, () => {
     ];
 
     const settings = { flatten_nested: false } as const;
-    await consume(query(`DROP TABLE IF EXISTS ${table}`, sessionId, { baseUrl, auth }));
+    await consume(query(`DROP TABLE IF EXISTS ${table}`, { url, auth, sessionId }));
     await consume(
-      query(
-        `CREATE TABLE ${table} (id Int32, n Nested(a UInt32, b String)) ENGINE = Memory`,
+      query(`CREATE TABLE ${table} (id Int32, n Nested(a UInt32, b String)) ENGINE = Memory`, {
+        url,
+        auth,
         sessionId,
-        { baseUrl, auth, settings },
-      ),
+        settings,
+      }),
     );
     try {
       const encoded = encodeNativeRows(columns, rows);
-      await insert(`INSERT INTO ${table} FORMAT Native`, encoded, sessionId, {
-        baseUrl,
+      await insert(`INSERT INTO ${table} FORMAT Native`, encoded, {
+        url,
         auth,
+        sessionId,
         settings,
       });
 
       const data = await collectBytes(
-        query(`SELECT * FROM ${table} ORDER BY id FORMAT Native`, sessionId, { baseUrl, auth }),
+        query(`SELECT * FROM ${table} ORDER BY id FORMAT Native`, { url, auth, sessionId }),
       );
       const decoded = await decodeBatch(data);
       const decodedRows = toArrayRows(decoded);
@@ -196,7 +199,7 @@ describe("Native format integration", { timeout: 120000 }, () => {
       ]);
       assert.deepStrictEqual(decodedRows[1]![1], []);
     } finally {
-      await consume(query(`DROP TABLE ${table}`, sessionId, { baseUrl, auth }));
+      await consume(query(`DROP TABLE ${table}`, { url, auth, sessionId }));
     }
   });
 
@@ -221,22 +224,23 @@ describe("Native format integration", { timeout: 120000 }, () => {
       [2, [{ a: 3, b: "z" }]],
     ];
 
-    await consume(query(`DROP TABLE IF EXISTS ${table}`, sessionId, { baseUrl, auth }));
+    await consume(query(`DROP TABLE IF EXISTS ${table}`, { url, auth, sessionId }));
     await consume(
-      query(
-        `CREATE TABLE ${table} (id Int32, n Nested(a UInt32, b String)) ENGINE = Memory`,
+      query(`CREATE TABLE ${table} (id Int32, n Nested(a UInt32, b String)) ENGINE = Memory`, {
+        url,
+        auth,
         sessionId,
-        { baseUrl, auth },
-      ),
+      }),
     );
     try {
       const encoded = encodeNativeRows(columns, rows);
-      await insert(`INSERT INTO ${table} FORMAT Native`, encoded, sessionId, { baseUrl, auth });
+      await insert(`INSERT INTO ${table} FORMAT Native`, encoded, { url, auth, sessionId });
 
       const data = await collectBytes(
-        query(`SELECT id, n.a, n.b FROM ${table} ORDER BY id FORMAT Native`, sessionId, {
-          baseUrl,
+        query(`SELECT id, n.a, n.b FROM ${table} ORDER BY id FORMAT Native`, {
+          url,
           auth,
+          sessionId,
         }),
       );
       const decoded = await decodeBatch(data);
@@ -248,7 +252,7 @@ describe("Native format integration", { timeout: 120000 }, () => {
         assert.deepStrictEqual(row[2], []);
       }
     } finally {
-      await consume(query(`DROP TABLE ${table}`, sessionId, { baseUrl, auth }));
+      await consume(query(`DROP TABLE ${table}`, { url, auth, sessionId }));
     }
   });
 

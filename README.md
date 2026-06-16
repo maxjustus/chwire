@@ -2,8 +2,6 @@
 
 ClickHouse HTTP/TCP client and Native wire format toolkit for TypeScript.
 
-`@maxjustus/chwire` is the renamed successor to `@maxjustus/chttp`.
-
 ## Install
 
 ```bash
@@ -26,11 +24,13 @@ Use **HTTP** for browser apps or simple queries. Use **TCP** for observability, 
 
 ### HTTP Client
 
+The HTTP client is stateless — `query()` and `insert()` are standalone functions that each make a single HTTP request.
+
 ```ts
 import { insert, query, streamEncodeJsonEachRow, collectText } from "@maxjustus/chwire";
 
-const config = {
-  baseUrl: "http://localhost:8123/",
+const connectionConfig = {
+  url: "http://localhost:8123/",
   auth: { username: "default", password: "" },
 };
 
@@ -38,16 +38,15 @@ const config = {
 const { summary } = await insert(
   "INSERT INTO table FORMAT JSONEachRow",
   streamEncodeJsonEachRow([{ id: 1, name: "test" }]),
-  "session123",
-  config,
+  connectionConfig,
 );
 console.log(`Wrote ${summary.written_rows} rows`);
 
 // Query
-const json = await collectText(query("SELECT * FROM table FORMAT JSON", "session123", config));
+const json = await collectText(query("SELECT * FROM table FORMAT JSON", connectionConfig));
 
 // DDL
-for await (const _ of query("CREATE TABLE ...", "session123", config)) {}
+await query("CREATE TABLE ...", connectionConfig);
 ```
 
 ### TCP Client
@@ -73,13 +72,13 @@ client.close();
 
 ## Query Parameters
 
-Both HTTP and TCP clients use ClickHouse's native query parameters with identical `{name: Type}` syntax:
+Both HTTP and TCP clients support ClickHouse's native query parameters:
 
 ```ts
 // HTTP
 const result = await collectText(
-  query("SELECT {id: UInt64} as id, {name: String} as name FORMAT JSON", sessionId, {
-    ...config,
+  query("SELECT {id: UInt64} as id, {name: String} as name FORMAT JSON", {
+    ...connectionConfig,
     params: { id: 42, name: "Alice" },
   }),
 );
@@ -87,31 +86,29 @@ const result = await collectText(
 // TCP (same syntax)
 for await (const packet of client.query(
   "SELECT * FROM users WHERE age > {min_age: UInt32}",
-  { params: { min_age: 18 } }
+  { ...connectionConfig, params: { min_age: 18 } }
 )) { /* ... */ }
 ```
 
 Parameters are type-safe and prevent SQL injection. The type annotation (e.g., `{name: String}`) tells ClickHouse how to parse the value.
 
-For HTTP queries, unknown root-level option keys are also forwarded as raw ClickHouse URL params.
-Prefer `settings` for normal modeled settings, but raw passthrough remains available for
-unmodeled options and backward compatibility:
+For HTTP client queries, unknown root-level option keys are also forwarded as raw request URL params:
 
 ```ts
-const result = await collectText(query("SELECT 42 as value", sessionId, {
-  ...config,
+const result = await collectText(query("SELECT 42 as value", {
+  ...connectionConfig,
   default_format: "TSV",
   wait_end_of_query: 1,
 }));
 ```
 
-The transport keys `baseUrl`, `auth`, `compression`, `compressQuery`, `signal`, `timeout`,
-`clientVersion`, `settings`, `params`, `externalTables`, and `queryId` are reserved
+The transport keys `url`, `auth`, `compression`, `compressQuery`, `signal`, `timeout`,
+`clientVersion`, `settings`, `params`, `externalTables`, `queryId`, and `sessionId` are reserved
 and are not forwarded as raw URL params.
 
-## Streaming Large Inserts
+## Streaming Large Inserts (HTTP)
 
-The `insert` function accepts `Uint8Array`, `Uint8Array[]`, or `AsyncIterable<Uint8Array>`. Use `streamEncodeJsonEachRow` for JSON data:
+The HTTP `insert` function accepts `Uint8Array`, `Uint8Array[]`, or `AsyncIterable<Uint8Array>`. For TCP streaming inserts, see the TCP Insert API section below. Use `streamEncodeJsonEachRow` for JSON data:
 
 ```ts
 // Streaming JSON objects
@@ -124,8 +121,8 @@ async function* generateRows() {
 await insert(
   "INSERT INTO large_table FORMAT JSONEachRow",
   streamEncodeJsonEachRow(generateRows()),
-  "session123",
   {
+    ...connectionConfig,
     compression: { method: "zstd", level: 6 },
     onProgress: (p) => console.log(`${p.bytesUncompressed} bytes`),
   },
@@ -146,8 +143,10 @@ async function* generateCsvChunks() {
 await insert(
   "INSERT INTO large_table FORMAT CSV",
   generateCsvChunks(),
-  "session123",
-  { compression: "lz4" },
+  {
+    ...connectionConfig,
+    compression: "lz4" 
+  },
 );
 ```
 
@@ -168,32 +167,32 @@ import {
 
 // JSONEachRow - streaming parsed objects
 for await (const row of streamDecodeJsonEachRow(
-  query("SELECT * FROM t FORMAT JSONEachRow", session, config),
+  query("SELECT * FROM t FORMAT JSONEachRow", connectionConfig),
 )) {
   console.log(row.id, row.name);
 }
 
 const res = await collectJsonEachRow(
-  query("SELECT * FROM t FORMAT JSONEachRow", session, config),
+  query("SELECT * FROM t FORMAT JSONEachRow", connectionConfig),
 );
 
 // CSV/TSV - streaming raw lines
 for await (const line of streamLines(
-  query("SELECT * FROM t FORMAT CSV", session, config),
+  query("SELECT * FROM t FORMAT CSV", connectionConfig),
 )) {
   const [id, name] = line.split(",");
 }
 
 // JSON format - buffer entire response
 const json = await collectText(
-  query("SELECT * FROM t FORMAT JSON", session, config),
+  query("SELECT * FROM t FORMAT JSON", connectionConfig),
 );
 const data = JSON.parse(json);
 ```
 
 ## Native Format
 
-ClickHouse's internal wire format. Returns columnar data (RecordBatch) rather than materializing all rows upfront.
+Native is ClickHouse's columnar binary wire format. It's generally faster and smaller to serialize/deserialize vs JSON (see Performance below). Data arrives as RecordBatch objects. RecordBatch wraps typed column arrays you can iterate by row or access by column. Use it when throughput matters; use JSON when you want plain objects and don't need the speed.
 
 ### RecordBatch Construction
 
@@ -241,25 +240,24 @@ const batch3 = batchFromRows(schema, generateRows());
 await insert(
   "INSERT INTO t FORMAT Native",
   encodeNative(batch),
-  "session",
-  config,
+  connectionConfig,
 );
 
 // Query returns columnar data as RecordBatch - stream rows directly
 for await (const row of rows(
-  streamDecodeNative(query("SELECT * FROM t FORMAT Native", "session", config)),
+  streamDecodeNative(query("SELECT * FROM t FORMAT Native", connectionConfig)),
 )) {
   console.log(row.id, row.name);
 }
 
 // Or collect all rows at once (materialized to plain objects)
 const allRows = await collectRows(
-  streamDecodeNative(query("SELECT * FROM t FORMAT Native", "session", config)),
+  streamDecodeNative(query("SELECT * FROM t FORMAT Native", connectionConfig)),
 );
 
 // Work with batches directly for columnar access
 for await (const batch of streamDecodeNative(
-  query("SELECT * FROM t FORMAT Native", "session", config),
+  query("SELECT * FROM t FORMAT Native", connectionConfig),
 )) {
   const ids = batch.getColumn("id")!;
   for (let i = 0; i < ids.length; i++) {
@@ -376,8 +374,7 @@ async function* generateBatches() {
 await insert(
   "INSERT INTO t FORMAT Native",
   streamEncodeNative(generateBatches()),
-  "session",
-  config,
+  connectionConfig,
 );
 ```
 
@@ -389,7 +386,7 @@ Supports all ClickHouse types, with the two caveats below.
 
 ### BigInt Handling
 
-ClickHouse 64-bit+ integers (Int64, UInt64, Int128, etc.) are returned as JavaScript BigInt. Pass `{ bigIntAsString: true }` to convert to strings for JSON serialization:
+ClickHouse 64-bit+ integers (Int64, UInt64, Int128, etc.) are returned as JavaScript BigInt. Pass `{ bigIntAsString: true }` to convert to strings for consumer code / JSON serialization:
 
 ```ts
 const row = batch.get(0, { bigIntAsString: true });
@@ -399,7 +396,7 @@ const allRows = batch.toArray({ bigIntAsString: true });
 
 > **Global alternative**: Add `BigInt.prototype.toJSON = function() { return this.toString(); };` at startup. See [MDN](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/BigInt#use_within_json).
 
-## TCP Client (Experimental)
+## TCP Client
 
 Direct TCP protocol. Single connection per client - use separate clients for concurrent operations.
 
@@ -425,10 +422,10 @@ for await (const packet of client.query("SELECT * FROM table")) {
   }
 }
 
-// DDL statements
+// DDL
 await client.query("CREATE TABLE ...");
 
-// Insert - returns Packet[] (TCP streams progress during insert)
+// Insert (await collects and discards packets; for progress tracking see "Insert Progress Tracking" below)
 await client.insert("INSERT INTO table", [{ id: 1, name: "alice" }]);
 
 client.close();
@@ -446,7 +443,7 @@ const client = new TcpClient({
   compression: "lz4", // 'lz4' | 'zstd' | false | { method: 'zstd', level: 6 }
   connectTimeout: 10000, // ms
   queryTimeout: 30000, // ms
-  tls: true, // or tls.ConnectionOptions
+  tls: true, // or Node.js tls.ConnectionOptions for custom CA/certs. IE: tls: { ca: fs.readFileSync("/path/to/ca.pem"), rejectUnauthorized: true },
 });
 ```
 
@@ -527,7 +524,8 @@ await client.insert("INSERT INTO t", batch);
 // Multiple batches
 await client.insert("INSERT INTO t", [batch1, batch2]);
 
-// Row objects with auto-coercion (types inferred from server schema; unknown keys ignored; omitted keys use defaults)
+// Row objects with auto-coercion. Types are inferred from server schema.
+// Unknown keys ignored, omitted keys use defaults, incompatible provided types throw.
 await client.insert("INSERT INTO t", [
   { id: 1, name: "alice" },
   { id: 2, name: "bob" },
@@ -590,6 +588,7 @@ await writeClient.connect();
 // Stream RecordBatches from one table to another
 await writeClient.insert(
   "INSERT INTO dst",
+  // recordBatches extracts record batch objects from Data packets in the result packet stream.
   recordBatches(readClient.query("SELECT * FROM src")),
 );
 ```
@@ -602,7 +601,7 @@ setTimeout(() => controller.abort(), 5000);
 
 await client.connect({ signal: controller.signal });
 
-for await (const p of client.query(sql, {}, { signal: controller.signal })) {
+for await (const p of client.query(sql, { signal: controller.signal })) {
   // ...
 }
 ```
@@ -643,8 +642,7 @@ for await (const packet of client.query(
 // HTTP - same API
 const result = await collectText(query(
   "SELECT * FROM users WHERE id > 1 FORMAT JSON",
-  sessionId,
-  { baseUrl, auth, externalTables: { users } }
+  { url, auth, externalTables: { users } }
 ));
 ```
 
@@ -670,9 +668,8 @@ For raw TSV/CSV/JSON data, use the explicit structure form:
 ```ts
 const result = await collectText(query(
   "SELECT * FROM mydata ORDER BY id FORMAT JSON",
-  sessionId,
   {
-    baseUrl, auth,
+    url, auth,
     externalTables: {
       mydata: {
         structure: "id UInt32, name String",
@@ -690,15 +687,16 @@ Configure with `timeout` (ms) or provide an `AbortSignal` for manual cancellatio
 
 ```ts
 // Custom timeout
-await insert(query, data, sessionId, { timeout: 60_000 });
+await insert(sql, data, { ...connectionConfig, timeout: 60_000 });
 
 // Manual cancellation
 const controller = new AbortController();
 setTimeout(() => controller.abort(), 5000);
-await insert(query, data, sessionId, { signal: controller.signal });
+await insert(sql, data, { ...connectionConfig, signal: controller.signal });
 
 // Both (whichever triggers first)
-await insert(query, data, sessionId, {
+await insert(sql, data, {
+  ...connectionConfig,
   signal: controller.signal,
   timeout: 60_000,
 });
@@ -716,7 +714,7 @@ The HTTP client throws `ClickHouseException` for server errors:
 import { ClickHouseException } from "@maxjustus/chwire";
 
 try {
-  for await (const _ of query("SELECT * FROM nonexistent", session, config)) {}
+  for await (const _ of query("SELECT * FROM nonexistent", config)) {}
 } catch (err) {
   if (err instanceof ClickHouseException) {
     console.log(err.code);          // 60 (UNKNOWN_TABLE)
@@ -730,7 +728,7 @@ Insert errors follow the same pattern:
 
 ```ts
 try {
-  await insert("INSERT INTO t FORMAT JSONEachRow", data, session, config);
+  await insert("INSERT INTO t FORMAT JSONEachRow", data, config);
 } catch (err) {
   if (err instanceof ClickHouseException) {
     console.log(err.code);
@@ -775,16 +773,14 @@ try {
 
 Set `compression` in HTTP or TCP options:
 
-- `"lz4"` - fast, uses native bindings when available with WASM fallback
-- `"zstd"` - ~2x better compression, uses native bindings when available with WASM fallback
-- `false` - no ClickHouse block compression
-- `{ method: "zstd", level }` - ZSTD with an explicit level (1-22, default: 3)
+- `"lz4"` - default. Fast.
+- `"zstd"` - ~2x better compression. Default level is 3.
+- `false` - no compression for query results or insert data
+- `{ method: "zstd", level: number }` - ZSTD with an explicit level (1-22, default: 3)
 
-HTTP queries, HTTP inserts, and TCP all default to `"lz4"`. Set TCP `compression: false` to disable bidirectional TCP compression, or use `"zstd"` / `{ method: "zstd", level }` for ZSTD.
+LZ4 and ZSTD use native Node addons (`lz4-napi`, `zstd-napi`) installed automatically as optional dependencies. In browsers and Deno, where native addons aren't supported, a bundled WASM implementation is used instead.
 
-For HTTP query-body `Content-Encoding` (separate from ClickHouse block compression), set `compressQuery` to `"zstd"`, `"lz4"`, or `{ method: "zstd", level }`; this requires the server setting `enable_http_compression=1`.
-
-ZSTD and LZ4 use native bindings in Node.js/Bun when available, falling back to WASM in browsers and Deno.
+`compressQuery` compresses the HTTP request body (your SQL and any external table data) using HTTP `Content-Encoding`. This is independent of `compression`, which controls ClickHouse block compression on responses — they apply to different directions and don't double-compress. Set `compressQuery` to `"zstd"`, `"lz4"`, or `{ method: "zstd", level }`; requires the server setting `enable_http_compression=1`.
 
 ## Performance
 
@@ -801,7 +797,7 @@ Benchmarks on Apple M4 Max, 10k rows. Native format is ClickHouse's columnar wir
 | Dynamic | 1.0ms | 0.8ms | 1.2ms | 0.9ms | 4.2ms | 4.5ms |
 | JSON column | 2.7ms | 3.0ms | 3.1ms | 3.2ms | 11.2ms | 9.6ms |
 
-### Compressed Size (Native vs JSON)
+### Compressed Size (Native as % of JSON, lower = smaller)
 
 | Scenario | LZ4 | ZSTD | gzip |
 |----------|-----|------|------|
@@ -812,11 +808,9 @@ Benchmarks on Apple M4 Max, 10k rows. Native format is ClickHouse's columnar wir
 | Dynamic | 72% | 98% | 65% |
 | JSON column | 56% | 67% | 67% |
 
-*Escape-heavy strings: JSON's escaping creates repetitive patterns that ZSTD compresses exceptionally well.
+**Summary**: LZ4 is fastest, ZSTD compresses best. Native format wins on both speed and size for most data.
 
-**Summary**: LZ4 is fastest, ZSTD compresses best. Native format wins on both speed and size for most data shapes. Exception: highly repetitive escaped strings where JSON's redundancy helps ZSTD.
-
-Run `node --experimental-strip-types bench/formats.ts` to reproduce.
+Run `make bench-formats` to reproduce.
 
 ## Development
 
@@ -831,7 +825,17 @@ npm run bench:tcp        # TCP read-path benchmark/profile
 
 Requires Node.js 22+ for development.
 
-## CLI
+### Updating Generated Settings
+
+When a new ClickHouse version adds or changes server settings, run:
+
+```bash
+make update-settings
+```
+
+This regenerates `settings.generated.ts` from the latest ClickHouse source, keeping the typed `ClickHouseSettings` interface current.
+
+## CLI test client
 
 Run queries directly from the command line via the bundled TCP client:
 

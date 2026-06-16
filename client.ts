@@ -153,8 +153,8 @@ interface AuthConfig {
  * @param params - Query params including ClickHouse settings (max_execution_time, etc.)
  *   See: https://clickhouse.com/docs/en/operations/settings/settings
  */
-function buildReqUrl(baseUrl: string, params: Record<string, string>, auth?: AuthConfig): URL {
-  const url = new URL(baseUrl);
+function buildReqUrl(base: string, params: Record<string, string>, auth?: AuthConfig): URL {
+  const url = new URL(base);
   Object.entries(params).forEach(([key, value]) => {
     url.searchParams.append(key, value);
   });
@@ -404,7 +404,7 @@ function splitStreamException(
 }
 
 export interface InsertOptions {
-  baseUrl?: string;
+  url?: string;
   /**
    * Compression method: "lz4" (default), "zstd", or false.
    * Use `{ method: "zstd", level }` to set an explicit ZSTD level (1-22, default: 3).
@@ -426,6 +426,8 @@ export interface InsertOptions {
   params?: QueryParams;
   /** Custom query ID for tracking in system.query_log and KILL QUERY */
   queryId?: string;
+  /** Session ID for server-side state (temp tables, SET variables). Omit for stateless requests. */
+  sessionId?: string;
 }
 
 type InsertData = Uint8Array | Uint8Array[] | AsyncIterable<Uint8Array> | Iterable<Uint8Array>;
@@ -433,11 +435,10 @@ type InsertData = Uint8Array | Uint8Array[] | AsyncIterable<Uint8Array> | Iterab
 async function insert(
   query: string,
   data: InsertData,
-  sessionId: string,
   options: InsertOptions = {},
 ): Promise<InsertResult> {
   await init();
-  const baseUrl = options.baseUrl || "http://localhost:8123/";
+  const baseUrl = options.url || "http://localhost:8123/";
   const {
     compression = "lz4",
     bufferSize = 1024 * 1024,
@@ -446,10 +447,12 @@ async function insert(
   } = options;
 
   const params: Record<string, string> = {
-    session_id: sessionId,
     query: query,
     decompress: "1",
   };
+  if (options.sessionId) {
+    params.session_id = options.sessionId;
+  }
   if (options.queryId) {
     params.query_id = options.queryId;
   }
@@ -602,7 +605,7 @@ export interface HttpExternalTable {
 export type HttpExternalTableInput = ExternalTableData | HttpExternalTable;
 
 const HTTP_QUERY_OPTION_RESERVED = new Set([
-  "baseUrl",
+  "url",
   "auth",
   "compression",
   "compressQuery",
@@ -613,6 +616,7 @@ const HTTP_QUERY_OPTION_RESERVED = new Set([
   "params",
   "externalTables",
   "queryId",
+  "sessionId",
 ]);
 
 function mergeRawHttpQueryOptions(target: Record<string, string>, options: QueryOptions): void {
@@ -629,13 +633,13 @@ function mergeRawHttpQueryOptions(target: Record<string, string>, options: Query
  * and for unmodeled server options. Prefer `settings` for standard ClickHouse settings
  * and `params` for typed `{name: Type}` query parameters.
  *
- * Reserved transport keys are not forwarded: `baseUrl`, `auth`, `compression`,
+ * Reserved transport keys are not forwarded: `url`, `auth`, `compression`,
  * `compressQuery`, `signal`, `timeout`, `clientVersion`, `settings`, `params`,
- * `externalTables`, and `queryId`.
+ * `externalTables`, `queryId`, and `sessionId`.
  */
 export interface QueryOptions {
   [key: string]: unknown;
-  baseUrl?: string;
+  url?: string;
   auth?: AuthConfig;
   /**
    * Compression method for response: "lz4" (default), "zstd", or false.
@@ -664,6 +668,8 @@ export interface QueryOptions {
   externalTables?: Record<string, HttpExternalTableInput>;
   /** Custom query ID for tracking in system.query_log and KILL QUERY */
   queryId?: string;
+  /** Session ID for server-side state (temp tables, SET variables). Omit for stateless requests. */
+  sessionId?: string;
 }
 
 /**
@@ -716,27 +722,22 @@ function buildMultipartBody(tables: Record<string, HttpExternalTable>): {
   return { body: ReadableStream.from(parts()), boundary };
 }
 
-function query(
-  sql: string,
-  sessionId: string,
-  options: QueryOptions = {},
-): CollectableAsyncGenerator<QueryPacket> {
-  return collectable(queryImpl(sql, sessionId, options));
+function query(sql: string, options: QueryOptions = {}): CollectableAsyncGenerator<QueryPacket> {
+  return collectable(queryImpl(sql, options));
 }
 
-async function* queryImpl(
-  sql: string,
-  sessionId: string,
-  options: QueryOptions = {},
-): AsyncGenerator<QueryPacket> {
+async function* queryImpl(sql: string, options: QueryOptions = {}): AsyncGenerator<QueryPacket> {
   await init();
-  const baseUrl = options.baseUrl || "http://localhost:8123/";
+  const baseUrl = options.url || "http://localhost:8123/";
   const compression = options.compression ?? "lz4";
   const compressed = compression !== false;
   const params: Record<string, string> = {
-    session_id: sessionId,
     default_format: "JSONEachRowWithProgress",
   };
+
+  if (options.sessionId) {
+    params.session_id = options.sessionId;
+  }
 
   if (compressed) {
     params.compress = "1";
