@@ -793,31 +793,53 @@ LZ4 and ZSTD use native Node addons (`lz4-napi`, `zstd-napi`) installed automati
 
 ## Performance
 
-Benchmarks on Apple M4 Max, 10k rows. Native format is ClickHouse's columnar wire format.
+Benchmarks on Apple M4 Max, 100k rows, 50 iterations. As of [`904b1ea`](../../commit/904b1ea).
 
-### Format Comparison (encode + compress)
+### Encode (raw, no compression)
+
+| Scenario | JSON | Native | Speedup |
+|----------|------|--------|---------|
+| Simple (6 cols) | 103ms | 27ms | 3.9x |
+| Escape-heavy strings | 22ms | 28ms | 0.8x |
+| Arrays (50 floats/row) | 186ms | 151ms | 1.2x |
+| Variant | 6.1ms | 13.7ms | 0.4x |
+| Dynamic | 5.2ms | 11.1ms | 0.5x |
+| JSON column | 11ms | 52ms | 0.2x |
+
+### Decode (raw)
+
+| Scenario | JSON | Native | Speedup |
+|----------|------|--------|---------|
+| Simple (6 cols) | 46ms | 27ms | 1.7x |
+| Escape-heavy strings | 41ms | 47ms | 0.9x |
+| Arrays (50 floats/row) | 246ms | 52ms | 4.7x |
+| Variant | 22ms | 2.4ms | 9.0x |
+| Dynamic | 20ms | 2.3ms | 8.8x |
+| JSON column | 47ms | 8.1ms | 5.8x |
+
+### Encode + Compress (full path)
 
 | Scenario | JSON+LZ4 | Native+LZ4 | JSON+ZSTD | Native+ZSTD | JSON+gzip | Native+gzip |
 |----------|----------|------------|-----------|-------------|-----------|-------------|
-| Simple (6 cols) | 12.2ms | 2.2ms | 12.6ms | 2.4ms | 19.7ms | 8.0ms |
-| Escape-heavy strings | 3.5ms | 2.7ms | 3.4ms | 2.7ms | 6.2ms | 6.5ms |
-| Arrays (50 floats/row) | 31ms | 8.3ms | 69ms | 12ms | 301ms | 113ms |
-| Variant | 1.1ms | 0.8ms | 1.3ms | 0.9ms | 6.5ms | 5.4ms |
-| Dynamic | 1.0ms | 0.8ms | 1.2ms | 0.9ms | 4.2ms | 4.5ms |
-| JSON column | 2.7ms | 3.0ms | 3.1ms | 3.2ms | 11.2ms | 9.6ms |
+| Simple (6 cols) | 115ms | 35ms | 123ms | 36ms | 206ms | 112ms |
+| Escape-heavy strings | 27ms | 35ms | 28ms | 35ms | 62ms | 74ms |
+| Arrays (50 floats/row) | 286ms | 90ms | 637ms | 116ms | 3648ms | 1512ms |
+| Variant | 10ms | 11ms | 13ms | 12ms | 54ms | 55ms |
+| Dynamic | 8.1ms | 9.9ms | 9.9ms | 10ms | 38ms | 49ms |
+| JSON column | 20ms | 45ms | 27ms | 47ms | 106ms | 102ms |
 
 ### Compressed Size (Native as % of JSON, lower = smaller)
 
 | Scenario | LZ4 | ZSTD | gzip |
 |----------|-----|------|------|
-| Simple (6 cols) | 65% | 68% | 71% |
-| Escape-heavy strings | 92% | 140%* | 84% |
+| Simple (6 cols) | 66% | 65% | 65% |
+| Escape-heavy strings | 93% | 158%* | 81% |
 | Arrays (50 floats/row) | 48% | 82% | 85% |
-| Variant | 70% | 96% | 73% |
-| Dynamic | 72% | 98% | 65% |
-| JSON column | 56% | 67% | 67% |
+| Variant | 70% | 81% | 68% |
+| Dynamic | 72% | 93% | 61% |
+| JSON column | 56% | 62% | 65% |
 
-**Summary**: LZ4 is fastest, ZSTD compresses best. Native format wins on both speed and size for most data.
+Native wins big on decode (2-9x) and array-heavy data. JSON is faster for encode-only on string-heavy and self-describing types (Variant, Dynamic, JSON column) where Native pays schema overhead. With compression, Native's smaller wire size closes the gap or flips the result. LZ4 is fastest, ZSTD compresses best.
 
 Run `make bench-formats` to reproduce.
 

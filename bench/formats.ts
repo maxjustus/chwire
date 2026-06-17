@@ -253,24 +253,19 @@ function generateSimpleData(count: number): {
   ];
   const json: Record<string, unknown>[] = [];
   const rows: unknown[][] = [];
+  const baseTime = new Date("2024-01-15T10:30:00Z").getTime();
   for (let i = 0; i < count; i++) {
-    const created_at = new Date("2024-01-15T10:30:00Z");
+    const score = Math.random() * 100;
+    const created_at = new Date(baseTime + i * 1000);
     json.push({
       id: i,
       name: `user_${i}`,
       email: `user${i}@example.com`,
       active: i % 2 === 0,
-      score: Math.random() * 100,
+      score,
       created_at,
     });
-    rows.push([
-      i,
-      `user_${i}`,
-      `user${i}@example.com`,
-      i % 2 === 0,
-      Math.random() * 100,
-      created_at,
-    ]);
+    rows.push([i, `user_${i}`, `user${i}@example.com`, i % 2 === 0, score, created_at]);
   }
   return { json, rows, columns };
 }
@@ -317,7 +312,8 @@ function generateComplexData(count: number): {
     const tags = [`tag_${i % 5}`, `cat_${i % 3}`, `type_${i % 7}`];
     const scores = Array.from({ length: 50 }, () => Math.random() * 100);
     const metadata = i % 3 === 0 ? null : `meta_${i}`;
-    json.push({ id: i, tags, scores, metadata });
+    const row = { id: i, tags, scores, metadata };
+    json.push(row);
     rows.push([i, tags, scores, metadata]);
   }
   return { json, rows, columns };
@@ -340,7 +336,7 @@ function generateComplexTypedData(count: number): {
     const tags = [`tag_${i % 5}`, `cat_${i % 3}`, `type_${i % 7}`];
     const scores = new Float64Array(Array.from({ length: 50 }, () => Math.random() * 100));
     const metadata = i % 3 === 0 ? null : `meta_${i}`;
-    json.push({ id: i, tags, scores, metadata });
+    json.push({ id: i, tags, scores: Array.from(scores), metadata });
     rows.push([i, tags, scores, metadata]);
   }
   return { json, rows, columns };
@@ -362,9 +358,9 @@ function generateVariantData(count: number): {
     // (string -> String, bigint -> Int64, number -> Float64); explicit
     // [disc, value] tuples would need canonical (sorted-arm) indices since
     // ClickHouse canonicalizes Variant arms alphabetically.
-    const variant = i % 3 === 0 ? `str_${i}` : i % 3 === 1 ? BigInt(i * 100) : Math.random() * 100;
-    // JSON representation uses the raw value
-    const jsonVal = i % 3 === 0 ? `str_${i}` : i % 3 === 1 ? i * 100 : Math.random() * 100;
+    const f = Math.random() * 100;
+    const variant = i % 3 === 0 ? `str_${i}` : i % 3 === 1 ? BigInt(i * 100) : f;
+    const jsonVal = i % 3 === 0 ? `str_${i}` : i % 3 === 1 ? i * 100 : f;
     json.push({ id: i, v: jsonVal });
     rows.push([i, variant]);
   }
@@ -383,16 +379,8 @@ function generateDynamicData(count: number): {
   const json: Record<string, unknown>[] = [];
   const rows: unknown[][] = [];
   for (let i = 0; i < count; i++) {
-    // Mix of types: string, bigint, float, bool
-    const val =
-      i % 4 === 0
-        ? `str_${i}`
-        : i % 4 === 1
-          ? BigInt(i)
-          : i % 4 === 2
-            ? Math.random() * 100
-            : i % 2 === 0;
-    // JSON representation
+    const f = Math.random() * 100;
+    const val = i % 4 === 0 ? `str_${i}` : i % 4 === 1 ? BigInt(i) : i % 4 === 2 ? f : i % 2 === 0;
     const jsonVal = typeof val === "bigint" ? Number(val) : val;
     json.push({ id: i, d: jsonVal });
     rows.push([i, val]);
@@ -418,7 +406,7 @@ function generateJsonColumnData(count: number): {
       active: i % 2 === 0,
       ...(i % 3 === 0 ? { tags: [`tag_${i % 5}`, `cat_${i % 3}`] } : {}),
     };
-    json.push({ id: i, data: obj });
+    json.push({ id: i, data: structuredClone(obj) });
     rows.push([i, obj]);
   }
   return { json, rows, columns };
@@ -461,7 +449,7 @@ async function main() {
 
   reportEnvironment();
   const benchOptions = readBenchOptions({ iterations: 50, warmup: 20 });
-  const ROWS = 10_000;
+  const ROWS = 100_000;
   const ITERATIONS = benchOptions.iterations ?? 50;
 
   console.log(`Benchmarking with ${ROWS} rows, ${ITERATIONS} iterations each\n`);

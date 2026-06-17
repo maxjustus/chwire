@@ -1,4 +1,4 @@
-.PHONY: build test test-tcp fuzz bench bench-formats bench-concurrent bench-profile profile-complex profile-variant profile-dynamic profile-json profile-json-caching publish update-settings
+.PHONY: build test test-tcp fuzz bench bench-formats bench-concurrent bench-profile profile-escape profile-complex profile-variant profile-dynamic profile-json profile-json-caching publish update-settings
 
 build:
 	npm run build
@@ -32,6 +32,9 @@ bench-profile:
 	@node --experimental-strip-types --cpu-prof --cpu-prof-name=bench.cpuprofile scripts/profile.ts $(ARGS)
 	@node --experimental-strip-types scripts/profile-hotspots.ts bench.cpuprofile
 	@rm -f bench.cpuprofile
+
+profile-escape:
+	$(MAKE) bench-profile ARGS="-f native -o encode -d escape"
 
 profile-complex:
 	$(MAKE) bench-profile ARGS="-f native -o encode -d bench-complex"

@@ -1,6 +1,6 @@
 # Changelog
 
-## 1.0.0 - Unreleased
+## 1.0.0
 
 `@maxjustus/chwire` is the renamed successor to `@maxjustus/chttp`. This first
 release includes the unreleased changes since `@maxjustus/chttp@1.15.0`.
@@ -13,10 +13,6 @@ release includes the unreleased changes since `@maxjustus/chttp@1.15.0`.
 - Added `RecordBatch.isRecordBatch()` for identity-safe batch detection across module copies (ESM/CJS, source vs. bundle); insert and external-table dispatch use it instead of `instanceof`.
 - Added a clear error when the server mandates the chunked TCP protocol, instead of desyncing after the handshake.
 - Added TCP TLS coverage in the test suite.
-
-### Removed
-
-- Removed RowBinary encode/decode support; Native is now the only binary wire-format codec.
 
 ### Fixed
 

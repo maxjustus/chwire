@@ -37,6 +37,7 @@ const DATA_TYPES = [
   "mixed",
   "numeric",
   "strings",
+  "escape",
   "complex",
   "full",
   "bench-complex",
@@ -77,6 +78,7 @@ Data types:
   mixed         UInt32, String×2, Bool, Float64, DateTime
   numeric       UInt8/16/32, Int32, Float32/64
   strings       UInt32, String×3 (varying lengths)
+  escape        UInt32, String×3 (quotes, newlines, backslashes)
   complex       Array, Nullable, Tuple, Map
   full          All codecs: numeric, string, date/time, UUID, IP, LowCardinality, etc.
   bench-complex Matches bench/formats.ts "Complex Data" (50-element float arrays)
@@ -163,6 +165,21 @@ const SCHEMAS: Record<(typeof DATA_TYPES)[number], Schema> = {
       `s${i}`,
       `medium_string_value_${i}`,
       `this_is_a_longer_string_with_more_content_${i}_end`,
+    ],
+  },
+
+  escape: {
+    columns: [
+      { name: "id", type: "UInt32" },
+      { name: "name", type: "String" },
+      { name: "desc", type: "String" },
+      { name: "path", type: "String" },
+    ],
+    generate: (i) => [
+      i,
+      `user "test" ${i}`,
+      `Line1\nLine2\tTabbed`,
+      `C:\\Users\\test\\file${i}.txt`,
     ],
   },
 
