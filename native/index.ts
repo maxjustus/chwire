@@ -34,7 +34,6 @@ export {
   ClickHouseDateTime64,
   type ColumnDef,
   type DecodeOptions,
-  type DecodeResult,
   DynamicValue,
   TEXT_DECODER,
 } from "./types.ts";

@@ -11,13 +11,12 @@ import {
   zstdCompressRaw,
 } from "./compression.ts";
 import { ClickHouseException } from "./errors.ts";
-import type { ClickHouseSettings } from "./settings.ts";
+import type { ClickHouseSettings } from "./settings.generated.ts";
 
 export {
   ClickHouseDateTime64,
   type ColumnDef,
   collectRows,
-  type DecodeResult,
   type ExternalTableData,
   encodeNative,
   RecordBatch,

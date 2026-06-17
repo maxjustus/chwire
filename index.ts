@@ -4,7 +4,6 @@ export {
   ClickHouseDateTime64,
   type ColumnDef,
   collectRows,
-  type DecodeResult,
   DynamicValue,
   encodeNative,
   getCodec,
@@ -37,4 +36,4 @@ export {
   encodeBlock,
   Method,
 } from "./compression.ts";
-export type { ClickHouseSettings } from "./settings.ts";
+export type { ClickHouseSettings } from "./settings.generated.ts";

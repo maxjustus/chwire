@@ -19,11 +19,6 @@ export interface ColumnDef {
   type: string;
 }
 
-export interface DecodeResult {
-  columns: ColumnDef[];
-  rows: unknown[][];
-}
-
 export interface DecodeOptions {
   /** Decode Map types as Array<[K, V]> instead of Map<K, V> to preserve duplicate keys */
   mapAsArray?: boolean;
