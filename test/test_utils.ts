@@ -3,9 +3,9 @@ import {
   batchFromRows,
   type ColumnDef,
   type DecodeOptions,
+  decodeNativeBlock,
   encodeNative,
   RecordBatch,
-  streamDecodeNative,
 } from "../native/index.ts";
 import { TcpClient } from "../tcp_client/client.ts";
 import { BufferWriter } from "../native/io.ts";
@@ -72,18 +72,9 @@ export function toArrayRows(batch: RecordBatch): unknown[][] {
 /**
  * Decode a single Native block from bytes. Convenience for tests.
  */
-export async function decodeBatch(data: Uint8Array, options?: DecodeOptions): Promise<RecordBatch> {
-  const batches: RecordBatch[] = [];
-  for await (const batch of streamDecodeNative(toAsync([data]), options)) {
-    batches.push(batch);
-  }
-  if (batches.length === 0) {
-    return RecordBatch.from({ columns: [], columnData: [], rowCount: 0 });
-  }
-  if (batches.length === 1) {
-    return batches[0]!;
-  }
-  throw new Error("decodeBatch: expected single batch, got multiple");
+export function decodeBatch(data: Uint8Array, options?: DecodeOptions): RecordBatch {
+  const block = decodeNativeBlock(data, 0, options);
+  return RecordBatch.from(block);
 }
 
 export function generateSessionId(prefix: string): string {

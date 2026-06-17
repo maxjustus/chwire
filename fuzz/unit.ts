@@ -107,7 +107,7 @@ describe("Native Unit Fuzz Tests", { timeout: 60000 }, () => {
     for (let iter = startIdx; iter < startIdx + iterations; iter++) {
       {
         const encoded = encodeRows(types, []);
-        const decoded = await decodeBatch(encoded);
+        const decoded = decodeBatch(encoded);
         assert.deepStrictEqual(decoded.columns, types);
         assert.strictEqual(decoded.rowCount, 0);
       }
@@ -115,7 +115,7 @@ describe("Native Unit Fuzz Tests", { timeout: 60000 }, () => {
       {
         const row: unknown[] = [randomBigInt64(), randomString(20)];
         const encoded = encodeRows(types, [row]);
-        const decoded = await decodeBatch(encoded);
+        const decoded = decodeBatch(encoded);
         assert.deepStrictEqual(decoded.columns, types);
         assert.deepStrictEqual(toArrayRows(decoded), [row]);
       }
@@ -188,7 +188,7 @@ describe("Native Unit Fuzz Tests", { timeout: 60000 }, () => {
 
       const columns: ColumnDef[] = [{ name: "j", type: jsonType }];
       const encoded = encodeRows(columns, rows);
-      const decoded = await decodeBatch(encoded);
+      const decoded = decodeBatch(encoded);
 
       assert.deepStrictEqual(decoded.columns, columns);
       assert.strictEqual(decoded.rowCount, rowCount);

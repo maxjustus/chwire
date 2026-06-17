@@ -14,7 +14,7 @@ describe("encodeNative", () => {
     // Should have: 1 col, 0 rows, "id", "Int32", no data
     assert.ok(encoded.length > 0);
 
-    const decoded = await decodeBatch(encoded);
+    const decoded = decodeBatch(encoded);
     assert.ok(decoded instanceof RecordBatch);
     assert.deepStrictEqual(decoded.columns, columns);
     assert.strictEqual(decoded.rowCount, 0);
@@ -24,7 +24,7 @@ describe("encodeNative", () => {
     const columns: ColumnDef[] = [{ name: "id", type: "Int32" }];
     const rows = [[1], [2], [3]];
     const encoded = encodeNativeRows(columns, rows);
-    const table = await decodeBatch(encoded);
+    const table = decodeBatch(encoded);
 
     assert.ok(table instanceof RecordBatch);
     assert.deepStrictEqual(table.columns, columns);
@@ -51,7 +51,7 @@ describe("encodeNative", () => {
       [2, "bob", 2.5],
     ];
     const encoded = encodeNativeRows(columns, rows);
-    const table = await decodeBatch(encoded);
+    const table = decodeBatch(encoded);
 
     assert.deepStrictEqual(table.columns, columns);
 
@@ -89,7 +89,7 @@ describe("encodeNative", () => {
       [127, 32767, 2147483647, 9223372036854775807n, 0, 0, 0, 0n],
     ];
     const encoded = encodeNativeRows(columns, rows);
-    const decoded = await decodeBatch(encoded);
+    const decoded = decodeBatch(encoded);
 
     assert.deepStrictEqual(decoded.columns, columns);
     assert.deepStrictEqual(toArrayRows(decoded), rows);
@@ -125,7 +125,7 @@ describe("encodeNative", () => {
       [-1.5, -1.5],
     ];
     const encoded = encodeNativeRows(columns, rows);
-    const decoded = await decodeBatch(encoded);
+    const decoded = decodeBatch(encoded);
 
     assert.deepStrictEqual(decoded.columns, columns);
     // Float32 loses precision
@@ -146,7 +146,7 @@ describe("encodeNative", () => {
       [NaN, NaN],
     ];
     const encoded = encodeNativeRows(columns, rows);
-    const decoded = await decodeBatch(encoded);
+    const decoded = decodeBatch(encoded);
     const decodedRows = toArrayRows(decoded);
 
     assert.strictEqual(decodedRows[0]![0], Infinity);
@@ -161,7 +161,7 @@ describe("encodeNative", () => {
     const columns: ColumnDef[] = [{ name: "text", type: "String" }];
     const rows = [["hello"], ["世界"], ["🎉"], [""]];
     const encoded = encodeNativeRows(columns, rows);
-    const decoded = await decodeBatch(encoded);
+    const decoded = decodeBatch(encoded);
 
     assert.deepStrictEqual(decoded.columns, columns);
     assert.deepStrictEqual(toArrayRows(decoded), rows);
@@ -180,7 +180,7 @@ describe("encodeNative", () => {
       ["\x00\x7f"], // ASCII edge bytes
     ];
     const encoded = encodeNativeRows(columns, rows);
-    const decoded = await decodeBatch(encoded);
+    const decoded = decodeBatch(encoded);
 
     assert.deepStrictEqual(toArrayRows(decoded), rows);
   });
@@ -189,7 +189,7 @@ describe("encodeNative", () => {
     const columns: ColumnDef[] = [{ name: "s", type: "String" }];
     const rows = [[{ a: 1 }], [[1, 2, 3]], [new Map([["x", 1]])], [1n], [new Uint8Array([1, 2])]];
     const encoded = encodeNativeRows(columns, rows);
-    const decoded = await decodeBatch(encoded);
+    const decoded = decodeBatch(encoded);
     const decodedRows = toArrayRows(decoded);
 
     assert.strictEqual(decodedRows[0]![0], '{"a":1}');
@@ -203,7 +203,7 @@ describe("encodeNative", () => {
     const columns: ColumnDef[] = [{ name: "val", type: "Nullable(Int32)" }];
     const rows = [[1], [null], [3]];
     const encoded = encodeNativeRows(columns, rows);
-    const decoded = await decodeBatch(encoded);
+    const decoded = decodeBatch(encoded);
 
     assert.deepStrictEqual(decoded.columns, columns);
     assert.deepStrictEqual(toArrayRows(decoded), rows);
@@ -213,7 +213,7 @@ describe("encodeNative", () => {
     const columns: ColumnDef[] = [{ name: "arr", type: "Array(Int32)" }];
     const rows = [[[1, 2, 3]], [[]], [[42]]];
     const encoded = encodeNativeRows(columns, rows);
-    const decoded = await decodeBatch(encoded);
+    const decoded = decodeBatch(encoded);
     const decodedRows = toArrayRows(decoded);
 
     assert.deepStrictEqual(decoded.columns, columns);
@@ -237,7 +237,7 @@ describe("encodeNative", () => {
     ];
 
     const encoded = encodeNativeRows(columns, rows);
-    const decoded = await decodeBatch(encoded, { enumAsNumber: true });
+    const decoded = decodeBatch(encoded, { enumAsNumber: true });
     const decodedRows = toArrayRows(decoded);
 
     // Array defaults to empty array
@@ -268,7 +268,7 @@ describe("encodeNative", () => {
     const columns: ColumnDef[] = [{ name: "m", type: "Map(String, Int32)" }];
     const rows = [[{ a: 1, b: 2 }], [{}]];
     const encoded = encodeNativeRows(columns, rows);
-    const decoded = await decodeBatch(encoded);
+    const decoded = decodeBatch(encoded);
     const decodedRows = toArrayRows(decoded);
 
     assert.deepStrictEqual(decoded.columns, columns);
@@ -281,7 +281,7 @@ describe("encodeNative", () => {
     const columns: ColumnDef[] = [{ name: "t", type: "Tuple(Int32, String)" }];
     const rows = [[[1, "a"]], [[2, "b"]]];
     const encoded = encodeNativeRows(columns, rows);
-    const decoded = await decodeBatch(encoded);
+    const decoded = decodeBatch(encoded);
 
     assert.deepStrictEqual(decoded.columns, columns);
     assert.deepStrictEqual(toArrayRows(decoded), rows);
@@ -291,7 +291,7 @@ describe("encodeNative", () => {
     const columns: ColumnDef[] = [{ name: "t", type: "Tuple(id Int32, name String)" }];
     const rows = [[{ id: 1, name: "alice" }], [{ id: 2, name: "bob" }]];
     const encoded = encodeNativeRows(columns, rows);
-    const decoded = await decodeBatch(encoded);
+    const decoded = decodeBatch(encoded);
     const decodedRows = toArrayRows(decoded);
 
     assert.deepStrictEqual(decoded.columns, columns);
@@ -302,7 +302,7 @@ describe("encodeNative", () => {
     const columns: ColumnDef[] = [{ name: "id", type: "UUID" }];
     const rows = [["550e8400-e29b-41d4-a716-446655440000"]];
     const encoded = encodeNativeRows(columns, rows);
-    const decoded = await decodeBatch(encoded);
+    const decoded = decodeBatch(encoded);
     const decodedRows = toArrayRows(decoded);
 
     assert.deepStrictEqual(decoded.columns, columns);
@@ -318,7 +318,7 @@ describe("encodeNative", () => {
     const datetime = new Date("2024-01-15T10:30:00Z");
     const rows = [[date, datetime]];
     const encoded = encodeNativeRows(columns, rows);
-    const decoded = await decodeBatch(encoded);
+    const decoded = decodeBatch(encoded);
     const decodedRows = toArrayRows(decoded);
 
     assert.deepStrictEqual(decoded.columns, columns);
@@ -345,7 +345,7 @@ describe("encodeNative", () => {
     const columns: ColumnDef[] = [{ name: "dt", type: "DateTime('UTC')" }];
     const datetime = new Date("2085-12-02T08:49:17Z");
     const encoded = encodeNativeRows(columns, [[datetime]]);
-    const decoded = await decodeBatch(encoded);
+    const decoded = decodeBatch(encoded);
     const decodedRows = toArrayRows(decoded);
 
     assert.ok(decodedRows[0]![0] instanceof Date);
@@ -358,7 +358,7 @@ describe("additional scalar types", () => {
     const columns: ColumnDef[] = [{ name: "fs", type: "FixedString(5)" }];
     const rows = [["hello"], ["world"], ["hi\0\0\0"]];
     const encoded = encodeNativeRows(columns, rows);
-    const decoded = await decodeBatch(encoded);
+    const decoded = decodeBatch(encoded);
     const decodedRows = toArrayRows(decoded);
 
     assert.deepStrictEqual(decoded.columns, columns);
@@ -373,7 +373,7 @@ describe("additional scalar types", () => {
     const date = new Date("2024-01-15");
     const rows = [[date]];
     const encoded = encodeNativeRows(columns, rows);
-    const decoded = await decodeBatch(encoded);
+    const decoded = decodeBatch(encoded);
     const decodedRows = toArrayRows(decoded);
 
     assert.deepStrictEqual(decoded.columns, columns);
@@ -385,7 +385,7 @@ describe("additional scalar types", () => {
     const date = new Date("2024-01-15T10:30:00.123Z");
     const rows = [[date]];
     const encoded = encodeNativeRows(columns, rows);
-    const decoded = await decodeBatch(encoded);
+    const decoded = decodeBatch(encoded);
     const decodedRows = toArrayRows(decoded);
 
     assert.deepStrictEqual(decoded.columns, columns);
@@ -405,7 +405,7 @@ describe("additional scalar types", () => {
     const isoDateOnly = "2024-01-15";
     const rows = [[isoFull, isoWithZ, isoDateOnly]];
     const encoded = encodeNativeRows(columns, rows);
-    const decoded = await decodeBatch(encoded);
+    const decoded = decodeBatch(encoded);
     const decodedRows = toArrayRows(decoded);
 
     assert.deepStrictEqual(decoded.columns, columns);
@@ -426,7 +426,7 @@ describe("additional scalar types", () => {
     const isoNoMs = "2024-01-15T10:30:00";
     const rows = [[isoFull], [isoNoMs]];
     const encoded = encodeNativeRows(columns, rows);
-    const decoded = await decodeBatch(encoded);
+    const decoded = decodeBatch(encoded);
     const decodedRows = toArrayRows(decoded);
 
     assert.deepStrictEqual(decoded.columns, columns);
@@ -441,7 +441,7 @@ describe("additional scalar types", () => {
     const timestampMs = 1705315800123; // 2024-01-15T10:30:00.123Z
     const rows = [[timestampMs]];
     const encoded = encodeNativeRows(columns, rows);
-    const decoded = await decodeBatch(encoded);
+    const decoded = decodeBatch(encoded);
     const decodedRows = toArrayRows(decoded);
 
     assert.deepStrictEqual(decoded.columns, columns);
@@ -461,7 +461,7 @@ describe("additional scalar types", () => {
       [false, false, false, false],
     ];
     const encoded = encodeNativeRows(columns, rows);
-    const decoded = await decodeBatch(encoded);
+    const decoded = decodeBatch(encoded);
     const decodedRows = toArrayRows(decoded);
 
     assert.deepStrictEqual(decoded.columns, columns);
@@ -497,7 +497,7 @@ describe("additional scalar types", () => {
       ["0", "0.0"],
     ];
     const encoded = encodeNativeRows(columns, rows);
-    const decoded = await decodeBatch(encoded);
+    const decoded = decodeBatch(encoded);
     const decodedRows = toArrayRows(decoded);
     assert.strictEqual(decodedRows[0]![0], 123);
     assert.strictEqual(decodedRows[0]![1], 3.14);
@@ -538,7 +538,7 @@ describe("additional scalar types", () => {
     ];
     const rows = [[null, undefined]];
     const encoded = encodeNativeRows(columns, rows);
-    const decoded = await decodeBatch(encoded);
+    const decoded = decodeBatch(encoded);
     const decodedRows = toArrayRows(decoded);
 
     assert.strictEqual(decodedRows[0]![0], 0);
@@ -549,7 +549,7 @@ describe("additional scalar types", () => {
     const columns: ColumnDef[] = [{ name: "ip", type: "IPv4" }];
     const rows = [["192.168.1.1"], ["10.0.0.1"]];
     const encoded = encodeNativeRows(columns, rows);
-    const decoded = await decodeBatch(encoded);
+    const decoded = decodeBatch(encoded);
     const decodedRows = toArrayRows(decoded);
 
     assert.deepStrictEqual(decoded.columns, columns);
@@ -561,7 +561,7 @@ describe("additional scalar types", () => {
     const columns: ColumnDef[] = [{ name: "ip", type: "IPv6" }];
     const rows = [["2001:db8::1"], ["::1"]];
     const encoded = encodeNativeRows(columns, rows);
-    const decoded = await decodeBatch(encoded);
+    const decoded = decodeBatch(encoded);
     const decodedRows = toArrayRows(decoded);
 
     assert.deepStrictEqual(decoded.columns, columns);
@@ -608,11 +608,11 @@ describe("additional scalar types", () => {
     const rows = [[1], [2], [1]];
     const encoded = encodeNativeRows(columns, rows);
 
-    const decodedStrings = await decodeBatch(encoded);
+    const decodedStrings = decodeBatch(encoded);
     assert.deepStrictEqual(decodedStrings.columns, columns);
     assert.deepStrictEqual(toArrayRows(decodedStrings), [["a"], ["b"], ["a"]]);
 
-    const decodedNumbers = await decodeBatch(encoded, { enumAsNumber: true });
+    const decodedNumbers = decodeBatch(encoded, { enumAsNumber: true });
     assert.deepStrictEqual(decodedNumbers.columns, columns);
     assert.deepStrictEqual(toArrayRows(decodedNumbers), [[1], [2], [1]]);
   });
@@ -624,7 +624,7 @@ describe("additional scalar types", () => {
     const rows = [["pending"], ["active"], ["done"], ["pending"]];
     const encoded = encodeNativeRows(columns, rows);
 
-    const decodedStrings = await decodeBatch(encoded);
+    const decodedStrings = decodeBatch(encoded);
     assert.deepStrictEqual(toArrayRows(decodedStrings), [
       ["pending"],
       ["active"],
@@ -632,7 +632,7 @@ describe("additional scalar types", () => {
       ["pending"],
     ]);
 
-    const decodedNumbers = await decodeBatch(encoded, { enumAsNumber: true });
+    const decodedNumbers = decodeBatch(encoded, { enumAsNumber: true });
     assert.deepStrictEqual(toArrayRows(decodedNumbers), [[0], [1], [2], [0]]);
   });
 
@@ -640,7 +640,7 @@ describe("additional scalar types", () => {
     const columns: ColumnDef[] = [{ name: "e", type: "Enum8('a' = 1, 'b' = 2)" }];
     const rows = [[1], [2]];
     const encoded = encodeNativeRows(columns, rows);
-    const decoded = await decodeBatch(encoded, { enumAsNumber: true });
+    const decoded = decodeBatch(encoded, { enumAsNumber: true });
 
     assert.deepStrictEqual(toArrayRows(decoded), [[1], [2]]);
   });
@@ -649,7 +649,7 @@ describe("additional scalar types", () => {
     const columns: ColumnDef[] = [{ name: "d", type: "Decimal64(4)" }];
     const rows = [["123.4567"], ["-999.9999"]];
     const encoded = encodeNativeRows(columns, rows);
-    const decoded = await decodeBatch(encoded);
+    const decoded = decodeBatch(encoded);
     const decodedRows = toArrayRows(decoded);
 
     assert.deepStrictEqual(decoded.columns, columns);
@@ -668,7 +668,7 @@ describe("additional scalar types", () => {
       ["-0.01", "0.000001", "9999999999.9999999999"],
     ];
     const encoded = encodeNativeRows(columns, rows);
-    const decoded = await decodeBatch(encoded);
+    const decoded = decodeBatch(encoded);
     const decodedRows = toArrayRows(decoded);
 
     assert.deepStrictEqual(decoded.columns, columns);
@@ -679,7 +679,7 @@ describe("additional scalar types", () => {
     const columns: ColumnDef[] = [{ name: "d", type: "Decimal64(2)" }];
     const rows = [[123.45], [-99.99], [0], [null]];
     const encoded = encodeNativeRows(columns, rows);
-    const decoded = await decodeBatch(encoded);
+    const decoded = decodeBatch(encoded);
     const decodedRows = toArrayRows(decoded);
 
     assert.strictEqual(decodedRows[0]![0], "123.45");
@@ -702,7 +702,7 @@ describe("additional scalar types", () => {
       [-170141183460469231731687303715884105728n],
     ];
     const encoded = encodeNativeRows(columns, rows);
-    const decoded = await decodeBatch(encoded);
+    const decoded = decodeBatch(encoded);
     const decodedRows = toArrayRows(decoded);
 
     assert.deepStrictEqual(decoded.columns, columns);
@@ -715,7 +715,7 @@ describe("additional scalar types", () => {
     const maxU128 = (1n << 128n) - 1n;
     const rows = [[maxU128], [0n]];
     const encoded = encodeNativeRows(columns, rows);
-    const decoded = await decodeBatch(encoded);
+    const decoded = decodeBatch(encoded);
     const decodedRows = toArrayRows(decoded);
 
     assert.deepStrictEqual(decoded.columns, columns);
@@ -729,7 +729,7 @@ describe("additional scalar types", () => {
     const minI256 = -(1n << 255n);
     const rows = [[maxI256], [minI256]];
     const encoded = encodeNativeRows(columns, rows);
-    const decoded = await decodeBatch(encoded);
+    const decoded = decodeBatch(encoded);
     const decodedRows = toArrayRows(decoded);
 
     assert.deepStrictEqual(decoded.columns, columns);
@@ -742,7 +742,7 @@ describe("additional scalar types", () => {
     const maxU256 = (1n << 256n) - 1n;
     const rows = [[maxU256], [0n]];
     const encoded = encodeNativeRows(columns, rows);
-    const decoded = await decodeBatch(encoded);
+    const decoded = decodeBatch(encoded);
     const decodedRows = toArrayRows(decoded);
 
     assert.deepStrictEqual(decoded.columns, columns);
@@ -877,7 +877,7 @@ describe("additional scalar types", () => {
       [0],
     ];
     const encoded = encodeNativeRows(columns, rows);
-    const decoded = await decodeBatch(encoded);
+    const decoded = decodeBatch(encoded);
     const decodedRows = toArrayRows(decoded);
 
     assert.strictEqual(decodedRows[0]![0], 1); // "true"
@@ -913,7 +913,7 @@ describe("additional scalar types", () => {
       ["123", "456"], // string -> bigint
     ];
     const encoded = encodeNativeRows(columns, rows);
-    const decoded = await decodeBatch(encoded);
+    const decoded = decodeBatch(encoded);
     const decodedRows = toArrayRows(decoded);
 
     assert.strictEqual(decodedRows[0]![0], 1n);
@@ -943,7 +943,7 @@ describe("DateTime64 precision edge cases", () => {
     const date = new Date("2024-01-15T10:30:00.500Z"); // 500ms -> 5 deciseconds
     const rows = [[date]];
     const encoded = encodeNativeRows(columns, rows);
-    const decoded = await decodeBatch(encoded);
+    const decoded = decodeBatch(encoded);
     const decodedRows = toArrayRows(decoded);
 
     assert.deepStrictEqual(decoded.columns, columns);
@@ -961,7 +961,7 @@ describe("DateTime64 precision edge cases", () => {
     const date = new Date("2024-01-15T10:30:00.120Z"); // 120ms -> 12 centiseconds
     const rows = [[date]];
     const encoded = encodeNativeRows(columns, rows);
-    const decoded = await decodeBatch(encoded);
+    const decoded = decodeBatch(encoded);
     const decodedRows = toArrayRows(decoded);
 
     assert.deepStrictEqual(decoded.columns, columns);
@@ -978,7 +978,7 @@ describe("DateTime64 precision edge cases", () => {
     const date = new Date("2024-01-15T10:30:00.999Z"); // 999ms -> truncated to 0
     const rows = [[date]];
     const encoded = encodeNativeRows(columns, rows);
-    const decoded = await decodeBatch(encoded);
+    const decoded = decodeBatch(encoded);
     const decodedRows = toArrayRows(decoded);
 
     assert.deepStrictEqual(decoded.columns, columns);

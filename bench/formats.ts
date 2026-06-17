@@ -9,6 +9,7 @@ import {
   batchFromCols,
   batchFromRows,
   type ColumnDef,
+  decodeNativeBlock,
   encodeNative,
   getCodec,
   RecordBatch,
@@ -29,10 +30,6 @@ function encodeNativeRows(columns: ColumnDef[], rows: unknown[][]): Uint8Array {
   return encodeNative(batchFromRows(columns, rows));
 }
 
-async function* toAsync(data: Uint8Array[]): AsyncIterable<Uint8Array> {
-  for (const chunk of data) yield chunk;
-}
-
 async function collectByteChunks(chunks: AsyncIterable<Uint8Array>): Promise<Uint8Array> {
   const parts: Uint8Array[] = [];
   let total = 0;
@@ -50,15 +47,6 @@ async function collectByteChunks(chunks: AsyncIterable<Uint8Array>): Promise<Uin
   return result;
 }
 
-async function decodeBatch(data: Uint8Array): Promise<RecordBatch> {
-  for await (const batch of streamDecodeNative(toAsync([data]))) {
-    return batch;
-  }
-  return RecordBatch.from({ columns: [], columnData: [], rowCount: 0 });
-}
-
-// --- Benchmark infrastructure ---
-
 function formatResult(stats: { name: string; meanMs: number }, rows: number): string {
   const rowsPerSec = rows / (stats.meanMs / 1000);
   return `  ${stats.name.padEnd(30)} ${stats.meanMs.toFixed(3).padStart(8)}ms  ${(rowsPerSec / 1_000_000).toFixed(2).padStart(6)}M rows/sec`;
@@ -67,8 +55,6 @@ function formatResult(stats: { name: string; meanMs: number }, rows: number): st
 function formatKB(bytes: number): string {
   return `${(bytes / 1024).toFixed(1)}KB`;
 }
-
-// --- JSON helpers ---
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
@@ -86,8 +72,6 @@ function decodeJsonEachRow<T>(data: Uint8Array): T[] {
     .split("\n")
     .map((line) => JSON.parse(line) as T);
 }
-
-// --- Streaming helpers ---
 
 async function* chunkedStream(data: Uint8Array, chunkSize: number): AsyncIterable<Uint8Array> {
   for (let i = 0; i < data.length; i += chunkSize) {
@@ -109,8 +93,6 @@ async function collectNative(chunks: AsyncIterable<Uint8Array>): Promise<RecordB
   // Return first block for benchmark
   return blocks[0];
 }
-
-// --- Scenario types ---
 
 interface Scenario {
   name: string;
@@ -172,13 +154,10 @@ async function runScenario(
     iterations,
   });
   console.log(formatResult(jsonDec, rows));
-  const nativeDec = await benchAsync(
-    "Native decode",
-    async () => {
-      await decodeBatch(nativeEncoded);
-    },
-    { ...benchOptions, iterations },
-  );
+  const nativeDec = benchSync("Native decode", () => decodeNativeBlock(nativeEncoded, 0), {
+    ...benchOptions,
+    iterations,
+  });
   console.log(formatResult(nativeDec, rows));
 
   // Compression comparison (LZ4, ZSTD, gzip)
@@ -258,8 +237,6 @@ async function runScenario(
     },
   };
 }
-
-// --- Data generators ---
 
 function generateSimpleData(count: number): {
   json: Record<string, unknown>[];
@@ -576,13 +553,10 @@ async function main() {
   const simpleNativeEncoded = encodeNativeRows(simple.columns, simple.rows);
 
   console.log("Decoding (sync vs streaming):");
-  const syncDec = await benchAsync(
-    "Sync decode",
-    async () => {
-      await decodeBatch(simpleNativeEncoded);
-    },
-    { ...benchOptions, iterations: ITERATIONS },
-  );
+  const syncDec = benchSync("Sync decode", () => decodeNativeBlock(simpleNativeEncoded, 0), {
+    ...benchOptions,
+    iterations: ITERATIONS,
+  });
   console.log(formatResult(syncDec, ROWS));
 
   const stream1 = await benchAsync(

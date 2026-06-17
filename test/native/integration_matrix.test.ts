@@ -100,7 +100,7 @@ describe("Native integration type matrix", { timeout: 120000 }, () => {
       const data = await collectBytes(
         query(`SELECT * FROM ${table} ORDER BY id FORMAT Native`, { url, auth, sessionId }),
       );
-      const decoded = await decodeBatch(data);
+      const decoded = decodeBatch(data);
       const decodedRows = toArrayRows(decoded);
       const decoder = new TextDecoder();
 

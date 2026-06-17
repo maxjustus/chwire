@@ -49,7 +49,7 @@ describe("Native format integration", { timeout: 120000 }, () => {
           sessionId,
         }),
       );
-      const decoded = await decodeBatch(data);
+      const decoded = decodeBatch(data);
       return { decoded, decodedRows: toArrayRows(decoded) };
     } finally {
       await consume(query(`DROP TABLE ${table}`, { url, auth, sessionId }));
@@ -189,7 +189,7 @@ describe("Native format integration", { timeout: 120000 }, () => {
       const data = await collectBytes(
         query(`SELECT * FROM ${table} ORDER BY id FORMAT Native`, { url, auth, sessionId }),
       );
-      const decoded = await decodeBatch(data);
+      const decoded = decodeBatch(data);
       const decodedRows = toArrayRows(decoded);
 
       assert.strictEqual(decoded.rowCount, 2);
@@ -243,7 +243,7 @@ describe("Native format integration", { timeout: 120000 }, () => {
           sessionId,
         }),
       );
-      const decoded = await decodeBatch(data);
+      const decoded = decodeBatch(data);
       const decodedRows = toArrayRows(decoded);
 
       assert.strictEqual(decoded.rowCount, 2);

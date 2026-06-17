@@ -8,7 +8,7 @@ describe("LowCardinality", () => {
     const columns: ColumnDef[] = [{ name: "lc", type: "LowCardinality(String)" }];
     const rows = [["a"], ["b"], ["a"], ["c"], ["b"], ["a"]];
     const encoded = encodeNativeRows(columns, rows);
-    const decoded = await decodeBatch(encoded);
+    const decoded = decodeBatch(encoded);
 
     assert.deepStrictEqual(decoded.columns, columns);
     assert.deepStrictEqual(toArrayRows(decoded), rows);
@@ -18,7 +18,7 @@ describe("LowCardinality", () => {
     const columns: ColumnDef[] = [{ name: "lc", type: "LowCardinality(Nullable(String))" }];
     const rows = [["a"], [null], ["b"], [null], ["a"]];
     const encoded = encodeNativeRows(columns, rows);
-    const decoded = await decodeBatch(encoded);
+    const decoded = decodeBatch(encoded);
 
     assert.deepStrictEqual(decoded.columns, columns);
     assert.deepStrictEqual(toArrayRows(decoded), rows);
@@ -28,7 +28,7 @@ describe("LowCardinality", () => {
     const columns: ColumnDef[] = [{ name: "lc", type: "LowCardinality(FixedString(3))" }];
     const rows = [["abc"], ["def"], ["abc"], ["ghi"]];
     const encoded = encodeNativeRows(columns, rows);
-    const decoded = await decodeBatch(encoded);
+    const decoded = decodeBatch(encoded);
     const decodedRows = toArrayRows(decoded);
 
     assert.deepStrictEqual(decoded.columns, columns);
@@ -42,7 +42,7 @@ describe("LowCardinality", () => {
     const columns: ColumnDef[] = [{ name: "lc", type: "LowCardinality(String)" }];
     const rows: unknown[][] = [];
     const encoded = encodeNativeRows(columns, rows);
-    const decoded = await decodeBatch(encoded);
+    const decoded = decodeBatch(encoded);
 
     assert.deepStrictEqual(decoded.columns, columns);
     assert.strictEqual(decoded.rowCount, 0);
@@ -52,7 +52,7 @@ describe("LowCardinality", () => {
     const columns: ColumnDef[] = [{ name: "lc", type: "LowCardinality(Int32)" }];
     const rows = [[42], [100], [42], [100], [42]]; // duplicates to test deduplication
     const encoded = encodeNativeRows(columns, rows);
-    const decoded = await decodeBatch(encoded);
+    const decoded = decodeBatch(encoded);
     const decodedRows = toArrayRows(decoded);
 
     assert.deepStrictEqual(decoded.columns, columns);
@@ -70,7 +70,7 @@ describe("LowCardinality", () => {
     const d1dup = new Date("2024-01-15"); // same date, different object
     const rows = [[d1], [d2], [d1dup], [d2]];
     const encoded = encodeNativeRows(columns, rows);
-    const decoded = await decodeBatch(encoded);
+    const decoded = decodeBatch(encoded);
     const decodedRows = toArrayRows(decoded);
 
     assert.deepStrictEqual(decoded.columns, columns);
@@ -88,7 +88,7 @@ describe("LowCardinality", () => {
     const dt1dup = new Date("2024-01-15T10:30:00Z"); // same datetime, different object
     const rows = [[dt1], [dt2], [dt1dup]];
     const encoded = encodeNativeRows(columns, rows);
-    const decoded = await decodeBatch(encoded);
+    const decoded = decodeBatch(encoded);
     const decodedRows = toArrayRows(decoded);
 
     assert.deepStrictEqual(decoded.columns, columns);
@@ -103,7 +103,7 @@ describe("Geo types", () => {
     const columns: ColumnDef[] = [{ name: "p", type: "Point" }];
     const rows = [[[1.5, 2.5]], [[3.0, 4.0]], [[-1.0, -2.0]]];
     const encoded = encodeNativeRows(columns, rows);
-    const decoded = await decodeBatch(encoded);
+    const decoded = decodeBatch(encoded);
     const decodedRows = toArrayRows(decoded);
 
     assert.deepStrictEqual(decoded.columns, columns);
@@ -135,7 +135,7 @@ describe("Geo types", () => {
       ], // Triangle
     ];
     const encoded = encodeNativeRows(columns, rows);
-    const decoded = await decodeBatch(encoded);
+    const decoded = decodeBatch(encoded);
     const decodedRows = toArrayRows(decoded);
 
     assert.deepStrictEqual(decoded.columns, columns);
@@ -162,7 +162,7 @@ describe("Geo types", () => {
     ];
     const rows = [[[outerRing, hole]]]; // row 0, col 0 = [ring1, ring2]
     const encoded = encodeNativeRows(columns, rows);
-    const decoded = await decodeBatch(encoded);
+    const decoded = decodeBatch(encoded);
     const decodedRows = toArrayRows(decoded);
 
     assert.deepStrictEqual(decoded.columns, columns);
@@ -193,7 +193,7 @@ describe("Geo types", () => {
     ]; // another square
     const rows = [[[poly1, poly2]]]; // row 0, col 0 = [polygon1, polygon2]
     const encoded = encodeNativeRows(columns, rows);
-    const decoded = await decodeBatch(encoded);
+    const decoded = decodeBatch(encoded);
     const decodedRows = toArrayRows(decoded);
 
     assert.deepStrictEqual(decoded.columns, columns);
@@ -212,7 +212,7 @@ describe("Variant", () => {
       [[0, "world"]], // String (disc 0)
     ];
     const encoded = encodeNativeRows(columns, rows);
-    const decoded = await decodeBatch(encoded);
+    const decoded = decodeBatch(encoded);
     const decodedRows = toArrayRows(decoded);
 
     assert.deepStrictEqual(decoded.columns, columns);
@@ -229,7 +229,7 @@ describe("Variant", () => {
       [[1, 123n]],
     ];
     const encoded = encodeNativeRows(columns, rows);
-    const decoded = await decodeBatch(encoded);
+    const decoded = decodeBatch(encoded);
     const decodedRows = toArrayRows(decoded);
 
     assert.deepStrictEqual(decodedRows[0]![0], [0, "test"]);
@@ -241,7 +241,7 @@ describe("Variant", () => {
     const columns: ColumnDef[] = [{ name: "v", type: "Variant(String, UInt64)" }];
     const rows = [[[0, "test"]], [undefined], [[1, 123n]]];
     const encoded = encodeNativeRows(columns, rows);
-    const decoded = await decodeBatch(encoded);
+    const decoded = decodeBatch(encoded);
     const decodedRows = toArrayRows(decoded);
 
     assert.deepStrictEqual(decodedRows[0]![0], [0, "test"]);
@@ -253,7 +253,7 @@ describe("Variant", () => {
     const columns: ColumnDef[] = [{ name: "v", type: "Variant(String, Int32)" }];
     const rows = [[null], [null], [null]];
     const encoded = encodeNativeRows(columns, rows);
-    const decoded = await decodeBatch(encoded);
+    const decoded = decodeBatch(encoded);
     const decodedRows = toArrayRows(decoded);
 
     assert.strictEqual(decoded.rowCount, 3);
@@ -270,7 +270,7 @@ describe("Variant", () => {
       [[0, []]], // Empty array
     ];
     const encoded = encodeNativeRows(columns, rows);
-    const decoded = await decodeBatch(encoded);
+    const decoded = decodeBatch(encoded);
     const decodedRows = toArrayRows(decoded);
 
     // Arrays return plain arrays of values
@@ -304,7 +304,7 @@ describe("Dynamic", () => {
       ["world"], // String
     ];
     const encoded = encodeNativeRows(columns, rows);
-    const decoded = await decodeBatch(encoded);
+    const decoded = decodeBatch(encoded);
     const decodedRows = toArrayRows(decoded);
 
     assert.deepStrictEqual(decoded.columns, columns);
@@ -317,7 +317,7 @@ describe("Dynamic", () => {
     const columns: ColumnDef[] = [{ name: "d", type: "Dynamic" }];
     const rows = [["test"], [null], [123]];
     const encoded = encodeNativeRows(columns, rows);
-    const decoded = await decodeBatch(encoded);
+    const decoded = decodeBatch(encoded);
     const decodedRows = toArrayRows(decoded);
 
     assert.strictEqual(decodedRows[0]![0], "test");
@@ -329,7 +329,7 @@ describe("Dynamic", () => {
     const columns: ColumnDef[] = [{ name: "d", type: "Dynamic" }];
     const rows = [["test"], [undefined], [123]];
     const encoded = encodeNativeRows(columns, rows);
-    const decoded = await decodeBatch(encoded);
+    const decoded = decodeBatch(encoded);
     const decodedRows = toArrayRows(decoded);
 
     assert.strictEqual(decodedRows[0]![0], "test");
@@ -341,7 +341,7 @@ describe("Dynamic", () => {
     const columns: ColumnDef[] = [{ name: "d", type: "Dynamic" }];
     const rows = [[null], [null], [null]];
     const encoded = encodeNativeRows(columns, rows);
-    const decoded = await decodeBatch(encoded);
+    const decoded = decodeBatch(encoded);
     const decodedRows = toArrayRows(decoded);
 
     assert.strictEqual(decoded.rowCount, 3);
@@ -354,7 +354,7 @@ describe("Dynamic", () => {
     const columns: ColumnDef[] = [{ name: "d", type: "Dynamic" }];
     const rows = [[100n], ["text"], [200n]];
     const encoded = encodeNativeRows(columns, rows);
-    const decoded = await decodeBatch(encoded);
+    const decoded = decodeBatch(encoded);
     const decodedRows = toArrayRows(decoded);
 
     // BigInt is encoded as Int64
@@ -369,7 +369,7 @@ describe("JSON", () => {
     const columns: ColumnDef[] = [{ name: "j", type: "JSON" }];
     const rows = [[{ name: "alice", age: 30 }], [{ name: "bob", age: 25 }]];
     const encoded = encodeNativeRows(columns, rows);
-    const decoded = await decodeBatch(encoded);
+    const decoded = decodeBatch(encoded);
     const decodedRows = toArrayRows(decoded);
 
     assert.deepStrictEqual(decoded.columns, columns);
@@ -389,7 +389,7 @@ describe("JSON", () => {
       [{ age: 40 }], // missing name
     ];
     const encoded = encodeNativeRows(columns, rows);
-    const decoded = await decodeBatch(encoded);
+    const decoded = decodeBatch(encoded);
     const decodedRows = toArrayRows(decoded);
 
     const obj0 = decodedRows[0]![0] as Record<string, unknown>;
@@ -408,7 +408,7 @@ describe("JSON", () => {
     const columns: ColumnDef[] = [{ name: "j", type: "JSON" }];
     const rows = [[{}], [{}]];
     const encoded = encodeNativeRows(columns, rows);
-    const decoded = await decodeBatch(encoded);
+    const decoded = decodeBatch(encoded);
     const decodedRows = toArrayRows(decoded);
 
     assert.deepStrictEqual(decodedRows[0]![0], {});
@@ -422,7 +422,7 @@ describe("JSON", () => {
     ];
     const rows = [[{ currency: "USD", amount: 100 }], [{ currency: "EUR", amount: 200 }]];
     const encoded = encodeNativeRows(columns, rows);
-    const decoded = await decodeBatch(encoded);
+    const decoded = decodeBatch(encoded);
     const decodedRows = toArrayRows(decoded);
 
     assert.deepStrictEqual(decoded.columns, columns);
@@ -441,7 +441,7 @@ describe("JSON", () => {
       [{ currency: "EUR", amount: 200, extra: "bar" }],
     ];
     const encoded = encodeNativeRows(columns, rows);
-    const decoded = await decodeBatch(encoded);
+    const decoded = decodeBatch(encoded);
     const decodedRows = toArrayRows(decoded);
 
     const obj0 = decodedRows[0]![0] as Record<string, unknown>;
@@ -462,7 +462,7 @@ describe("JSON", () => {
       [{ status: "active" }], // Repeated value for LC
     ];
     const encoded = encodeNativeRows(columns, rows);
-    const decoded = await decodeBatch(encoded);
+    const decoded = decodeBatch(encoded);
     const decodedRows = toArrayRows(decoded);
 
     assert.strictEqual((decodedRows[0]![0] as any).status, "active");
@@ -478,7 +478,7 @@ describe("JSON", () => {
       [{ age: 40 }], // missing name treated as null
     ];
     const encoded = encodeNativeRows(columns, rows);
-    const decoded = await decodeBatch(encoded);
+    const decoded = decodeBatch(encoded);
     const decodedRows = toArrayRows(decoded);
 
     const obj0 = decodedRows[0]![0] as Record<string, unknown>;
@@ -497,7 +497,7 @@ describe("JSON", () => {
     const columns: ColumnDef[] = [{ name: "j", type: "JSON(tags Array(String))" }];
     const rows = [[{ tags: ["a", "b", "c"] }], [{ tags: [] }], [{ tags: ["x"] }]];
     const encoded = encodeNativeRows(columns, rows);
-    const decoded = await decodeBatch(encoded);
+    const decoded = decodeBatch(encoded);
     const decodedRows = toArrayRows(decoded);
 
     assert.deepStrictEqual((decodedRows[0]![0] as any).tags, ["a", "b", "c"]);
@@ -511,7 +511,7 @@ describe("round-trip with complex nested types", () => {
     const columns: ColumnDef[] = [{ name: "arr", type: "Array(Nullable(Int32))" }];
     const rows = [[[1, null, 3]], [[null, null]], [[]]];
     const encoded = encodeNativeRows(columns, rows);
-    const decoded = await decodeBatch(encoded);
+    const decoded = decodeBatch(encoded);
     assert.deepStrictEqual(toArrayRows(decoded), rows);
   });
 
@@ -519,7 +519,7 @@ describe("round-trip with complex nested types", () => {
     const columns: ColumnDef[] = [{ name: "t", type: "Tuple(Array(Int32), String)" }];
     const rows = [[[[1, 2], "a"]], [[[3], "b"]]];
     const encoded = encodeNativeRows(columns, rows);
-    const decoded = await decodeBatch(encoded);
+    const decoded = decodeBatch(encoded);
     const decodedRows = toArrayRows(decoded);
 
     // Arrays decode as TypedArrays
@@ -536,7 +536,7 @@ describe("round-trip with complex nested types", () => {
     const columns: ColumnDef[] = [{ name: "m", type: "Map(String, Array(Int32))" }];
     const rows = [[{ a: [1, 2], b: [3] }]];
     const encoded = encodeNativeRows(columns, rows);
-    const decoded = await decodeBatch(encoded);
+    const decoded = decodeBatch(encoded);
     const decodedRows = toArrayRows(decoded);
 
     const map = decodedRows[0]![0] as Map<string, Int32Array>;
@@ -560,7 +560,7 @@ describe("LowCardinality empty values edge cases", () => {
       [[[["c", 3n]]]], // No empty maps
     ];
     const encoded = encodeNativeRows(columns, rows);
-    const decoded = await decodeBatch(encoded, { mapAsArray: true });
+    const decoded = decodeBatch(encoded, { mapAsArray: true });
     const decodedRows = toArrayRows(decoded);
 
     assert.deepStrictEqual(decoded.columns, columns);
@@ -584,7 +584,7 @@ describe("LowCardinality empty values edge cases", () => {
       [[["c", 3n]]],
     ];
     const encoded = encodeNativeRows(columns, rows);
-    const decoded = await decodeBatch(encoded, { mapAsArray: true });
+    const decoded = decodeBatch(encoded, { mapAsArray: true });
     const decodedRows = toArrayRows(decoded);
 
     assert.deepStrictEqual(decoded.columns, columns);
@@ -642,7 +642,7 @@ describe("Deep nested structure edge cases", () => {
     ];
 
     const encoded = encodeNativeRows(columns, rows);
-    const decoded = await decodeBatch(encoded, { mapAsArray: true });
+    const decoded = decodeBatch(encoded, { mapAsArray: true });
     const decodedRows = toArrayRows(decoded);
 
     assert.deepStrictEqual(decoded.columns, columns);
@@ -688,7 +688,7 @@ describe("Deep nested structure edge cases", () => {
     ];
 
     const encoded = encodeNativeRows(columns, rows);
-    const decoded = await decodeBatch(encoded, { mapAsArray: true });
+    const decoded = decodeBatch(encoded, { mapAsArray: true });
     const decodedRows = toArrayRows(decoded);
 
     assert.strictEqual(decoded.rowCount, 3);
@@ -707,7 +707,7 @@ describe("ArrayCodec code paths", () => {
       [new Int32Array([-2147483648, 0, 2147483647])],
     ];
     const encoded = encodeNativeRows(columns, rows);
-    const decoded = await decodeBatch(encoded);
+    const decoded = decodeBatch(encoded);
     const decodedRows = toArrayRows(decoded);
 
     assert.deepStrictEqual(Array.from(decodedRows[0]![0] as Int32Array), [1, 2, 3]);
@@ -722,7 +722,7 @@ describe("ArrayCodec code paths", () => {
     const columns: ColumnDef[] = [{ name: "arr", type: "Array(UInt32)" }];
     const rows = [[new Uint32Array([0, 100, 4294967295])], [new Uint32Array([42])]];
     const encoded = encodeNativeRows(columns, rows);
-    const decoded = await decodeBatch(encoded);
+    const decoded = decodeBatch(encoded);
     const decodedRows = toArrayRows(decoded);
 
     assert.deepStrictEqual(Array.from(decodedRows[0]![0] as Uint32Array), [0, 100, 4294967295]);
@@ -733,7 +733,7 @@ describe("ArrayCodec code paths", () => {
     const columns: ColumnDef[] = [{ name: "arr", type: "Array(Int16)" }];
     const rows = [[[-32768, 0, 32767]], [[1, 2, 3]]];
     const encoded = encodeNativeRows(columns, rows);
-    const decoded = await decodeBatch(encoded);
+    const decoded = decodeBatch(encoded);
     const decodedRows = toArrayRows(decoded);
 
     assert.deepStrictEqual(Array.from(decodedRows[0]![0] as Int16Array), [-32768, 0, 32767]);
@@ -745,7 +745,7 @@ describe("ArrayCodec code paths", () => {
     const columns: ColumnDef[] = [{ name: "arr", type: "Array(Int64)" }];
     const rows = [[[1n, 2n, 3n]], [[-9223372036854775808n, 0n, 9223372036854775807n]], [[]]];
     const encoded = encodeNativeRows(columns, rows);
-    const decoded = await decodeBatch(encoded);
+    const decoded = decodeBatch(encoded);
     const decodedRows = toArrayRows(decoded);
 
     assert.deepStrictEqual(Array.from(decodedRows[0]![0] as BigInt64Array), [1n, 2n, 3n]);
@@ -761,7 +761,7 @@ describe("ArrayCodec code paths", () => {
     const columns: ColumnDef[] = [{ name: "arr", type: "Array(UInt64)" }];
     const rows = [[[0n, 18446744073709551615n]]];
     const encoded = encodeNativeRows(columns, rows);
-    const decoded = await decodeBatch(encoded);
+    const decoded = decodeBatch(encoded);
     const decodedRows = toArrayRows(decoded);
 
     assert.deepStrictEqual(Array.from(decodedRows[0]![0] as BigUint64Array), [
@@ -775,7 +775,7 @@ describe("ArrayCodec code paths", () => {
     const columns: ColumnDef[] = [{ name: "arr", type: "Array(Bool)" }];
     const rows = [[[true, false, true]], [[false]], [[]]];
     const encoded = encodeNativeRows(columns, rows);
-    const decoded = await decodeBatch(encoded);
+    const decoded = decodeBatch(encoded);
     const decodedRows = toArrayRows(decoded);
 
     // Bool decodes to Uint8Array with 0/1 values
@@ -789,7 +789,7 @@ describe("ArrayCodec code paths", () => {
     const columns: ColumnDef[] = [{ name: "arr", type: "Array(Float64)" }];
     const rows = [[[1.5, -2.5, 0, Infinity, -Infinity]], [new Float64Array([3.14, Math.E])]];
     const encoded = encodeNativeRows(columns, rows);
-    const decoded = await decodeBatch(encoded);
+    const decoded = decodeBatch(encoded);
     const decodedRows = toArrayRows(decoded);
 
     assert.deepStrictEqual(Array.from(decodedRows[0]![0] as Float64Array), [
@@ -806,7 +806,7 @@ describe("ArrayCodec code paths", () => {
     const columns: ColumnDef[] = [{ name: "arr", type: "Array(Float64)" }];
     const rows = [[[1.0, NaN, 2.0]]];
     const encoded = encodeNativeRows(columns, rows);
-    const decoded = await decodeBatch(encoded);
+    const decoded = decodeBatch(encoded);
     const decodedRows = toArrayRows(decoded);
 
     // NaN is normalized to canonical form and round-trips correctly
@@ -820,7 +820,7 @@ describe("ArrayCodec code paths", () => {
     const columns: ColumnDef[] = [{ name: "arr", type: "Array(Float32)" }];
     const rows = [[new Float32Array([1.5, -2.5, 0])], [[3.14, NaN, Infinity]]];
     const encoded = encodeNativeRows(columns, rows);
-    const decoded = await decodeBatch(encoded);
+    const decoded = decodeBatch(encoded);
     const decodedRows = toArrayRows(decoded);
 
     const arr0 = decodedRows[0]![0] as number[];
@@ -846,7 +846,7 @@ describe("named Tuple field detection", () => {
     ];
     const rows = [[{ IntValue: 42, BoolFlag: true, StringId: "hello" }]];
     const encoded = encodeNativeRows(columns, rows);
-    const decoded = await decodeBatch(encoded);
+    const decoded = decodeBatch(encoded);
 
     const row = decoded.get(0).t as Record<string, unknown>;
     assert.strictEqual(row.IntValue, 42);
@@ -859,7 +859,7 @@ describe("named Tuple field detection", () => {
     const columns: ColumnDef[] = [{ name: "t", type: "Tuple(UUID String)" }];
     const rows = [[{ UUID: "test-id" }]];
     const encoded = encodeNativeRows(columns, rows);
-    const decoded = await decodeBatch(encoded);
+    const decoded = decodeBatch(encoded);
 
     const row = decoded.get(0).t as Record<string, unknown>;
     assert.strictEqual(row.UUID, "test-id");

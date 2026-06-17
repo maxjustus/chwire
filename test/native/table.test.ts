@@ -36,13 +36,13 @@ describe("streamEncodeNative", () => {
     assert.strictEqual(chunks.length, 3);
 
     // Decode each block
-    const decoded1 = await decodeBatch(chunks[0]!);
+    const decoded1 = decodeBatch(chunks[0]!);
     assert.deepStrictEqual(toArrayRows(decoded1), [[1], [2]]);
 
-    const decoded2 = await decodeBatch(chunks[1]!);
+    const decoded2 = decodeBatch(chunks[1]!);
     assert.deepStrictEqual(toArrayRows(decoded2), [[3], [4]]);
 
-    const decoded3 = await decodeBatch(chunks[2]!);
+    const decoded3 = decodeBatch(chunks[2]!);
     assert.deepStrictEqual(toArrayRows(decoded3), [[5]]);
   });
 });
@@ -173,7 +173,7 @@ describe("RecordBatch static methods", () => {
 
     // Round-trip through encode/decode
     const encoded = encodeNative(table);
-    const decoded = await decodeBatch(encoded);
+    const decoded = decodeBatch(encoded);
     assert.deepStrictEqual(toArrayRows(decoded), rows);
   });
 
@@ -384,7 +384,7 @@ describe("Column type property", () => {
 
     // Round-trip preserves types
     const encoded = encodeNative(table);
-    const decoded = await decodeBatch(encoded);
+    const decoded = decodeBatch(encoded);
     assert.strictEqual(decoded.getColumn("i")?.type, "Int32");
     assert.strictEqual(decoded.getColumn("s")?.type, "String");
     assert.strictEqual(decoded.getColumn("arr")?.type, "Array(UInt64)");
@@ -403,7 +403,7 @@ describe("Complex types via fromCols", () => {
     assert.deepStrictEqual(table.getColumn("tags")?.get(2), [6]);
 
     // Round-trip
-    const decoded = await decodeBatch(encodeNative(table));
+    const decoded = decodeBatch(encodeNative(table));
     assert.deepStrictEqual(toArrayRows(decoded), toArrayRows(table));
   });
 
@@ -417,7 +417,7 @@ describe("Complex types via fromCols", () => {
     assert.deepStrictEqual(table.getColumn("point")?.get(0), [1.0, 2.0]);
     assert.deepStrictEqual(table.getColumn("point")?.get(1), [3.0, 4.0]);
 
-    const decoded = await decodeBatch(encodeNative(table));
+    const decoded = decodeBatch(encodeNative(table));
     assert.deepStrictEqual(toArrayRows(decoded), toArrayRows(table));
   });
 
@@ -431,7 +431,7 @@ describe("Complex types via fromCols", () => {
     assert.deepStrictEqual(table.getColumn("point")?.get(0), { x: 1.0, y: 2.0 });
     assert.deepStrictEqual(table.getColumn("point")?.get(1), { x: 3.0, y: 4.0 });
 
-    const decoded = await decodeBatch(encodeNative(table));
+    const decoded = decodeBatch(encodeNative(table));
     assert.deepStrictEqual(toArrayRows(decoded), toArrayRows(table));
   });
 
@@ -448,7 +448,7 @@ describe("Complex types via fromCols", () => {
     );
     assert.deepStrictEqual(table.getColumn("meta")?.get(1), new Map([["c", 3]]));
 
-    const decoded = await decodeBatch(encodeNative(table));
+    const decoded = decodeBatch(encodeNative(table));
     assert.deepStrictEqual(toArrayRows(decoded), toArrayRows(table));
   });
 
@@ -460,7 +460,7 @@ describe("Complex types via fromCols", () => {
     assert.strictEqual(table.getColumn("note")?.get(1), null);
     assert.strictEqual(table.getColumn("note")?.get(2), "world");
 
-    const decoded = await decodeBatch(encodeNative(table));
+    const decoded = decodeBatch(encodeNative(table));
     assert.deepStrictEqual(toArrayRows(decoded), toArrayRows(table));
   });
 
@@ -475,7 +475,7 @@ describe("Complex types via fromCols", () => {
     assert.deepStrictEqual(table.getColumn("val")?.get(2), [0, 1]);
     assert.strictEqual(table.getColumn("val")?.get(3), null);
 
-    const decoded = await decodeBatch(encodeNative(table));
+    const decoded = decodeBatch(encodeNative(table));
     assert.deepStrictEqual(toArrayRows(decoded), toArrayRows(table));
   });
 
@@ -493,7 +493,7 @@ describe("Complex types via fromCols", () => {
     assert.deepStrictEqual(table.getColumn("val")?.get(2), [0, 1]);
     assert.strictEqual(table.getColumn("val")?.get(3), null);
 
-    const decoded = await decodeBatch(encodeNative(table));
+    const decoded = decodeBatch(encodeNative(table));
     assert.deepStrictEqual(toArrayRows(decoded), toArrayRows(table));
   });
 
@@ -507,7 +507,7 @@ describe("Complex types via fromCols", () => {
     assert.deepStrictEqual(table.getColumn("dyn")?.get(3), [1n, 2n, 3n]); // array of Int64
     assert.strictEqual(table.getColumn("dyn")?.get(4), null);
 
-    const decoded = await decodeBatch(encodeNative(table));
+    const decoded = decodeBatch(encodeNative(table));
     assert.deepStrictEqual(toArrayRows(decoded), toArrayRows(table));
   });
 
@@ -529,7 +529,7 @@ describe("Complex types via fromCols", () => {
     assert.ok(!("b" in row1)); // missing keys are omitted
     assert.strictEqual(row1.c, 1); // bool becomes 1/0
 
-    const decoded = await decodeBatch(encodeNative(table));
+    const decoded = decodeBatch(encodeNative(table));
     // After round-trip, compare
     const decodedRow0 = decoded.getColumn("data")?.get(0) as Record<string, unknown>;
     const decodedRow1 = decoded.getColumn("data")?.get(1) as Record<string, unknown>;
@@ -548,7 +548,7 @@ describe("Complex types via getCodec().fromValues()", () => {
     assert.deepStrictEqual(col.get(1), [3, 4, 5]);
 
     const table = batchFromCols({ tags: col });
-    const decoded = await decodeBatch(encodeNative(table));
+    const decoded = decodeBatch(encodeNative(table));
     assert.deepStrictEqual(toArrayRows(decoded), toArrayRows(table));
   });
 
@@ -561,7 +561,7 @@ describe("Complex types via getCodec().fromValues()", () => {
     assert.deepStrictEqual(col.get(0), [1.0, 2.0]);
 
     const table = batchFromCols({ point: col });
-    const decoded = await decodeBatch(encodeNative(table));
+    const decoded = decodeBatch(encodeNative(table));
     assert.deepStrictEqual(toArrayRows(decoded), toArrayRows(table));
   });
 
@@ -574,7 +574,7 @@ describe("Complex types via getCodec().fromValues()", () => {
     assert.deepStrictEqual(col.get(0), { x: 1.0, y: 2.0 });
 
     const table = batchFromCols({ point: col });
-    const decoded = await decodeBatch(encodeNative(table));
+    const decoded = decodeBatch(encodeNative(table));
     assert.deepStrictEqual(toArrayRows(decoded), toArrayRows(table));
   });
 
@@ -591,7 +591,7 @@ describe("Complex types via getCodec().fromValues()", () => {
     assert.deepStrictEqual(col.get(1), new Map([["c", 3]]));
 
     const table = batchFromCols({ meta: col });
-    const decoded = await decodeBatch(encodeNative(table));
+    const decoded = decodeBatch(encodeNative(table));
     assert.deepStrictEqual(toArrayRows(decoded), toArrayRows(table));
   });
 
@@ -603,7 +603,7 @@ describe("Complex types via getCodec().fromValues()", () => {
     assert.strictEqual(col.get(2), "world");
 
     const table = batchFromCols({ note: col });
-    const decoded = await decodeBatch(encodeNative(table));
+    const decoded = decodeBatch(encodeNative(table));
     assert.deepStrictEqual(toArrayRows(decoded), toArrayRows(table));
   });
 
@@ -616,7 +616,7 @@ describe("Complex types via getCodec().fromValues()", () => {
     assert.strictEqual(col.get(3), null);
 
     const table = batchFromCols({ val: col });
-    const decoded = await decodeBatch(encodeNative(table));
+    const decoded = decodeBatch(encodeNative(table));
     assert.deepStrictEqual(toArrayRows(decoded), toArrayRows(table));
   });
 
@@ -633,7 +633,7 @@ describe("Complex types via getCodec().fromValues()", () => {
     assert.strictEqual(col.get(3), null);
 
     const table = batchFromCols({ val: col });
-    const decoded = await decodeBatch(encodeNative(table));
+    const decoded = decodeBatch(encodeNative(table));
     assert.deepStrictEqual(toArrayRows(decoded), toArrayRows(table));
   });
 
@@ -647,7 +647,7 @@ describe("Complex types via getCodec().fromValues()", () => {
     assert.strictEqual(col.get(4), null);
 
     const table = batchFromCols({ dyn: col });
-    const decoded = await decodeBatch(encodeNative(table));
+    const decoded = decodeBatch(encodeNative(table));
     assert.deepStrictEqual(toArrayRows(decoded), toArrayRows(table));
   });
 
@@ -666,7 +666,7 @@ describe("Complex types via getCodec().fromValues()", () => {
     assert.strictEqual(row1.c, 1); // bool becomes 1/0
 
     const table = batchFromCols({ data: col });
-    const decoded = await decodeBatch(encodeNative(table));
+    const decoded = decodeBatch(encodeNative(table));
     assert.deepStrictEqual(toArrayRows(decoded), toArrayRows(table));
   });
 
@@ -688,7 +688,7 @@ describe("Complex types via getCodec().fromValues()", () => {
     assert.deepStrictEqual(col.get(2), []);
 
     const table = batchFromCols({ nested: col });
-    const decoded = await decodeBatch(encodeNative(table));
+    const decoded = decodeBatch(encodeNative(table));
     assert.deepStrictEqual(toArrayRows(decoded), toArrayRows(table));
   });
 
@@ -700,7 +700,7 @@ describe("Complex types via getCodec().fromValues()", () => {
     assert.strictEqual(col.type, "Map(String, Array(Int32))");
 
     const table = batchFromCols({ nested: col });
-    const decoded = await decodeBatch(encodeNative(table));
+    const decoded = decodeBatch(encodeNative(table));
     assert.deepStrictEqual(toArrayRows(decoded), toArrayRows(table));
   });
 });
