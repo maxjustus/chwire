@@ -17,7 +17,7 @@ import {
 } from "../native/index.ts";
 import { type Compression, init as initCompression } from "../compression.ts";
 import type { ClickHouseException } from "../errors.ts";
-import type { ClickHouseSettings } from "../settings.ts";
+import type { ClickHouseSettings } from "../settings.generated.ts";
 import type { QueryParamValue } from "../types.ts";
 import { type CollectableAsyncGenerator, collectable } from "../util.ts";
 import { prepend, toAsyncIterable } from "../iter.ts";

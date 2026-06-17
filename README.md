@@ -830,8 +830,10 @@ make test              # build + run full test matrix across ClickHouse versions
 make test-tcp          # TCP client tests only
 make fuzz              # generated/native fuzz suite
 make format            # run Biome formatter
-make bench-formats     # Native vs JSON encode/compress benchmark
-npm run bench:tcp      # TCP bulk-read throughput + wall-time ratio vs official clickhouse-client
+make bench-formats          # Native vs JSON encode/compress benchmark
+make bench-concurrent       # HTTP vs TCP connect+query throughput under concurrency
+make profile-json-caching   # JSON codec schema caching across batches
+npm run bench:tcp            # TCP bulk-read throughput + wall-time ratio vs official clickhouse-client
 make bench-profile ARGS="-f native -o encode -d complex"  # CPU profile a specific scenario
 make update-settings   # regenerate ClickHouseSettings types from latest CH source
 ```

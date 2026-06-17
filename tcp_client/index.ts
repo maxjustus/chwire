@@ -1,4 +1,4 @@
-export type { ClickHouseSettings } from "../settings.ts";
+export type { ClickHouseSettings } from "../settings.generated.ts";
 export {
   type CollectableAsyncGenerator,
   type ColumnSchema,

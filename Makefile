@@ -1,4 +1,4 @@
-.PHONY: build test test-tcp fuzz bench bench-formats bench-profile profile-complex profile-variant profile-dynamic profile-json publish update-settings
+.PHONY: build test test-tcp fuzz bench bench-formats bench-concurrent bench-profile profile-complex profile-variant profile-dynamic profile-json profile-json-caching publish update-settings
 
 build:
 	npm run build
@@ -44,6 +44,12 @@ profile-dynamic:
 
 profile-json:
 	$(MAKE) bench-profile ARGS="-f native -o encode -d json"
+
+bench-concurrent:
+	node --experimental-strip-types bench/concurrent.ts
+
+profile-json-caching:
+	node --experimental-strip-types bench/profile-json.ts
 
 publish:
 	npm publish --access=public
