@@ -793,40 +793,40 @@ LZ4 and ZSTD use native Node addons (`lz4-napi`, `zstd-napi`) installed automati
 
 ## Performance
 
-Benchmarks on Apple M4 Max, 100k rows, 50 iterations. As of [`904b1ea`](../../commit/904b1ea).
+Benchmarks on Apple M4 Max, 100k rows, 50 iterations. As of [`6609e3b`](../../commit/6609e3b).
 
 ### Encode (raw, no compression)
 
 | Scenario | JSON | Native | Speedup |
 |----------|------|--------|---------|
-| Simple (6 cols) | 103ms | 27ms | 3.9x |
-| Escape-heavy strings | 22ms | 28ms | 0.8x |
-| Arrays (50 floats/row) | 186ms | 151ms | 1.2x |
-| Variant | 6.1ms | 13.7ms | 0.4x |
-| Dynamic | 5.2ms | 11.1ms | 0.5x |
-| JSON column | 11ms | 52ms | 0.2x |
+| Simple (6 cols) | 98ms | 24ms | 4.1x |
+| Escape-heavy strings | 21ms | 20ms | 1.1x |
+| Arrays (50 floats/row) | 173ms | 59ms | 2.9x |
+| Variant | 6.0ms | 8.5ms | 0.7x |
+| Dynamic | 5.2ms | 8.0ms | 0.7x |
+| JSON column | 11ms | 39ms | 0.3x |
 
 ### Decode (raw)
 
 | Scenario | JSON | Native | Speedup |
 |----------|------|--------|---------|
-| Simple (6 cols) | 46ms | 27ms | 1.7x |
+| Simple (6 cols) | 45ms | 26ms | 1.7x |
 | Escape-heavy strings | 41ms | 47ms | 0.9x |
-| Arrays (50 floats/row) | 246ms | 52ms | 4.7x |
-| Variant | 22ms | 2.4ms | 9.0x |
-| Dynamic | 20ms | 2.3ms | 8.8x |
-| JSON column | 47ms | 8.1ms | 5.8x |
+| Arrays (50 floats/row) | 239ms | 45ms | 5.3x |
+| Variant | 22ms | 1.6ms | 14.1x |
+| Dynamic | 21ms | 1.3ms | 16.7x |
+| JSON column | 47ms | 7.2ms | 6.6x |
 
 ### Encode + Compress (full path)
 
 | Scenario | JSON+LZ4 | Native+LZ4 | JSON+ZSTD | Native+ZSTD | JSON+gzip | Native+gzip |
 |----------|----------|------------|-----------|-------------|-----------|-------------|
-| Simple (6 cols) | 115ms | 35ms | 123ms | 36ms | 206ms | 112ms |
-| Escape-heavy strings | 27ms | 35ms | 28ms | 35ms | 62ms | 74ms |
-| Arrays (50 floats/row) | 286ms | 90ms | 637ms | 116ms | 3648ms | 1512ms |
-| Variant | 10ms | 11ms | 13ms | 12ms | 54ms | 55ms |
-| Dynamic | 8.1ms | 9.9ms | 9.9ms | 10ms | 38ms | 49ms |
-| JSON column | 20ms | 45ms | 27ms | 47ms | 106ms | 102ms |
+| Simple (6 cols) | 112ms | 18ms | 120ms | 20ms | 197ms | 96ms |
+| Escape-heavy strings | 26ms | 17ms | 28ms | 17ms | 59ms | 57ms |
+| Arrays (50 floats/row) | 267ms | 45ms | 617ms | 81ms | 2778ms | 1024ms |
+| Variant | 9.7ms | 7.4ms | 13ms | 8.3ms | 54ms | 57ms |
+| Dynamic | 8.6ms | 8.4ms | 10ms | 7.0ms | 41ms | 48ms |
+| JSON column | 21ms | 29ms | 28ms | 33ms | 112ms | 107ms |
 
 ### Compressed Size (Native as % of JSON, lower = smaller)
 
@@ -839,7 +839,7 @@ Benchmarks on Apple M4 Max, 100k rows, 50 iterations. As of [`904b1ea`](../../co
 | Dynamic | 72% | 93% | 61% |
 | JSON column | 56% | 62% | 65% |
 
-Native wins big on decode (2-9x) and array-heavy data. JSON is faster for encode-only on string-heavy and self-describing types (Variant, Dynamic, JSON column) where Native pays schema overhead. With compression, Native's smaller wire size closes the gap or flips the result. LZ4 is fastest, ZSTD compresses best.
+*Escape-heavy strings with ZSTD: JSON's escaping creates repetitive byte patterns that ZSTD exploits.
 
 Run `make bench-formats` to reproduce.
 

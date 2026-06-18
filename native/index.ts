@@ -52,6 +52,9 @@ export {
   BufferUnderflowError,
   BufferWriter,
   readVarInt64,
+  writeUtf8,
+  writeUtf8Buffer,
+  writeUtf8Encoder,
 } from "./io.ts";
 
 export interface Block {

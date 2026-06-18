@@ -587,8 +587,15 @@ export class StringCodec extends BaseCodec {
   encode(col: Column, sizeHint?: number): Uint8Array {
     const len = col.length;
     const writer = new BufferWriter(sizeHint ?? this.estimateSize(len));
-    for (let i = 0; i < len; i++) {
-      writer.writeString(coerceToString(col.get(i)));
+    if (col instanceof DataColumn) {
+      const data = col.data;
+      for (let i = 0; i < len; i++) {
+        writer.writeString(data[i] as string);
+      }
+    } else {
+      for (let i = 0; i < len; i++) {
+        writer.writeString(coerceToString(col.get(i)));
+      }
     }
     return writer.finish();
   }
@@ -600,7 +607,12 @@ export class StringCodec extends BaseCodec {
   }
 
   fromValues(values: unknown[]): Column {
-    return new DataColumn(this.type, values.map(coerceToString));
+    for (let i = 0; i < values.length; i++) {
+      if (typeof values[i] !== "string") {
+        return new DataColumn(this.type, values.map(coerceToString));
+      }
+    }
+    return new DataColumn(this.type, values as string[]);
   }
 
   zeroValue() {

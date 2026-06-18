@@ -4,6 +4,39 @@
 
 import { type DecodeOptions, TEXT_DECODER, TEXT_ENCODER, type TypedArray } from "./types.ts";
 
+export function writeUtf8Encoder(
+  str: string,
+  target: Uint8Array,
+  offset: number,
+  maxLen: number,
+): number {
+  return TEXT_ENCODER.encodeInto(str, target.subarray(offset, offset + maxLen)).written;
+}
+
+export function writeUtf8Buffer(
+  str: string,
+  target: Uint8Array,
+  offset: number,
+  maxLen: number,
+): number {
+  return globalThis.Buffer.from(target.buffer, target.byteOffset + offset, maxLen).write(
+    str,
+    0,
+    maxLen,
+    "utf8",
+  );
+}
+
+export const writeUtf8: (
+  str: string,
+  target: Uint8Array,
+  offset: number,
+  maxLen: number,
+) => number =
+  typeof globalThis.Buffer === "function" && typeof globalThis.Buffer.from === "function"
+    ? writeUtf8Buffer
+    : writeUtf8Encoder;
+
 /**
  * VarInt (LEB128) encoding constants.
  * VarInt encodes integers in 7-bit groups with continuation bit.
@@ -263,21 +296,37 @@ export class BufferWriter {
   }
 
   writeString(val: string) {
-    // Worst case: UTF-8 max bytes per char + varint length prefix
+    const len = val.length;
+
+    // Fast path: short ASCII strings written char-by-char, avoiding
+    // TextEncoder.encodeInto overhead (subarray + encoder state per call).
+    if (len <= 64) {
+      this.ensure(len + 1);
+      const buf = this.buffer;
+      let pos = this.offset + 1;
+      for (let i = 0; i < len; i++) {
+        const code = val.charCodeAt(i);
+        if (code > 127) return this.writeStringGeneral(val);
+        buf[pos++] = code;
+      }
+      buf[this.offset] = len;
+      this.offset = pos;
+      return;
+    }
+
+    this.writeStringGeneral(val);
+  }
+
+  private writeStringGeneral(val: string) {
     const maxLen = val.length * BufferSize.UTF8_MAX_BYTES_PER_CHAR;
     this.ensure(maxLen + VarInt.MAX_BYTES_64);
 
-    // Reserve 1 byte for length (common case: strings < 128 bytes)
-    const { written } = TEXT_ENCODER.encodeInto(
-      val,
-      this.buffer.subarray(this.offset + 1, this.offset + 1 + maxLen),
-    );
+    const written = writeUtf8(val, this.buffer, this.offset + 1, maxLen);
 
     if (written < BufferSize.SINGLE_BYTE_VARINT_MAX) {
       this.buffer[this.offset] = written;
       this.offset += 1 + written;
     } else {
-      // Multi-byte varint: shift the encoded string
       const vSize = varIntSize(written);
       this.buffer.copyWithin(this.offset + vSize, this.offset + 1, this.offset + 1 + written);
       writeVarInt(this.buffer, this.offset, written);

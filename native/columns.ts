@@ -19,19 +19,19 @@ export function assertOffsetsFitInJsNumber(offsets: BigUint64Array, context: str
 /**
  * Count discriminators and compute group indices in a single pass.
  * Returns counts (for decoding groups) and indices (for O(1) value access).
+ * `counts` is a Uint32Array indexed by discriminator value; length = nullValue + 1.
  */
 export function countAndIndexDiscriminators(
   discriminators: DiscriminatorArray,
   nullValue: number,
-): { counts: Map<number, number>; indices: Uint32Array } {
-  const counts = new Map<number, number>();
+): { counts: Uint32Array; indices: Uint32Array } {
+  const counts = new Uint32Array(nullValue + 1);
   const indices = new Uint32Array(discriminators.length);
   for (let i = 0; i < discriminators.length; i++) {
     const d = discriminators[i]!;
     if (d !== nullValue) {
-      const n = counts.get(d) ?? 0;
-      indices[i] = n;
-      counts.set(d, n + 1);
+      indices[i] = counts[d]!;
+      counts[d]!++;
     }
   }
   return { counts, indices };

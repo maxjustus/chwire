@@ -406,7 +406,7 @@ function generateJsonColumnData(count: number): {
       active: i % 2 === 0,
       ...(i % 3 === 0 ? { tags: [`tag_${i % 5}`, `cat_${i % 3}`] } : {}),
     };
-    json.push({ id: i, data: structuredClone(obj) });
+    json.push({ id: i, data: { ...obj } });
     rows.push([i, obj]);
   }
   return { json, rows, columns };

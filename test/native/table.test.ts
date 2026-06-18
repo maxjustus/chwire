@@ -2,6 +2,7 @@ import assert from "node:assert";
 import { describe, it } from "node:test";
 import {
   BufferWriter,
+  BufferReader,
   batchFromCols,
   batchFromRows,
   type ColumnDef,
@@ -10,6 +11,8 @@ import {
   RecordBatch,
   streamDecodeNative,
   streamEncodeNative,
+  writeUtf8Buffer,
+  writeUtf8Encoder,
 } from "../../native/index.ts";
 import { collect, decodeBatch, encodeNativeRows, toArrayRows, toAsync } from "../test_utils.ts";
 
@@ -798,5 +801,54 @@ describe("RecordBatch.isRecordBatch", () => {
     const foreign = { [Symbol.for("chwire.RecordBatch")]: true } as unknown;
     assert.strictEqual(foreign instanceof RecordBatch, false);
     assert.strictEqual(RecordBatch.isRecordBatch(foreign), true);
+  });
+});
+
+describe("writeUtf8 implementations", () => {
+  const cases = [
+    { label: "ASCII", str: "hello world" },
+    { label: "multibyte", str: "éèêë" },
+    { label: "emoji", str: "test 🚀 rocket" },
+    { label: "long ASCII", str: "a".repeat(200) },
+    { label: "long multibyte", str: "ü".repeat(200) },
+    { label: "empty", str: "" },
+  ];
+
+  for (const { label, str } of cases) {
+    it(`Buffer and Encoder agree on ${label} strings`, () => {
+      const maxLen = str.length * 3;
+      const bufA = new Uint8Array(maxLen);
+      const bufB = new Uint8Array(maxLen);
+      const lenA = writeUtf8Buffer(str, bufA, 0, maxLen);
+      const lenB = writeUtf8Encoder(str, bufB, 0, maxLen);
+      assert.strictEqual(lenA, lenB, `byte lengths differ for "${label}"`);
+      assert.deepStrictEqual(bufA.subarray(0, lenA), bufB.subarray(0, lenB));
+    });
+  }
+
+  it("works at non-zero offset", () => {
+    const str = "café";
+    const maxLen = str.length * 3;
+    const offset = 10;
+    const bufA = new Uint8Array(offset + maxLen);
+    const bufB = new Uint8Array(offset + maxLen);
+    const lenA = writeUtf8Buffer(str, bufA, offset, maxLen);
+    const lenB = writeUtf8Encoder(str, bufB, offset, maxLen);
+    assert.strictEqual(lenA, lenB);
+    assert.deepStrictEqual(
+      bufA.subarray(offset, offset + lenA),
+      bufB.subarray(offset, offset + lenB),
+    );
+  });
+
+  it("round-trips through BufferWriter.writeString + BufferReader.readString", () => {
+    const strings = ["hello", "élève", "a".repeat(200), "🚀💻🌟"];
+    const writer = new BufferWriter();
+    for (const s of strings) writer.writeString(s);
+    const buf = writer.finish();
+    const reader = new BufferReader(buf);
+    for (const s of strings) {
+      assert.strictEqual(reader.readString(), s);
+    }
   });
 });

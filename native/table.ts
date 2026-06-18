@@ -363,7 +363,39 @@ export function batchFromRows(
       return builder.finish();
     })();
   }
-  // Sync path: array or iterable
+  // Array fast path: pre-allocate columns at exact size, skip builder overhead
+  if (Array.isArray(rows)) {
+    const n = rows.length;
+    const numCols = schema.length;
+    const numericInfo = schema.map((col) => getNumericTypeInfo(col.type));
+    const accumulators: (unknown[] | TypedArray)[] = schema.map((_, i) => {
+      const info = numericInfo[i];
+      return info ? new info.ctor(n) : new Array<unknown>(n);
+    });
+
+    for (let i = 0; i < n; i++) {
+      const row = rows[i]!;
+      if (row.length !== numCols) throw new Error("Row length mismatch");
+      for (let j = 0; j < numCols; j++) {
+        const info = numericInfo[j];
+        if (info) {
+          (accumulators[j] as any)[i] = info.convert(row[j]);
+        } else {
+          (accumulators[j] as unknown[])[i] = row[j];
+        }
+      }
+    }
+
+    const columnData = accumulators.map((acc, i) => {
+      const type = schema[i]!.type;
+      if (ArrayBuffer.isView(acc)) return new DataColumn(type, acc as TypedArray);
+      return getCodec(type).fromValues(acc as unknown[]);
+    });
+
+    return new RecordBatch({ columns: schema, columnData, rowCount: n });
+  }
+
+  // Generic iterable path: unknown size, grow dynamically
   const builder = new RecordBatchBuilder(schema, expectedRows);
   for (const row of rows as Iterable<unknown[]>) {
     builder.appendRow(row);
