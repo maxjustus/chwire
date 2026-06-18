@@ -44,9 +44,13 @@ async function collectByteChunks(chunks: AsyncIterable<Uint8Array>): Promise<Uin
   return result;
 }
 
-function formatResult(stats: { name: string; meanMs: number }, rows: number): string {
+function formatResult(
+  stats: { name: string; meanMs: number; warmup: number; iterations: number },
+  rows: number,
+): string {
   const rowsPerSec = rows / (stats.meanMs / 1000);
-  return `  ${stats.name.padEnd(30)} ${stats.meanMs.toFixed(3).padStart(8)}ms  ${(rowsPerSec / 1_000_000).toFixed(2).padStart(6)}M rows/sec`;
+  const meta = `w=${stats.warmup} n=${stats.iterations}`;
+  return `  ${stats.name.padEnd(30)} ${stats.meanMs.toFixed(3).padStart(8)}ms  ${(rowsPerSec / 1_000_000).toFixed(2).padStart(6)}M rows/sec  ${meta}`;
 }
 
 function formatKB(bytes: number): string {
@@ -76,19 +80,22 @@ async function* chunkedStream(data: Uint8Array, chunkSize: number): AsyncIterabl
   }
 }
 
-async function collectNative(chunks: AsyncIterable<Uint8Array>): Promise<RecordBatch> {
+async function collectNative(
+  chunks: AsyncIterable<Uint8Array>,
+  options?: Parameters<typeof streamDecodeNative>[1],
+): Promise<RecordBatch> {
   const blocks: RecordBatch[] = [];
-  for await (const block of streamDecodeNative(chunks)) {
+  for await (const block of streamDecodeNative(chunks, options)) {
     blocks.push(block);
   }
   if (blocks.length === 0) {
     return RecordBatch.from({ columns: [], columnData: [], rowCount: 0 });
   }
   if (blocks.length === 1) {
-    return blocks[0];
+    return blocks[0]!;
   }
   // Return first block for benchmark
-  return blocks[0];
+  return blocks[0]!;
 }
 
 interface Scenario {
@@ -202,17 +209,13 @@ function runScenario(scenario: Scenario, benchOptions: BenchOptions): ScenarioRe
 
   const jsonGzipFull = benchSync(
     "JSONEachRow + gzip",
-    () => {
-      gzipSync(encodeJsonEachRow(scenario.jsonData));
-    },
+    () => gzipSync(encodeJsonEachRow(scenario.jsonData)),
     benchOptions,
   );
   console.log(formatResult(jsonGzipFull, rows));
   const nativeGzipFull = benchSync(
     "Native + gzip",
-    () => {
-      gzipSync(encodeNativeRows(scenario.columns, scenario.rowsArray));
-    },
+    () => gzipSync(encodeNativeRows(scenario.columns, scenario.rowsArray)),
     benchOptions,
   );
   console.log(formatResult(nativeGzipFull, rows));
@@ -545,27 +548,55 @@ async function main() {
 
   const stream1 = await benchAsync(
     "Stream decode (1 chunk)",
-    async () => {
-      await collectNative(chunkedStream(simpleNativeEncoded, simpleNativeEncoded.length));
-    },
+    () => collectNative(chunkedStream(simpleNativeEncoded, simpleNativeEncoded.length)),
     benchOptions,
   );
   console.log(formatResult(stream1, ROWS));
 
+  const stream512k = await benchAsync(
+    "Stream decode (512KB, no backoff)",
+    () =>
+      collectNative(chunkedStream(simpleNativeEncoded, 512 * 1024), {
+        underflowRetryMaxBytes: 0,
+      }),
+    benchOptions,
+  );
+  console.log(formatResult(stream512k, ROWS));
+
+  const stream512kRetry = await benchAsync(
+    "Stream decode (512KB, adaptive)",
+    () => collectNative(chunkedStream(simpleNativeEncoded, 512 * 1024)),
+    benchOptions,
+  );
+  console.log(formatResult(stream512kRetry, ROWS));
+
+  const stream256k = await benchAsync(
+    "Stream decode (256KB chunks)",
+    () => collectNative(chunkedStream(simpleNativeEncoded, 256 * 1024)),
+    benchOptions,
+  );
+  console.log(formatResult(stream256k, ROWS));
+
   const stream64k = await benchAsync(
-    "Stream decode (64KB chunks)",
-    async () => {
-      await collectNative(chunkedStream(simpleNativeEncoded, 64 * 1024));
-    },
+    "Stream decode (64KB, no backoff)",
+    () =>
+      collectNative(chunkedStream(simpleNativeEncoded, 64 * 1024), {
+        underflowRetryMaxBytes: 0,
+      }),
     benchOptions,
   );
   console.log(formatResult(stream64k, ROWS));
 
+  const stream64kRetry = await benchAsync(
+    "Stream decode (64KB, adaptive)",
+    () => collectNative(chunkedStream(simpleNativeEncoded, 64 * 1024)),
+    benchOptions,
+  );
+  console.log(formatResult(stream64kRetry, ROWS));
+
   const stream4k = await benchAsync(
     "Stream decode (4KB chunks)",
-    async () => {
-      await collectNative(chunkedStream(simpleNativeEncoded, 4 * 1024));
-    },
+    () => collectNative(chunkedStream(simpleNativeEncoded, 4 * 1024)),
     { warmup: 1, iterations: 5 },
   );
   console.log(formatResult(stream4k, ROWS));
@@ -584,9 +615,7 @@ async function main() {
 
   const streamEnc = await benchAsync(
     "Stream encode",
-    async () => {
-      await collectByteChunks(streamEncodeNative(batchGenerator()));
-    },
+    () => collectByteChunks(streamEncodeNative(batchGenerator())),
     benchOptions,
   );
   console.log(formatResult(streamEnc, ROWS));
@@ -596,7 +625,19 @@ async function main() {
     `  Decode (1 chunk): ${((stream1.meanMs / syncDec.meanMs - 1) * 100).toFixed(1)}% overhead`,
   );
   console.log(
-    `  Decode (64KB):    ${((stream64k.meanMs / syncDec.meanMs - 1) * 100).toFixed(1)}% overhead`,
+    `  Decode (512KB no): ${((stream512k.meanMs / syncDec.meanMs - 1) * 100).toFixed(1)}% overhead`,
+  );
+  console.log(
+    `  Decode (512KB):    ${((stream512kRetry.meanMs / syncDec.meanMs - 1) * 100).toFixed(1)}% overhead`,
+  );
+  console.log(
+    `  Decode (256KB):   ${((stream256k.meanMs / syncDec.meanMs - 1) * 100).toFixed(1)}% overhead`,
+  );
+  console.log(
+    `  Decode (64KB no):  ${((stream64k.meanMs / syncDec.meanMs - 1) * 100).toFixed(1)}% overhead`,
+  );
+  console.log(
+    `  Decode (64KB):     ${((stream64kRetry.meanMs / syncDec.meanMs - 1) * 100).toFixed(1)}% overhead`,
   );
   console.log(
     `  Decode (4KB):     ${((stream4k.meanMs / syncDec.meanMs - 1) * 100).toFixed(1)}% overhead`,
@@ -621,10 +662,10 @@ async function main() {
     () =>
       encodeNative(
         batchFromCols({
-          id: getCodec("UInt32").fromValues(columnar.columnar[0]),
-          x: getCodec("Float64").fromValues(columnar.columnar[1]),
-          y: getCodec("Float64").fromValues(columnar.columnar[2]),
-          z: getCodec("Float64").fromValues(columnar.columnar[3]),
+          id: getCodec("UInt32").fromValues(columnar.columnar[0]!),
+          x: getCodec("Float64").fromValues(columnar.columnar[1]!),
+          y: getCodec("Float64").fromValues(columnar.columnar[2]!),
+          z: getCodec("Float64").fromValues(columnar.columnar[3]!),
         }),
       ),
     benchOptions,

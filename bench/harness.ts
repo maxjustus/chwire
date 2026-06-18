@@ -6,6 +6,8 @@ export type BenchOptions = {
   batchSize?: number;
 };
 
+export let benchSink: unknown;
+
 export type BenchStats = {
   name: string;
   samplesMs: number[];
@@ -24,11 +26,14 @@ export function readBenchOptions(defaults: BenchOptions = {}): BenchOptions {
   const warmup = parseInt(process.env.BENCH_WARMUP ?? "", 10);
   const iterations = parseInt(process.env.BENCH_ITERATIONS ?? "", 10);
   const batchSize = parseInt(process.env.BENCH_BATCH ?? "", 10);
-  return {
-    warmup: Number.isFinite(warmup) ? warmup : defaults.warmup,
-    iterations: Number.isFinite(iterations) ? iterations : defaults.iterations,
-    batchSize: Number.isFinite(batchSize) ? batchSize : defaults.batchSize,
-  };
+  const options: BenchOptions = {};
+  if (Number.isFinite(warmup)) options.warmup = warmup;
+  else if (defaults.warmup !== undefined) options.warmup = defaults.warmup;
+  if (Number.isFinite(iterations)) options.iterations = iterations;
+  else if (defaults.iterations !== undefined) options.iterations = defaults.iterations;
+  if (Number.isFinite(batchSize)) options.batchSize = batchSize;
+  else if (defaults.batchSize !== undefined) options.batchSize = defaults.batchSize;
+  return options;
 }
 
 export function reportEnvironment(): void {
@@ -39,10 +44,10 @@ export function reportEnvironment(): void {
   console.log(`CPU:  ${cpuName} (${cpus.length} cores)`);
 }
 
-function calibrate(fn: () => void, batchSize: number): { warmup: number; iterations: number } {
-  fn();
+function calibrate(fn: () => unknown, batchSize: number): { warmup: number; iterations: number } {
+  benchSink = fn();
   const start = performance.now();
-  for (let b = 0; b < batchSize; b++) fn();
+  for (let b = 0; b < batchSize; b++) benchSink = fn();
   const ms = performance.now() - start;
 
   if (ms > 1000) return { warmup: 2, iterations: 10 };
@@ -51,20 +56,20 @@ function calibrate(fn: () => void, batchSize: number): { warmup: number; iterati
   return { warmup: 20, iterations: 50 };
 }
 
-export function benchSync(name: string, fn: () => void, options: BenchOptions = {}): BenchStats {
+export function benchSync(name: string, fn: () => unknown, options: BenchOptions = {}): BenchStats {
   const batchSize = options.batchSize ?? 1;
   const cal = options.iterations ? null : calibrate(fn, batchSize);
   const warmup = options.warmup ?? cal?.warmup ?? 20;
   const iterations = options.iterations ?? cal?.iterations ?? 50;
 
   for (let i = 0; i < warmup; i++) {
-    for (let b = 0; b < batchSize; b++) fn();
+    for (let b = 0; b < batchSize; b++) benchSink = fn();
   }
 
   const samples: number[] = [];
   for (let i = 0; i < iterations; i++) {
     const start = performance.now();
-    for (let b = 0; b < batchSize; b++) fn();
+    for (let b = 0; b < batchSize; b++) benchSink = fn();
     const elapsed = performance.now() - start;
     samples.push(elapsed / batchSize);
   }
@@ -73,12 +78,12 @@ export function benchSync(name: string, fn: () => void, options: BenchOptions = 
 }
 
 async function calibrateAsync(
-  fn: () => Promise<void>,
+  fn: () => Promise<unknown>,
   batchSize: number,
 ): Promise<{ warmup: number; iterations: number }> {
-  await fn();
+  benchSink = await fn();
   const start = performance.now();
-  for (let b = 0; b < batchSize; b++) await fn();
+  for (let b = 0; b < batchSize; b++) benchSink = await fn();
   const ms = performance.now() - start;
 
   if (ms > 1000) return { warmup: 2, iterations: 10 };
@@ -89,7 +94,7 @@ async function calibrateAsync(
 
 export async function benchAsync(
   name: string,
-  fn: () => Promise<void>,
+  fn: () => Promise<unknown>,
   options: BenchOptions = {},
 ): Promise<BenchStats> {
   const batchSize = options.batchSize ?? 1;
@@ -98,13 +103,13 @@ export async function benchAsync(
   const iterations = options.iterations ?? cal?.iterations ?? 50;
 
   for (let i = 0; i < warmup; i++) {
-    for (let b = 0; b < batchSize; b++) await fn();
+    for (let b = 0; b < batchSize; b++) benchSink = await fn();
   }
 
   const samples: number[] = [];
   for (let i = 0; i < iterations; i++) {
     const start = performance.now();
-    for (let b = 0; b < batchSize; b++) await fn();
+    for (let b = 0; b < batchSize; b++) benchSink = await fn();
     const elapsed = performance.now() - start;
     samples.push(elapsed / batchSize);
   }
@@ -151,7 +156,7 @@ function percentile(sorted: number[], p: number): number {
   const idx = (sorted.length - 1) * p;
   const lo = Math.floor(idx);
   const hi = Math.ceil(idx);
-  if (lo === hi) return sorted[lo];
+  if (lo === hi) return sorted[lo]!;
   const weight = idx - lo;
-  return sorted[lo] * (1 - weight) + sorted[hi] * weight;
+  return sorted[lo]! * (1 - weight) + sorted[hi]! * weight;
 }

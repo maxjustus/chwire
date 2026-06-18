@@ -415,6 +415,15 @@ describe("JSON", () => {
     assert.deepStrictEqual(decodedRows[1]![0], {});
   });
 
+  it("rejects top-level JSON arrays instead of silently dropping them", () => {
+    const columns: ColumnDef[] = [{ name: "j", type: "JSON" }];
+
+    assert.throws(
+      () => encodeNativeRows(columns, [[[]], [["x", "y"]]]),
+      /JSON column values must be plain objects; top-level arrays are not supported/,
+    );
+  });
+
   it("parses JSON with typed paths from type string", async () => {
     // Tests that the type parser correctly extracts typed paths
     const columns: ColumnDef[] = [

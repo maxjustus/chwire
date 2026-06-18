@@ -4,6 +4,7 @@ import {
   toInt8,
   toInt16,
   toInt32,
+  toBool,
   toInt64,
   toNumber,
   toUInt8,
@@ -38,6 +39,7 @@ const NUMERIC_TYPES: Record<
   UInt16: { ctor: Uint16Array, convert: toUInt16 },
   UInt32: { ctor: Uint32Array, convert: toUInt32 },
   UInt64: { ctor: BigUint64Array, convert: toUInt64 },
+  Bool: { ctor: Uint8Array, convert: toBool },
   Float32: { ctor: Float32Array, convert: toNumber },
   Float64: { ctor: Float64Array, convert: toNumber },
 };

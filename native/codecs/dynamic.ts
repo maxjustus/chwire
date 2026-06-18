@@ -536,6 +536,11 @@ export class JsonCodec implements Codec {
     for (let i = 0; i < n; i++) {
       const v = values[i];
       if (!v || typeof v !== "object") continue;
+      if (Array.isArray(v)) {
+        throw new TypeError(
+          "JSON column values must be plain objects; top-level arrays are not supported",
+        );
+      }
       const obj = v as Record<string, unknown>;
 
       for (let tp = 0; tp < this.typedPaths.length; tp++) {

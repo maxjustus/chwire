@@ -648,6 +648,12 @@ for await (const batch of streamDecodeNative(
 }
 ```
 
+For highly fragmented byte streams, `streamDecodeNative()` backs off retries after repeated underflows: the retry wait starts at the observed chunk size (or `underflowRetryMinBytes` when set), then doubles up to `underflowRetryMaxBytes` (default 1 MiB). This improves throughput by reducing repeated partial column decode work, at the cost of potentially delaying a batch until more bytes arrive (or the stream ends). Set the max to `0` to disable backoff:
+
+```ts
+streamDecodeNative(chunks, { underflowRetryMaxBytes: 0 });
+```
+
 ### Building Columns from Values
 
 Build columns independently with `getCodec().fromValues()`:
@@ -793,42 +799,42 @@ LZ4 and ZSTD use native Node addons (`lz4-napi`, `zstd-napi`) installed automati
 
 ## Performance
 
-Benchmarks on Apple M4 Max, 100k rows, 50 iterations. As of [`6609e3b`](../../commit/6609e3b).
+Benchmarks on Apple M4 Max / Node v25.9.0, 100k rows, adaptive iterations (the benchmark output prints warmup/sample counts).
 
 ### Encode (raw, no compression)
 
 | Scenario | JSON | Native | Speedup |
 |----------|------|--------|---------|
-| Simple (6 cols) | 98ms | 24ms | 4.1x |
-| Escape-heavy strings | 21ms | 20ms | 1.1x |
-| Arrays (50 floats/row) | 173ms | 59ms | 2.9x |
-| Variant | 6.0ms | 8.5ms | 0.7x |
-| Dynamic | 5.2ms | 8.0ms | 0.7x |
-| JSON column | 11ms | 39ms | 0.3x |
+| Simple (6 cols) | 96ms | 23ms | 4.1x |
+| Escape-heavy strings | 22ms | 21ms | 1.0x |
+| Arrays (50 floats/row) | 172ms | 60ms | 2.9x |
+| Variant | 5.8ms | 8.5ms | 0.7x |
+| Dynamic | 5.1ms | 6.5ms | 0.8x |
+| JSON column | 11ms | 33ms | 0.3x |
 
 ### Decode (raw)
 
 | Scenario | JSON | Native | Speedup |
 |----------|------|--------|---------|
-| Simple (6 cols) | 45ms | 26ms | 1.7x |
-| Escape-heavy strings | 41ms | 47ms | 0.9x |
-| Arrays (50 floats/row) | 239ms | 45ms | 5.3x |
-| Variant | 22ms | 1.6ms | 14.1x |
-| Dynamic | 21ms | 1.3ms | 16.7x |
-| JSON column | 47ms | 7.2ms | 6.6x |
+| Simple (6 cols) | 46ms | 27ms | 1.7x |
+| Escape-heavy strings | 41ms | 46ms | 0.9x |
+| Arrays (50 floats/row) | 236ms | 49ms | 4.8x |
+| Variant | 21ms | 1.4ms | 14.6x |
+| Dynamic | 21ms | 1.2ms | 18.4x |
+| JSON column | 45ms | 7.8ms | 5.8x |
 
 ### Encode + Compress (full path)
 
 | Scenario | JSON+LZ4 | Native+LZ4 | JSON+ZSTD | Native+ZSTD | JSON+gzip | Native+gzip |
 |----------|----------|------------|-----------|-------------|-----------|-------------|
-| Simple (6 cols) | 112ms | 18ms | 120ms | 20ms | 197ms | 96ms |
-| Escape-heavy strings | 26ms | 17ms | 28ms | 17ms | 59ms | 57ms |
-| Arrays (50 floats/row) | 267ms | 45ms | 617ms | 81ms | 2778ms | 1024ms |
-| Variant | 9.7ms | 7.4ms | 13ms | 8.3ms | 54ms | 57ms |
-| Dynamic | 8.6ms | 8.4ms | 10ms | 7.0ms | 41ms | 48ms |
-| JSON column | 21ms | 29ms | 28ms | 33ms | 112ms | 107ms |
+| Simple (6 cols) | 122ms | 31ms | 138ms | 36ms | 186ms | 105ms |
+| Escape-heavy strings | 39ms | 28ms | 41ms | 28ms | 48ms | 65ms |
+| Arrays (50 floats/row) | 382ms | 129ms | 732ms | 146ms | 2759ms | 1090ms |
+| Variant | 9.3ms | 12ms | 12ms | 13ms | 52ms | 52ms |
+| Dynamic | 8.0ms | 8.6ms | 9.6ms | 8.9ms | 37ms | 46ms |
+| JSON column | 32ms | 40ms | 46ms | 46ms | 98ms | 104ms |
 
-### Compressed Size (Native as % of JSON, lower = smaller)
+### Compressed Size (Native as % of JSONEachRow compressed with same codec, lower = smaller)
 
 | Scenario | LZ4 | ZSTD | gzip |
 |----------|-----|------|------|
@@ -837,7 +843,7 @@ Benchmarks on Apple M4 Max, 100k rows, 50 iterations. As of [`6609e3b`](../../co
 | Arrays (50 floats/row) | 48% | 82% | 85% |
 | Variant | 70% | 81% | 68% |
 | Dynamic | 72% | 93% | 61% |
-| JSON column | 56% | 62% | 65% |
+| JSON column | 56% | 63% | 65% |
 
 *Escape-heavy strings with ZSTD: JSON's escaping creates repetitive byte patterns that ZSTD exploits.
 

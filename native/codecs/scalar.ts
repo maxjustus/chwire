@@ -590,7 +590,8 @@ export class StringCodec extends BaseCodec {
     if (col instanceof DataColumn) {
       const data = col.data;
       for (let i = 0; i < len; i++) {
-        writer.writeString(data[i] as string);
+        const v = data[i];
+        writer.writeString(typeof v === "string" ? v : coerceToString(v));
       }
     } else {
       for (let i = 0; i < len; i++) {
@@ -612,7 +613,7 @@ export class StringCodec extends BaseCodec {
         return new DataColumn(this.type, values.map(coerceToString));
       }
     }
-    return new DataColumn(this.type, values as string[]);
+    return new DataColumn(this.type, values.slice() as string[]);
   }
 
   zeroValue() {

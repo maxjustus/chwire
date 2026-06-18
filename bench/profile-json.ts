@@ -37,12 +37,12 @@ console.log("--- Test 1: Consistent schema, same codec instance ---");
   const times: number[] = [];
   for (let i = 0; i < BATCHES; i++) {
     const t0 = performance.now();
-    jsonCodec.fromValues(batches[i]);
+    jsonCodec.fromValues(batches[i]!);
     times.push(performance.now() - t0);
   }
 
   console.log("Batch times (ms):", times.map((t) => t.toFixed(1)).join(", "));
-  console.log("First batch:", times[0].toFixed(1), "ms (full discovery)");
+  console.log("First batch:", times[0]!.toFixed(1), "ms (full discovery)");
   console.log(
     "Avg batches 2-10:",
     (times.slice(1).reduce((a, b) => a + b, 0) / (BATCHES - 1)).toFixed(1),
@@ -50,7 +50,7 @@ console.log("--- Test 1: Consistent schema, same codec instance ---");
   );
   console.log(
     "Speedup on cached batches:",
-    (times[0] / (times.slice(1).reduce((a, b) => a + b, 0) / (BATCHES - 1))).toFixed(2) + "x",
+    (times[0]! / (times.slice(1).reduce((a, b) => a + b, 0) / (BATCHES - 1))).toFixed(2) + "x",
   );
 }
 
@@ -63,7 +63,7 @@ console.log("\n--- Test 2: Consistent schema, fresh codec each batch (baseline) 
   for (let i = 0; i < BATCHES; i++) {
     const jsonCodec = new JsonCodec([]); // Fresh instance - no cache
     const t0 = performance.now();
-    jsonCodec.fromValues(batches[i]);
+    jsonCodec.fromValues(batches[i]!);
     times.push(performance.now() - t0);
   }
 
@@ -156,7 +156,7 @@ console.log("\n--- Baseline: Object.keys scan vs first-row check ---");
   // First-row check only (current)
   t0 = performance.now();
   for (let iter = 0; iter < 1000; iter++) {
-    const row = batch[0];
+    const row = batch[0]!;
     if (row && typeof row === "object" && !Array.isArray(row)) {
       cachedPaths.every((p) => p in (row as Record<string, unknown>));
     }

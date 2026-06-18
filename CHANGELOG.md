@@ -13,6 +13,7 @@ release includes the unreleased changes since `@maxjustus/chttp@1.15.0`.
 - Added `RecordBatch.isRecordBatch()` for identity-safe batch detection across module copies (ESM/CJS, source vs. bundle); insert and external-table dispatch use it instead of `instanceof`.
 - Added a clear error when the server mandates the chunked TCP protocol, instead of desyncing after the handshake.
 - Added TCP TLS coverage in the test suite.
+- Added adaptive underflow retry backoff to `streamDecodeNative()` (configurable via `underflowRetryMinBytes` / `underflowRetryMaxBytes`) to avoid retrying partial Native blocks after every small chunk.
 
 ### Fixed
 
@@ -36,6 +37,7 @@ release includes the unreleased changes since `@maxjustus/chttp@1.15.0`.
 - Hardened TCP lifecycle and draining: repeated `connect()` now refuses to replace an active socket, and compressed query drains can discard Data packets without materializing ignored batches.
 - Hardened Native compression decode with decompressed-size caps and size verification.
 - Fixed stateful `Dynamic(...)` codecs bypassing the Native codec cache, matching `Dynamic`/`JSON` cache behavior.
+- Native JSON inserts now reject top-level arrays with a clear error instead of silently encoding them as empty objects.
 
 ### Changed
 

@@ -11,9 +11,9 @@ import {
   RecordBatch,
   streamDecodeNative,
   streamEncodeNative,
-  writeUtf8Buffer,
-  writeUtf8Encoder,
 } from "../../native/index.ts";
+import { DataColumn } from "../../native/columns.ts";
+import { writeUtf8Buffer, writeUtf8Encoder } from "../../native/io.ts";
 import { collect, decodeBatch, encodeNativeRows, toArrayRows, toAsync } from "../test_utils.ts";
 
 function encodeInvalidNativeBlock(type = "NotAType"): Uint8Array {
@@ -82,6 +82,20 @@ describe("streamDecodeNative", () => {
     assert.strictEqual(results.length, 1);
     assert.ok(results[0] instanceof RecordBatch);
     assert.deepStrictEqual(toArrayRows(results[0]), [[1], [2], [3]]);
+  });
+
+  it("flushes retry-throttled partial chunks at EOF", async () => {
+    const columns: ColumnDef[] = [{ name: "id", type: "Int32" }];
+    const block = encodeNativeRows(columns, [[1], [2], [3]]);
+
+    const results = await collect(
+      streamDecodeNative(toAsync([block.subarray(0, 5), block.subarray(5)]), {
+        underflowRetryMinBytes: 1024 * 1024,
+      }),
+    );
+
+    assert.strictEqual(results.length, 1);
+    assert.deepStrictEqual(toArrayRows(results[0]!), [[1], [2], [3]]);
   });
 
   it("throws on invalid trailing block at EOF instead of swallowing it", async () => {
@@ -241,6 +255,26 @@ describe("RecordBatch static methods", () => {
     assert.deepStrictEqual(rows[2], [3, 3.5]);
   });
 
+  it("fromRows coerces Bool values on the array fast path", () => {
+    const table = batchFromRows(
+      [
+        { name: "id", type: "UInt32" },
+        { name: "active", type: "Bool" },
+      ],
+      [
+        [1, true],
+        [2, false],
+        [3, "1"],
+      ],
+    );
+
+    assert.deepStrictEqual(toArrayRows(table), [
+      [1, 1],
+      [2, 0],
+      [3, 1],
+    ]);
+  });
+
   it("fromRows accepts sync generator", async () => {
     const schema: ColumnDef[] = [
       { name: "x", type: "Int32" },
@@ -322,6 +356,25 @@ describe("getCodec().fromValues()", () => {
     assert.strictEqual(col.get(0), 1);
     assert.strictEqual(col.get(1), 2);
     assert.strictEqual(col.get(2), 3);
+  });
+
+  it("String fromValues copies caller-owned arrays", () => {
+    const values = ["alice", "bob"];
+    const col = getCodec("String").fromValues(values);
+    values[0] = "mutated";
+
+    assert.strictEqual(col.get(0), "alice");
+    assert.strictEqual(col.get(1), "bob");
+  });
+
+  it("String encode coerces non-string DataColumn values", () => {
+    const codec = getCodec("String");
+    const encoded = codec.encode(new DataColumn("String", [1, null, { a: 2 }]));
+    const reader = new BufferReader(encoded);
+
+    assert.strictEqual(reader.readString(), "1");
+    assert.strictEqual(reader.readString(), "");
+    assert.strictEqual(reader.readString(), '{"a":2}');
   });
 
   it("works with complex types", async () => {
