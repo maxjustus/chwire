@@ -2,8 +2,7 @@
 //
 // Tests encoding/decoding performance for both formats with various data types.
 
-import { promisify } from "node:util";
-import { gzip } from "node:zlib";
+import { gzipSync } from "node:zlib";
 import { encodeBlock, init } from "../compression.ts";
 import {
   batchFromCols,
@@ -23,8 +22,6 @@ import {
   readBenchOptions,
   reportEnvironment,
 } from "./harness.ts";
-
-const gzipAsync = promisify(gzip);
 
 function encodeNativeRows(columns: ColumnDef[], rows: unknown[][]): Uint8Array {
   return encodeNative(batchFromRows(columns, rows));
@@ -116,11 +113,7 @@ interface ScenarioResult {
   compressed: { json: CompressionSizes; native: CompressionSizes };
 }
 
-async function runScenario(
-  scenario: Scenario,
-  iterations: number,
-  benchOptions: BenchOptions,
-): Promise<ScenarioResult> {
+function runScenario(scenario: Scenario, benchOptions: BenchOptions): ScenarioResult {
   const rows = scenario.rowsArray.length;
   console.log(`=== ${scenario.name} (${scenario.description}) ===\n`);
 
@@ -135,38 +128,41 @@ async function runScenario(
 
   // Encoding
   console.log("Encoding:");
-  const jsonEnc = benchSync("JSONEachRow encode", () => encodeJsonEachRow(scenario.jsonData), {
-    ...benchOptions,
-    iterations,
-  });
+  const jsonEnc = benchSync(
+    "JSONEachRow encode",
+    () => encodeJsonEachRow(scenario.jsonData),
+    benchOptions,
+  );
   console.log(formatResult(jsonEnc, rows));
   const nativeEnc = benchSync(
     "Native encode",
     () => encodeNativeRows(scenario.columns, scenario.rowsArray),
-    { ...benchOptions, iterations },
+    benchOptions,
   );
   console.log(formatResult(nativeEnc, rows));
 
   // Decoding
   console.log("\nDecoding:");
-  const jsonDec = benchSync("JSONEachRow decode", () => decodeJsonEachRow(jsonEncoded), {
-    ...benchOptions,
-    iterations,
-  });
+  const jsonDec = benchSync(
+    "JSONEachRow decode",
+    () => decodeJsonEachRow(jsonEncoded),
+    benchOptions,
+  );
   console.log(formatResult(jsonDec, rows));
-  const nativeDec = benchSync("Native decode", () => decodeNativeBlock(nativeEncoded, 0), {
-    ...benchOptions,
-    iterations,
-  });
+  const nativeDec = benchSync(
+    "Native decode",
+    () => decodeNativeBlock(nativeEncoded, 0),
+    benchOptions,
+  );
   console.log(formatResult(nativeDec, rows));
 
   // Compression comparison (LZ4, ZSTD, gzip)
   const jsonLz4 = encodeBlock(jsonEncoded, "lz4");
   const jsonZstd = encodeBlock(jsonEncoded, "zstd");
-  const jsonGzip = new Uint8Array(await gzipAsync(jsonEncoded));
+  const jsonGzip = new Uint8Array(gzipSync(jsonEncoded));
   const nativeLz4 = encodeBlock(nativeEncoded, "lz4");
   const nativeZstd = encodeBlock(nativeEncoded, "zstd");
-  const nativeGzip = new Uint8Array(await gzipAsync(nativeEncoded));
+  const nativeGzip = new Uint8Array(gzipSync(nativeEncoded));
 
   console.log("\nCompressed sizes:");
   console.log(
@@ -181,43 +177,43 @@ async function runScenario(
   const jsonLz4Full = benchSync(
     "JSONEachRow + LZ4",
     () => encodeBlock(encodeJsonEachRow(scenario.jsonData), "lz4"),
-    { ...benchOptions, iterations },
+    benchOptions,
   );
   console.log(formatResult(jsonLz4Full, rows));
   const nativeLz4Full = benchSync(
     "Native + LZ4",
     () => encodeBlock(encodeNativeRows(scenario.columns, scenario.rowsArray), "lz4"),
-    { ...benchOptions, iterations },
+    benchOptions,
   );
   console.log(formatResult(nativeLz4Full, rows));
 
   const jsonZstdFull = benchSync(
     "JSONEachRow + ZSTD",
     () => encodeBlock(encodeJsonEachRow(scenario.jsonData), "zstd"),
-    { ...benchOptions, iterations },
+    benchOptions,
   );
   console.log(formatResult(jsonZstdFull, rows));
   const nativeZstdFull = benchSync(
     "Native + ZSTD",
     () => encodeBlock(encodeNativeRows(scenario.columns, scenario.rowsArray), "zstd"),
-    { ...benchOptions, iterations },
+    benchOptions,
   );
   console.log(formatResult(nativeZstdFull, rows));
 
-  const jsonGzipFull = await benchAsync(
+  const jsonGzipFull = benchSync(
     "JSONEachRow + gzip",
-    async () => {
-      await gzipAsync(encodeJsonEachRow(scenario.jsonData));
+    () => {
+      gzipSync(encodeJsonEachRow(scenario.jsonData));
     },
-    { ...benchOptions, iterations },
+    benchOptions,
   );
   console.log(formatResult(jsonGzipFull, rows));
-  const nativeGzipFull = await benchAsync(
+  const nativeGzipFull = benchSync(
     "Native + gzip",
-    async () => {
-      await gzipAsync(encodeNativeRows(scenario.columns, scenario.rowsArray));
+    () => {
+      gzipSync(encodeNativeRows(scenario.columns, scenario.rowsArray));
     },
-    { ...benchOptions, iterations },
+    benchOptions,
   );
   console.log(formatResult(nativeGzipFull, rows));
 
@@ -448,11 +444,10 @@ async function main() {
   await init();
 
   reportEnvironment();
-  const benchOptions = readBenchOptions({ iterations: 50, warmup: 20 });
+  const benchOptions = readBenchOptions();
   const ROWS = 100_000;
-  const ITERATIONS = benchOptions.iterations ?? 50;
 
-  console.log(`Benchmarking with ${ROWS} rows, ${ITERATIONS} iterations each\n`);
+  console.log(`Benchmarking with ${ROWS} rows (adaptive iterations)\n`);
 
   // Generate all test data
   const simple = generateSimpleData(ROWS);
@@ -517,7 +512,7 @@ async function main() {
 
   const results: ScenarioResult[] = [];
   for (const scenario of scenarios) {
-    results.push(await runScenario(scenario, ITERATIONS, benchOptions));
+    results.push(runScenario(scenario, benchOptions));
   }
 
   // Summary
@@ -541,10 +536,11 @@ async function main() {
   const simpleNativeEncoded = encodeNativeRows(simple.columns, simple.rows);
 
   console.log("Decoding (sync vs streaming):");
-  const syncDec = benchSync("Sync decode", () => decodeNativeBlock(simpleNativeEncoded, 0), {
-    ...benchOptions,
-    iterations: ITERATIONS,
-  });
+  const syncDec = benchSync(
+    "Sync decode",
+    () => decodeNativeBlock(simpleNativeEncoded, 0),
+    benchOptions,
+  );
   console.log(formatResult(syncDec, ROWS));
 
   const stream1 = await benchAsync(
@@ -552,7 +548,7 @@ async function main() {
     async () => {
       await collectNative(chunkedStream(simpleNativeEncoded, simpleNativeEncoded.length));
     },
-    { ...benchOptions, iterations: ITERATIONS },
+    benchOptions,
   );
   console.log(formatResult(stream1, ROWS));
 
@@ -561,7 +557,7 @@ async function main() {
     async () => {
       await collectNative(chunkedStream(simpleNativeEncoded, 64 * 1024));
     },
-    { ...benchOptions, iterations: ITERATIONS },
+    benchOptions,
   );
   console.log(formatResult(stream64k, ROWS));
 
@@ -570,15 +566,16 @@ async function main() {
     async () => {
       await collectNative(chunkedStream(simpleNativeEncoded, 4 * 1024));
     },
-    { ...benchOptions, iterations: ITERATIONS },
+    { warmup: 1, iterations: 5 },
   );
   console.log(formatResult(stream4k, ROWS));
 
   console.log("\nEncoding (sync vs streaming):");
-  const syncEnc = benchSync("Sync encode", () => encodeNativeRows(simple.columns, simple.rows), {
-    ...benchOptions,
-    iterations: ITERATIONS,
-  });
+  const syncEnc = benchSync(
+    "Sync encode",
+    () => encodeNativeRows(simple.columns, simple.rows),
+    benchOptions,
+  );
   console.log(formatResult(syncEnc, ROWS));
 
   async function* batchGenerator() {
@@ -590,7 +587,7 @@ async function main() {
     async () => {
       await collectByteChunks(streamEncodeNative(batchGenerator()));
     },
-    { ...benchOptions, iterations: ITERATIONS },
+    benchOptions,
   );
   console.log(formatResult(streamEnc, ROWS));
 
@@ -616,7 +613,7 @@ async function main() {
   const nativeRowEnc = benchSync(
     "Native (row input)",
     () => encodeNativeRows(columnar.columns, columnar.rows),
-    { ...benchOptions, iterations: ITERATIONS },
+    benchOptions,
   );
   console.log(formatResult(nativeRowEnc, ROWS));
   const nativeColEnc = benchSync(
@@ -630,7 +627,7 @@ async function main() {
           z: getCodec("Float64").fromValues(columnar.columnar[3]),
         }),
       ),
-    { ...benchOptions, iterations: ITERATIONS },
+    benchOptions,
   );
   console.log(formatResult(nativeColEnc, ROWS));
 

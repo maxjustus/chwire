@@ -39,10 +39,23 @@ export function reportEnvironment(): void {
   console.log(`CPU:  ${cpuName} (${cpus.length} cores)`);
 }
 
+function calibrate(fn: () => void, batchSize: number): { warmup: number; iterations: number } {
+  fn();
+  const start = performance.now();
+  for (let b = 0; b < batchSize; b++) fn();
+  const ms = performance.now() - start;
+
+  if (ms > 1000) return { warmup: 2, iterations: 10 };
+  if (ms > 200) return { warmup: 5, iterations: 20 };
+  if (ms > 50) return { warmup: 10, iterations: 30 };
+  return { warmup: 20, iterations: 50 };
+}
+
 export function benchSync(name: string, fn: () => void, options: BenchOptions = {}): BenchStats {
-  const warmup = options.warmup ?? 20;
-  const iterations = options.iterations ?? 50;
   const batchSize = options.batchSize ?? 1;
+  const cal = options.iterations ? null : calibrate(fn, batchSize);
+  const warmup = options.warmup ?? cal?.warmup ?? 20;
+  const iterations = options.iterations ?? cal?.iterations ?? 50;
 
   for (let i = 0; i < warmup; i++) {
     for (let b = 0; b < batchSize; b++) fn();
@@ -59,14 +72,30 @@ export function benchSync(name: string, fn: () => void, options: BenchOptions = 
   return summarize(name, samples, { warmup, iterations, batchSize });
 }
 
+async function calibrateAsync(
+  fn: () => Promise<void>,
+  batchSize: number,
+): Promise<{ warmup: number; iterations: number }> {
+  await fn();
+  const start = performance.now();
+  for (let b = 0; b < batchSize; b++) await fn();
+  const ms = performance.now() - start;
+
+  if (ms > 1000) return { warmup: 2, iterations: 10 };
+  if (ms > 200) return { warmup: 5, iterations: 20 };
+  if (ms > 50) return { warmup: 10, iterations: 30 };
+  return { warmup: 20, iterations: 50 };
+}
+
 export async function benchAsync(
   name: string,
   fn: () => Promise<void>,
   options: BenchOptions = {},
 ): Promise<BenchStats> {
-  const warmup = options.warmup ?? 20;
-  const iterations = options.iterations ?? 50;
   const batchSize = options.batchSize ?? 1;
+  const cal = options.iterations ? null : await calibrateAsync(fn, batchSize);
+  const warmup = options.warmup ?? cal?.warmup ?? 20;
+  const iterations = options.iterations ?? cal?.iterations ?? 50;
 
   for (let i = 0; i < warmup; i++) {
     for (let b = 0; b < batchSize; b++) await fn();

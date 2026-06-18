@@ -7,3 +7,4 @@ settings-versions.json
 .crush/
 .tmp/
 reference-clickhouse-arrow-rs/
+test/_browser_entry.ts
