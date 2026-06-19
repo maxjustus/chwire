@@ -1,8 +1,9 @@
 import assert from "node:assert";
 import { describe, it } from "node:test";
+import { DataColumn } from "../../native/columns.ts";
 import {
-  BufferWriter,
   BufferReader,
+  BufferWriter,
   batchFromCols,
   batchFromRows,
   type ColumnDef,
@@ -12,7 +13,6 @@ import {
   streamDecodeNative,
   streamEncodeNative,
 } from "../../native/index.ts";
-import { DataColumn } from "../../native/columns.ts";
 import { writeUtf8Buffer, writeUtf8Encoder } from "../../native/io.ts";
 import { collect, decodeBatch, encodeNativeRows, toArrayRows, toAsync } from "../test_utils.ts";
 
@@ -88,11 +88,10 @@ describe("streamDecodeNative", () => {
     const columns: ColumnDef[] = [{ name: "id", type: "Int32" }];
     const block = encodeNativeRows(columns, [[1], [2], [3]]);
 
-    const results = await collect(
-      streamDecodeNative(toAsync([block.subarray(0, 5), block.subarray(5)]), {
-        underflowRetryMinBytes: 1024 * 1024,
-      }),
-    );
+    // Split into 1-byte chunks so the adaptive backoff throttles retries,
+    // then verify the EOF flush path still decodes the complete block.
+    const oneByteChunks = Array.from({ length: block.length }, (_, i) => block.subarray(i, i + 1));
+    const results = await collect(streamDecodeNative(toAsync(oneByteChunks)));
 
     assert.strictEqual(results.length, 1);
     assert.deepStrictEqual(toArrayRows(results[0]!), [[1], [2], [3]]);
@@ -255,7 +254,7 @@ describe("RecordBatch static methods", () => {
     assert.deepStrictEqual(rows[2], [3, 3.5]);
   });
 
-  it("fromRows coerces Bool values on the array fast path", () => {
+  it("fromRows coerces Bool values on the array row path", () => {
     const table = batchFromRows(
       [
         { name: "id", type: "UInt32" },

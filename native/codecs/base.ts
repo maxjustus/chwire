@@ -1,6 +1,6 @@
 import { type Column, DataColumn } from "../columns.ts";
 import { SerializationKind, Sparse } from "../constants.ts";
-import { type BufferReader, BufferWriter, type TypedArrayConstructor } from "../io.ts";
+import type { BufferReader, BufferWriter, TypedArrayConstructor } from "../io.ts";
 import {
   DEFAULT_DENSE_NODE,
   type DeserializerState,
@@ -128,12 +128,20 @@ export interface GenContext {
   pickDynamicType(): string;
 }
 
+export interface ColumnBuilder {
+  push(value: unknown): void;
+  pushAll(values: ArrayLike<unknown>): void;
+  finish(): Column;
+}
+
 export interface Codec {
   /** ClickHouse type string this codec handles */
   readonly type: string;
   encode(col: Column, sizeHint?: number): Uint8Array;
   decode(reader: BufferReader, rows: number, state: DeserializerState): Column;
   fromValues(values: unknown[] | TypedArray): Column;
+  fromRows?(rows: readonly unknown[][], columnIndex: number): Column;
+  makeBuilder?(expectedRows?: number): ColumnBuilder;
   zeroValue(): unknown;
   estimateSize(rows: number): number;
   writePrefix?(writer: BufferWriter, col: Column): void;
@@ -194,21 +202,48 @@ export function escapeString(s: string, escapeSingleQuote = false): string {
   return result;
 }
 
-/**
- * A codec whose `fromValues` writes each raw value straight into a `Ctor`
- * typed array (optionally through `converter`). Only such codecs are eligible
- * for `ArrayCodec`'s element fast path. EnumCodec and EpochCodec also hold a
- * typed-array `Ctor`, but their `fromValues` translates values first (enum name
- * -> code, Date -> epoch units), so they must NOT match here.
- */
-interface NumericLikeCodec extends Codec {
-  readonly numericFastPath: true;
-  readonly Ctor: TypedArrayConstructor<any>;
-  readonly converter?: (v: unknown) => number | bigint;
+class ValuesColumnBuilder implements ColumnBuilder {
+  private values: unknown[];
+  private offset = 0;
+  private codec: Pick<Codec, "fromValues">;
+
+  constructor(codec: Pick<Codec, "fromValues">, expectedRows?: number) {
+    this.codec = codec;
+    this.values = expectedRows === undefined ? [] : new Array(expectedRows);
+  }
+
+  push(value: unknown): void {
+    this.values[this.offset++] = value;
+  }
+
+  pushAll(values: ArrayLike<unknown>): void {
+    const start = this.offset;
+    this.offset += values.length;
+    if (this.values.length < this.offset) this.values.length = this.offset;
+    for (let i = 0; i < values.length; i++) this.values[start + i] = values[i];
+  }
+
+  finish(): Column {
+    if (this.values.length !== this.offset) this.values.length = this.offset;
+    return this.codec.fromValues(this.values);
+  }
 }
 
-export function isNumericLikeCodec(codec: Codec): codec is NumericLikeCodec {
-  return (codec as any)?.numericFastPath === true;
+export function makeDefaultColumnBuilder(
+  codec: Pick<Codec, "fromValues">,
+  expectedRows?: number,
+): ColumnBuilder {
+  return new ValuesColumnBuilder(codec, expectedRows);
+}
+
+export function columnFromRows(
+  codec: Pick<Codec, "fromValues">,
+  rows: readonly unknown[][],
+  columnIndex: number,
+): Column {
+  const values = new Array(rows.length);
+  for (let i = 0; i < rows.length; i++) values[i] = rows[i]![columnIndex];
+  return codec.fromValues(values);
 }
 
 export function defaultDeserializerState(): DeserializerState {
@@ -364,8 +399,7 @@ function readSparse(
     return new DataColumn(codec.type, dest);
   }
 
-  const resultValues = new Array(rows);
-  for (let i = 0; i < rows; i++) resultValues[i] = zero;
+  const resultValues = new Array(rows).fill(zero);
 
   for (let i = 0; i < indices.length; i++) {
     const idx = indices[i]!;
@@ -433,6 +467,14 @@ export abstract class BaseCodec implements Codec {
 
   compare(a: unknown, b: unknown): boolean {
     return deepCompare(a, b);
+  }
+
+  fromRows(rows: readonly unknown[][], columnIndex: number): Column {
+    return columnFromRows(this, rows, columnIndex);
+  }
+
+  makeBuilder(expectedRows?: number): ColumnBuilder {
+    return makeDefaultColumnBuilder(this, expectedRows);
   }
 
   decode(reader: BufferReader, rows: number, state: DeserializerState): Column {

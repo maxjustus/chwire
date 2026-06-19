@@ -1,3 +1,26 @@
+import {
+  coerceToString,
+  INT32_MAX,
+  INT32_MIN,
+  INT64_MAX,
+  INT64_MIN,
+  INT128_MAX,
+  INT128_MIN,
+  INT256_MAX,
+  INT256_MIN,
+  IPV4_REGEX,
+  toBigIntInRange,
+  toBool,
+  toValidDate,
+  toValidDecimal,
+  toValidIPv4,
+  toValidIPv6,
+  toValidUUID,
+  UINT16_MAX,
+  UINT32_MAX,
+  UINT128_MAX,
+  UINT256_MAX,
+} from "../coercion.ts";
 import { type Column, DataColumn, EnumColumn } from "../columns.ts";
 import { IPv6 as IPv6Const, UUID as UUIDConst } from "../constants.ts";
 import { type BufferReader, BufferWriter, type TypedArrayConstructor } from "../io.ts";
@@ -10,29 +33,14 @@ import {
   type TypedArray,
 } from "../types.ts";
 import {
-  coerceToString,
-  INT128_MAX,
-  INT128_MIN,
-  INT256_MAX,
-  INT256_MIN,
-  INT32_MAX,
-  INT32_MIN,
-  INT64_MAX,
-  INT64_MIN,
-  IPV4_REGEX,
-  toBigIntInRange,
-  toBool,
-  toValidDate,
-  toValidDecimal,
-  toValidIPv4,
-  toValidIPv6,
-  toValidUUID,
-  UINT128_MAX,
-  UINT16_MAX,
-  UINT32_MAX,
-  UINT256_MAX,
-} from "../coercion.ts";
-import { asBytes, BaseCodec, escapeString, type GenContext, type Rng, wrapQuoted } from "./base.ts";
+  asBytes,
+  BaseCodec,
+  type ColumnBuilder,
+  escapeString,
+  type GenContext,
+  type Rng,
+  wrapQuoted,
+} from "./base.ts";
 
 // Hex lookup tables for optimized UUID encode/decode
 const HEX_LUT = new Uint8Array(256);
@@ -371,9 +379,58 @@ function genBytes(rng: Rng, n: number): Uint8Array {
   return bytes;
 }
 
+class NumericColumnBuilder<T extends TypedArray> implements ColumnBuilder {
+  private arr: T;
+  private offset = 0;
+  private type: string;
+  private Ctor: TypedArrayConstructor<T>;
+  private convert?: (v: unknown) => number | bigint;
+
+  constructor(
+    type: string,
+    Ctor: TypedArrayConstructor<T>,
+    convert?: (v: unknown) => number | bigint,
+    initialCapacity = 1024,
+  ) {
+    this.type = type;
+    this.Ctor = Ctor;
+    if (convert !== undefined) this.convert = convert;
+    this.arr = new Ctor(initialCapacity) as T;
+  }
+
+  private ensureCapacity(capacity: number): void {
+    if (capacity <= this.arr.length) return;
+    let nextLength = this.arr.length === 0 ? 1 : this.arr.length * 2;
+    while (nextLength < capacity) nextLength *= 2;
+    const next = new this.Ctor(nextLength) as T;
+    next.set(this.arr as any);
+    this.arr = next;
+  }
+
+  push(value: unknown): void {
+    this.ensureCapacity(this.offset + 1);
+    this.arr[this.offset++] = (this.convert ? this.convert(value) : value) as any;
+  }
+
+  pushAll(values: ArrayLike<unknown>): void {
+    const start = this.offset;
+    this.offset += values.length;
+    this.ensureCapacity(this.offset);
+    const convert = this.convert;
+    if (convert) {
+      for (let i = 0; i < values.length; i++) this.arr[start + i] = convert(values[i]) as any;
+    } else {
+      for (let i = 0; i < values.length; i++) this.arr[start + i] = values[i] as any;
+    }
+  }
+
+  finish(): DataColumn<T> {
+    return new DataColumn(this.type, this.arr.subarray(0, this.offset) as T);
+  }
+}
+
 export class NumericCodec<T extends TypedArray> extends BaseCodec {
   readonly type: string;
-  readonly numericFastPath = true;
   readonly Ctor: TypedArrayConstructor<T>;
   readonly converter?: (v: unknown) => number | bigint;
   // Width range for the plain-integer generate() fallback. Float/Bool ignore
@@ -431,6 +488,20 @@ export class NumericCodec<T extends TypedArray> extends BaseCodec {
       arr[i] = (convert ? convert(v) : v) as any;
     }
     return new DataColumn(this.type, arr);
+  }
+
+  override fromRows(rows: readonly unknown[][], columnIndex: number): DataColumn<T> {
+    const arr = new this.Ctor(rows.length);
+    const convert = this.converter;
+    for (let i = 0; i < rows.length; i++) {
+      const v = rows[i]![columnIndex];
+      arr[i] = (convert ? convert(v) : v) as any;
+    }
+    return new DataColumn(this.type, arr);
+  }
+
+  override makeBuilder(expectedRows?: number): ColumnBuilder {
+    return new NumericColumnBuilder(this.type, this.Ctor, this.converter, expectedRows ?? 1024);
   }
 
   zeroValue() {
@@ -602,7 +673,7 @@ export class StringCodec extends BaseCodec {
   }
 
   decodeDense(reader: BufferReader, rows: number): Column {
-    const values: string[] = new Array(rows);
+    const values = new Array<string>(rows).fill("");
     for (let i = 0; i < rows; i++) values[i] = reader.readString();
     return new DataColumn(this.type, values);
   }
@@ -614,6 +685,15 @@ export class StringCodec extends BaseCodec {
       }
     }
     return new DataColumn(this.type, values.slice() as string[]);
+  }
+
+  override fromRows(rows: readonly unknown[][], columnIndex: number): Column {
+    const values: string[] = new Array(rows.length);
+    for (let i = 0; i < rows.length; i++) {
+      const v = rows[i]![columnIndex];
+      values[i] = typeof v === "string" ? v : coerceToString(v);
+    }
+    return new DataColumn(this.type, values);
   }
 
   zeroValue() {
