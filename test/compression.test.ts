@@ -24,6 +24,22 @@ describe("Compression", () => {
     await Promise.all(Array.from({ length: 8 }, () => init()));
   });
 
+  describe("concat", () => {
+    it("returns a zero-copy view for contiguous byte ranges", () => {
+      const backing = new Uint8Array([1, 2, 3, 4]);
+      const joined = concat([backing.subarray(0, 2), backing.subarray(2, 4)]);
+
+      assert.deepStrictEqual([...joined], [1, 2, 3, 4]);
+      backing[1] = 9;
+      assert.strictEqual(joined[1], 9);
+    });
+
+    it("copies discontiguous byte ranges", () => {
+      const joined = concat([new Uint8Array([1]), new Uint8Array([2, 3])]);
+      assert.deepStrictEqual([...joined], [1, 2, 3]);
+    });
+  });
+
   describe("LZ4 compression", () => {
     it("should compress and decompress data correctly", () => {
       const data = encoder.encode("Hello, World! This is a test.");

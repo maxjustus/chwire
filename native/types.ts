@@ -26,6 +26,10 @@ export interface DecodeOptions {
   clientVersion?: number;
   /** Decode Enum types as numeric values instead of string names (default: false = strings) */
   enumAsNumber?: boolean;
+  /** Decode String columns lazily from wire bytes instead of eagerly materializing JS strings. */
+  lazyStrings?: boolean;
+  /** Memoize lazy String values after first access (default: true when lazyStrings is enabled). */
+  lazyStringMemoize?: boolean;
 }
 
 export interface EnumMapping {

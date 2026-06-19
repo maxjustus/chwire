@@ -1,4 +1,5 @@
 import { Variant } from "./constants.ts";
+import { decodeUtf8Slice } from "./io.ts";
 import type { TypedArray } from "./types.ts";
 
 export type DiscriminatorArray = Uint8Array | Uint16Array | Uint32Array;
@@ -80,6 +81,52 @@ export class DataColumn<T extends TypedArray | unknown[]> extends AbstractColumn
 
   get(index: number): unknown {
     return this.data[index];
+  }
+}
+
+/** Lazily decodes String values from Native wire bytes and memoizes reads by default. */
+export class LazyStringColumn extends AbstractColumn {
+  readonly type: string;
+  readonly source: Uint8Array;
+  readonly starts: Uint32Array;
+  readonly lengths: Uint32Array;
+  private cache?: string[];
+
+  constructor(
+    type: string,
+    source: Uint8Array,
+    starts: Uint32Array,
+    lengths: Uint32Array,
+    memoize = true,
+  ) {
+    super();
+    this.type = type;
+    this.source = source;
+    this.starts = starts;
+    this.lengths = lengths;
+    if (memoize) this.cache = new Array(starts.length);
+  }
+
+  get length() {
+    return this.starts.length;
+  }
+
+  get(index: number): string {
+    const cached = this.cache?.[index];
+    if (cached !== undefined) return cached;
+    const start = this.starts[index];
+    const len = this.lengths[index];
+    if (start === undefined || len === undefined) return undefined as unknown as string;
+    const value = decodeUtf8Slice(this.source, start, len);
+    if (this.cache) this.cache[index] = value;
+    return value;
+  }
+
+  getBytes(index: number): Uint8Array {
+    const start = this.starts[index];
+    const len = this.lengths[index];
+    if (start === undefined || len === undefined) return new Uint8Array(0);
+    return this.source.subarray(start, start + len);
   }
 }
 
