@@ -84,7 +84,7 @@ export class DataColumn<T extends TypedArray | unknown[]> extends AbstractColumn
   }
 }
 
-/** Lazily decodes String values from Native wire bytes and memoizes reads by default. */
+/** Lazily decodes String values from Native wire bytes; reads re-decode unless memoization is enabled. */
 export class LazyStringColumn extends AbstractColumn {
   readonly type: string;
   readonly source: Uint8Array;
@@ -97,7 +97,7 @@ export class LazyStringColumn extends AbstractColumn {
     source: Uint8Array,
     starts: Uint32Array,
     lengths: Uint32Array,
-    memoize = true,
+    memoize = false,
   ) {
     super();
     this.type = type;

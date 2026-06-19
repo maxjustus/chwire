@@ -654,7 +654,7 @@ For highly fragmented byte streams, `streamDecodeNative()` backs off retries aft
 streamDecodeNative(chunks, { underflowRetryMaxBytes: 0 });
 ```
 
-String-heavy reads can opt into lazy string materialization with `lazyStrings: true` in Native decode options. The decoder stores wire bytes plus offsets and decodes each `String` on first `get()`, memoizing by default. This is fastest when you filter, project, or re-encode batches without reading every string value; if you immediately materialize every row, eager and lazy decode are roughly tied.
+String-heavy reads can opt into lazy string materialization with `lazyStrings: true` in Native decode options. The decoder stores wire bytes plus offsets and decodes each `String` on access. This is fastest when you filter, project, or re-encode batches without reading every string value; if you immediately materialize every row, eager and lazy decode are roughly tied. Reads are not cached by default — each `get()` re-decodes from the wire bytes; pass `lazyStringMemoize: true` to cache decoded values when you read the same indices repeatedly. The column borrows the decode buffer, so consume a lazy batch before pulling the next one.
 
 ```ts
 for await (const batch of streamDecodeNative(

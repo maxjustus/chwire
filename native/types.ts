@@ -28,7 +28,7 @@ export interface DecodeOptions {
   enumAsNumber?: boolean;
   /** Decode String columns lazily from wire bytes instead of eagerly materializing JS strings. */
   lazyStrings?: boolean;
-  /** Memoize lazy String values after first access (default: true when lazyStrings is enabled). */
+  /** Cache lazy String values after first decode for repeated access (default: false; values re-decode from wire bytes each read). */
   lazyStringMemoize?: boolean;
 }
 

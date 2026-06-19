@@ -14,7 +14,7 @@ release includes the unreleased changes since `@maxjustus/chttp@1.15.0`.
 - Added a clear error when the server mandates the chunked TCP protocol, instead of desyncing after the handshake.
 - Added TCP TLS coverage in the test suite.
 - Added adaptive underflow retry backoff to `streamDecodeNative()` (configurable via `underflowRetryMinBytes` / `underflowRetryMaxBytes`) to avoid retrying partial Native blocks after every small chunk.
-- Added opt-in lazy Native `String` decoding via `DecodeOptions.lazyStrings`, backed by a memoizing `LazyStringColumn`.
+- Added opt-in lazy Native `String` decoding via `DecodeOptions.lazyStrings`, backed by an exported `LazyStringColumn` that holds wire bytes and decodes on access. Reads re-decode by default; set `DecodeOptions.lazyStringMemoize: true` to cache decoded values for repeated access.
 
 ### Fixed
 

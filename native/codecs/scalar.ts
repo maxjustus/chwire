@@ -692,7 +692,7 @@ export class StringCodec extends BaseCodec {
         reader.buffer,
         starts,
         lengths,
-        reader.options.lazyStringMemoize !== false,
+        reader.options.lazyStringMemoize === true,
       );
     }
 
