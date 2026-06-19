@@ -44,16 +44,18 @@ export function reportEnvironment(): void {
   console.log(`CPU:  ${cpuName} (${cpus.length} cores)`);
 }
 
-function calibrate(fn: () => unknown, batchSize: number): { warmup: number; iterations: number } {
-  benchSink = fn();
-  const start = performance.now();
-  for (let b = 0; b < batchSize; b++) benchSink = fn();
-  const ms = performance.now() - start;
-
+function pickIterations(ms: number): { warmup: number; iterations: number } {
   if (ms > 1000) return { warmup: 2, iterations: 10 };
   if (ms > 200) return { warmup: 5, iterations: 20 };
   if (ms > 50) return { warmup: 10, iterations: 30 };
   return { warmup: 20, iterations: 50 };
+}
+
+function calibrate(fn: () => unknown, batchSize: number): { warmup: number; iterations: number } {
+  benchSink = fn();
+  const start = performance.now();
+  for (let b = 0; b < batchSize; b++) benchSink = fn();
+  return pickIterations(performance.now() - start);
 }
 
 export function benchSync(name: string, fn: () => unknown, options: BenchOptions = {}): BenchStats {
@@ -84,12 +86,7 @@ async function calibrateAsync(
   benchSink = await fn();
   const start = performance.now();
   for (let b = 0; b < batchSize; b++) benchSink = await fn();
-  const ms = performance.now() - start;
-
-  if (ms > 1000) return { warmup: 2, iterations: 10 };
-  if (ms > 200) return { warmup: 5, iterations: 20 };
-  if (ms > 50) return { warmup: 10, iterations: 30 };
-  return { warmup: 20, iterations: 50 };
+  return pickIterations(performance.now() - start);
 }
 
 export async function benchAsync(
