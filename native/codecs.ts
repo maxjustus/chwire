@@ -12,7 +12,6 @@ export {
   defaultDeserializerState,
   escapeString,
   extractTypeArgs,
-  isNumericLikeCodec,
   nullToLiteral,
   parseTupleElements,
   parseTypeList,

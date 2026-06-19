@@ -805,34 +805,34 @@ Benchmarks on Apple M4 Max / Node v25.9.0, 100k rows, adaptive iterations (the b
 
 | Scenario | JSON | Native | Speedup |
 |----------|------|--------|---------|
-| Simple (6 cols) | 96ms | 23ms | 4.1x |
-| Escape-heavy strings | 22ms | 21ms | 1.0x |
-| Arrays (50 floats/row) | 172ms | 60ms | 2.9x |
-| Variant | 5.8ms | 8.5ms | 0.7x |
-| Dynamic | 5.1ms | 6.5ms | 0.8x |
-| JSON column | 11ms | 33ms | 0.3x |
+| Simple (6 cols) | 98ms | 22ms | 4.4x |
+| Escape-heavy strings | 21ms | 20ms | 1.0x |
+| Arrays (50 floats/row) | 177ms | 64ms | 2.8x |
+| Variant | 5.6ms | 9.8ms | 0.6x |
+| Dynamic | 5.0ms | 7.0ms | 0.7x |
+| JSON column | 12ms | 33ms | 0.4x |
 
 ### Decode (raw)
 
 | Scenario | JSON | Native | Speedup |
 |----------|------|--------|---------|
-| Simple (6 cols) | 46ms | 27ms | 1.7x |
-| Escape-heavy strings | 41ms | 46ms | 0.9x |
-| Arrays (50 floats/row) | 236ms | 49ms | 4.8x |
-| Variant | 21ms | 1.4ms | 14.6x |
-| Dynamic | 21ms | 1.2ms | 18.4x |
-| JSON column | 45ms | 7.8ms | 5.8x |
+| Simple (6 cols) | 47ms | 27ms | 1.7x |
+| Escape-heavy strings | 43ms | 45ms | 0.9x |
+| Arrays (50 floats/row) | 240ms | 49ms | 4.9x |
+| Variant | 21ms | 3.4ms | 6.3x |
+| Dynamic | 21ms | 1.1ms | 19.1x |
+| JSON column | 45ms | 7.6ms | 5.9x |
 
 ### Encode + Compress (full path)
 
 | Scenario | JSON+LZ4 | Native+LZ4 | JSON+ZSTD | Native+ZSTD | JSON+gzip | Native+gzip |
 |----------|----------|------------|-----------|-------------|-----------|-------------|
-| Simple (6 cols) | 122ms | 31ms | 138ms | 36ms | 186ms | 105ms |
-| Escape-heavy strings | 39ms | 28ms | 41ms | 28ms | 48ms | 65ms |
-| Arrays (50 floats/row) | 382ms | 129ms | 732ms | 146ms | 2759ms | 1090ms |
-| Variant | 9.3ms | 12ms | 12ms | 13ms | 52ms | 52ms |
-| Dynamic | 8.0ms | 8.6ms | 9.6ms | 8.9ms | 37ms | 46ms |
-| JSON column | 32ms | 40ms | 46ms | 46ms | 98ms | 104ms |
+| Simple (6 cols) | 124ms | 31ms | 139ms | 37ms | 183ms | 102ms |
+| Escape-heavy strings | 40ms | 26ms | 40ms | 31ms | 47ms | 65ms |
+| Arrays (50 floats/row) | 378ms | 91ms | 731ms | 119ms | 3023ms | 1132ms |
+| Variant | 9.2ms | 10ms | 12ms | 11ms | 52ms | 52ms |
+| Dynamic | 7.8ms | 10ms | 9.5ms | 8.4ms | 36ms | 45ms |
+| JSON column | 35ms | 40ms | 49ms | 44ms | 100ms | 102ms |
 
 ### Compressed Size (Native as % of JSONEachRow compressed with same codec, lower = smaller)
 
@@ -843,7 +843,7 @@ Benchmarks on Apple M4 Max / Node v25.9.0, 100k rows, adaptive iterations (the b
 | Arrays (50 floats/row) | 48% | 82% | 85% |
 | Variant | 70% | 81% | 68% |
 | Dynamic | 72% | 93% | 61% |
-| JSON column | 56% | 63% | 65% |
+| JSON column | 56% | 62% | 65% |
 
 *Escape-heavy strings with ZSTD: JSON's escaping creates repetitive byte patterns that ZSTD exploits.
 
