@@ -21,7 +21,7 @@ import {
   UINT128_MAX,
   UINT256_MAX,
 } from "../coercion.ts";
-import { type Column, DataColumn, EnumColumn } from "../columns.ts";
+import { type Column, DataColumn, EnumColumn, LazyStringColumn } from "../columns.ts";
 import { IPv6 as IPv6Const, UUID as UUIDConst } from "../constants.ts";
 import { type BufferReader, BufferWriter, type TypedArrayConstructor } from "../io.ts";
 import {
@@ -658,7 +658,11 @@ export class StringCodec extends BaseCodec {
   encode(col: Column, sizeHint?: number): Uint8Array {
     const len = col.length;
     const writer = new BufferWriter(sizeHint ?? this.estimateSize(len));
-    if (col instanceof DataColumn) {
+    if (col instanceof LazyStringColumn) {
+      for (let i = 0; i < len; i++) {
+        writer.writeStringSlice(col.source, col.starts[i]!, col.lengths[i]!);
+      }
+    } else if (col instanceof DataColumn) {
       const data = col.data;
       for (let i = 0; i < len; i++) {
         const v = data[i];
@@ -673,7 +677,26 @@ export class StringCodec extends BaseCodec {
   }
 
   decodeDense(reader: BufferReader, rows: number): Column {
-    const values = new Array<string>(rows).fill("");
+    if (reader.options?.lazyStrings) {
+      const starts = new Uint32Array(rows);
+      const lengths = new Uint32Array(rows);
+      for (let i = 0; i < rows; i++) {
+        const len = reader.readVarint();
+        reader.ensureAvailable(len);
+        starts[i] = reader.offset;
+        lengths[i] = len;
+        reader.offset += len;
+      }
+      return new LazyStringColumn(
+        this.type,
+        reader.buffer,
+        starts,
+        lengths,
+        reader.options.lazyStringMemoize !== false,
+      );
+    }
+
+    const values = new Array<string>(rows);
     for (let i = 0; i < rows; i++) values[i] = reader.readString();
     return new DataColumn(this.type, values);
   }

@@ -2,6 +2,7 @@
  * Buffer I/O utilities for Native format encoding/decoding.
  */
 
+import { copyBytes } from "../util.ts";
 import { type DecodeOptions, TEXT_DECODER, TEXT_ENCODER, type TypedArray } from "./types.ts";
 
 export function writeUtf8Encoder(
@@ -36,6 +37,22 @@ export const writeUtf8: (
   typeof globalThis.Buffer === "function" && typeof globalThis.Buffer.from === "function"
     ? writeUtf8Buffer
     : writeUtf8Encoder;
+
+export function decodeUtf8Slice(buffer: Uint8Array, start: number, len: number): string {
+  // TextDecoder has a high fixed cost per call; short ASCII strings (the
+  // common case for row data) decode ~2.5x faster char by char.
+  if (len <= 64) {
+    const end = start + len;
+    let str = "";
+    for (let i = start; i < end; i++) {
+      const code = buffer[i]!;
+      if (code > 127) return TEXT_DECODER.decode(buffer.subarray(start, end));
+      str += String.fromCharCode(code);
+    }
+    return str;
+  }
+  return TEXT_DECODER.decode(buffer.subarray(start, start + len));
+}
 
 /**
  * VarInt (LEB128) encoding constants.
@@ -127,7 +144,7 @@ export class BlockBuffer {
   append(chunk: Uint8Array): void {
     if (chunk.length === 0) return;
     this.ensureCapacity(this.writeOffset + chunk.length);
-    this.buffer.set(chunk, this.writeOffset);
+    copyBytes(this.buffer, chunk, this.writeOffset);
     this.writeOffset += chunk.length;
   }
 
@@ -156,7 +173,7 @@ export class BlockBuffer {
     const trailingLength = this.writeOffset - start;
     const next = new Uint8Array(Math.max(this.initialSize, trailingLength));
     if (trailingLength > 0) {
-      next.set(this.buffer.subarray(start, this.writeOffset));
+      copyBytes(next, this.buffer.subarray(start, this.writeOffset));
     }
     this.buffer = next;
     this.readOffset = 0;
@@ -170,7 +187,7 @@ export class BlockBuffer {
       nextCapacity = Math.max(nextCapacity * 2, minCapacity);
     }
     const next = new Uint8Array(nextCapacity);
-    next.set(this.buffer.subarray(this.readOffset, this.writeOffset));
+    copyBytes(next, this.buffer.subarray(this.readOffset, this.writeOffset));
     this.buffer = next;
     this.writeOffset -= this.readOffset;
     this.readOffset = 0;
@@ -256,14 +273,14 @@ export class BufferWriter {
     if (needed <= this.buffer.length) return;
     const newSize = Math.max(this.buffer.length * 2, needed);
     const newBuffer = new Uint8Array(newSize);
-    newBuffer.set(this.buffer.subarray(0, this.offset));
+    copyBytes(newBuffer, this.buffer.subarray(0, this.offset));
     this.buffer = newBuffer;
     this.view = new DataView(this.buffer.buffer);
   }
 
   write(chunk: Uint8Array) {
     this.ensure(chunk.length);
-    this.buffer.set(chunk, this.offset);
+    copyBytes(this.buffer, chunk, this.offset);
     this.offset += chunk.length;
   }
 
@@ -295,11 +312,29 @@ export class BufferWriter {
     this.offset += writeVarInt(this.buffer, this.offset, value);
   }
 
+  writeStringBytes(bytes: Uint8Array) {
+    this.writeStringSlice(bytes, 0, bytes.length);
+  }
+
+  writeStringSlice(source: Uint8Array, start: number, len: number) {
+    if (len < BufferSize.SINGLE_BYTE_VARINT_MAX) {
+      this.ensure(len + 1);
+      const buf = this.buffer;
+      buf[this.offset++] = len;
+      for (let i = 0; i < len; i++) buf[this.offset + i] = source[start + i]!;
+      this.offset += len;
+      return;
+    }
+    this.ensure(VarInt.MAX_BYTES_64 + len);
+    this.offset += writeVarInt(this.buffer, this.offset, len);
+    this.buffer.set(source.subarray(start, start + len), this.offset);
+    this.offset += len;
+  }
+
   writeString(val: string) {
     const len = val.length;
 
-    // Fast path: short ASCII strings written char-by-char, avoiding
-    // TextEncoder.encodeInto overhead (subarray + encoder state per call).
+    // Below this length, char-by-char ASCII beats TextEncoder.encodeInto overhead.
     if (len <= 64) {
       this.ensure(len + 1);
       const buf = this.buffer;
@@ -377,20 +412,7 @@ export class BufferReader {
     this.ensureAvailable(len);
     const start = this.offset;
     this.offset += len;
-    // TextDecoder has a high fixed cost per call; short ASCII strings (the
-    // common case for row data) decode ~2.5x faster char by char.
-    if (len <= 64) {
-      const buffer = this.buffer;
-      const end = start + len;
-      let str = "";
-      for (let i = start; i < end; i++) {
-        const code = buffer[i]!;
-        if (code > 127) return TEXT_DECODER.decode(buffer.subarray(start, end));
-        str += String.fromCharCode(code);
-      }
-      return str;
-    }
-    return TEXT_DECODER.decode(this.buffer.subarray(start, start + len));
+    return decodeUtf8Slice(this.buffer, start, len);
   }
 
   // Zero-copy if aligned, copy otherwise

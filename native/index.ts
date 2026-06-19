@@ -9,7 +9,7 @@
  */
 
 import { getCodec } from "./codecs.ts";
-import { type Column, DataColumn, EnumColumn } from "./columns.ts";
+import { type Column, DataColumn, EnumColumn, LazyStringColumn } from "./columns.ts";
 import { BlockInfoField } from "./constants.ts";
 import { BlockBuffer, BufferReader, BufferUnderflowError, BufferWriter } from "./io.ts";
 import { collectRows, rows } from "./rows.ts";
@@ -39,7 +39,14 @@ export {
 } from "./types.ts";
 
 // Re-export table helpers / types
-export { type Column, RecordBatch, type Row, type MaterializeOptions, EnumColumn };
+export {
+  type Column,
+  RecordBatch,
+  type Row,
+  type MaterializeOptions,
+  EnumColumn,
+  LazyStringColumn,
+};
 export { batchFromRows, batchFromCols, type ExternalTableData };
 export { rows, collectRows };
 export { getCodec, SQL_NULL } from "./codecs.ts";
