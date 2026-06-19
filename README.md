@@ -855,7 +855,7 @@ Run `make bench` (or `npm run bench`) to reproduce.
 
 ## Development
 
-Requires Node.js 22+.
+Requires Node.js 22+. The default test suite includes browser coverage; after `npm ci`, install the Playwright browser once with `npx playwright install chromium` (CI uses `--with-deps`).
 
 ```bash
 make test              # build + run full test matrix across ClickHouse versions
