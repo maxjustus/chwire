@@ -1,3 +1,4 @@
+import { copyBytes } from "./util.ts";
 import { cityhash_102_128 } from "./vendor/cityhash/cityhash.js";
 
 // Build-time constant set by esbuild --define
@@ -29,7 +30,7 @@ function prependUint32LE(data: Uint8Array, size: number): Uint8Array {
   out[1] = (size >> 8) & 0xff;
   out[2] = (size >> 16) & 0xff;
   out[3] = (size >> 24) & 0xff;
-  out.set(data, 4);
+  copyBytes(out, data, 4);
   return out;
 }
 
@@ -109,13 +110,51 @@ export async function init(): Promise<void> {
 }
 
 // Uint8Array helpers
-export function concat(arrays: Uint8Array<ArrayBufferLike>[]): Uint8Array {
-  const totalLength = arrays.reduce((sum, arr) => sum + arr.length, 0);
+function collapseContiguousByteRanges(
+  arrays: Uint8Array<ArrayBufferLike>[],
+): Uint8Array<ArrayBufferLike>[] {
+  if (arrays.length < 2) return arrays;
+  const result: Uint8Array<ArrayBufferLike>[] = [];
+  let current = arrays[0];
+  if (current === undefined) return result;
+
+  for (let i = 1; i < arrays.length; i++) {
+    const next = arrays[i]!;
+    const currentEnd: number = current.byteOffset + current.byteLength;
+    const nextEnd: number = next.byteOffset + next.byteLength;
+    if (
+      current.buffer === next.buffer &&
+      next.byteOffset >= current.byteOffset &&
+      next.byteOffset <= currentEnd
+    ) {
+      current = new Uint8Array(
+        current.buffer,
+        current.byteOffset,
+        Math.max(currentEnd, nextEnd) - current.byteOffset,
+      );
+    } else {
+      if (current.byteLength > 0) result.push(current);
+      current = next;
+    }
+  }
+  if (current.byteLength > 0) result.push(current);
+  return result;
+}
+
+export function concat(arrays: Uint8Array<ArrayBufferLike>[]): Uint8Array<ArrayBufferLike> {
+  if (arrays.length === 0) return new Uint8Array(0);
+  const chunks = collapseContiguousByteRanges(arrays);
+  if (chunks.length === 0) return new Uint8Array(0);
+  if (chunks.length === 1) return chunks[0]!;
+
+  let totalLength = 0;
+  for (let i = 0; i < chunks.length; i++) totalLength += chunks[i]!.byteLength;
   const result = new Uint8Array(totalLength);
   let offset = 0;
-  for (const arr of arrays) {
+  for (let i = 0; i < chunks.length; i++) {
+    const arr = chunks[i]!;
     result.set(arr, offset);
-    offset += arr.length;
+    offset += arr.byteLength;
   }
   return result;
 }
@@ -272,11 +311,11 @@ export function encodeBlock(raw: Uint8Array, compression: Compression = "lz4"): 
 
   // Copy compressed data at offset 25
   const dataOffset = CHECKSUM_SIZE + HEADER_SIZE;
-  output.set(compressed, dataOffset);
+  copyBytes(output, compressed, dataOffset);
 
   // Calculate checksum over header + compressed data
   const checksum = cityHash128LE(output.subarray(headerOffset, dataOffset + compressed.length));
-  output.set(checksum, 0);
+  copyBytes(output, checksum, 0);
 
   return output.subarray(0, totalSize);
 }

@@ -1,6 +1,7 @@
 import type * as net from "node:net";
 import { decodeBlock, MAX_DECOMPRESSED_BLOCK_SIZE, readUInt32LE } from "../compression.ts";
 import { BufferUnderflowError, Compression, readVarInt64, TEXT_DECODER } from "../native/index.ts";
+import { copyBytes } from "../util.ts";
 import { ClickHouseException } from "./types.ts";
 
 /**
@@ -68,7 +69,7 @@ export class StreamingReader {
     if (this.end + chunk.length > this.buffer.length) {
       this.realloc(chunk.length);
     }
-    this.buffer.set(chunk, this.end);
+    copyBytes(this.buffer, chunk, this.end);
     this.end += chunk.length;
   }
 
@@ -83,7 +84,7 @@ export class StreamingReader {
     const unread = this.available;
     const capacity = Math.max(StreamingReader.MIN_CAPACITY, (unread + incoming) * 2);
     const next = new Uint8Array(capacity);
-    next.set(this.buffer.subarray(this.offset, this.end));
+    copyBytes(next, this.buffer.subarray(this.offset, this.end));
     this.buffer = next;
     this.returnedEnd = Math.max(this.returnedEnd - this.offset, 0);
     this.end = unread;

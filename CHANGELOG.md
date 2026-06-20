@@ -44,6 +44,7 @@ release includes the unreleased changes since `@maxjustus/chttp@1.15.0`.
 - **Breaking**: HTTP `query()` and `insert()` signatures changed — `sessionId` is no longer a positional parameter. It moves into the options object as `options.sessionId` and is now optional; omitting it produces a stateless request (no `session_id` URL param sent). Old: `query(sql, sessionId, options)` / `insert(sql, data, sessionId, options)`. New: `query(sql, options?)` / `insert(sql, data, options?)`.
 - **Breaking**: Renamed HTTP option `baseUrl` to `url`.
 - Decode short ASCII strings (<= 64 bytes) without TextDecoder, whose per-call overhead dominated string-heavy reads; cuts Native block decode time roughly in half on short-string workloads.
+- Optimized internal byte copying and `concat()` helpers with typed-array byte-view copies, 0/1 chunk fast paths, and contiguous-range collapse.
 - Improved fragmented Native stream decoding performance.
 - Applied resumable Native block decoding more consistently across compressed and uncompressed TCP reads.
 - Split Native codec internals into smaller scalar, composite, dynamic, base, and registry modules.
