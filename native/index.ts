@@ -361,7 +361,6 @@ export async function* streamDecodeNative(
   }
 
   // Final: decode remaining data (no more chunks coming)
-  retryAfterAvailable = 0;
   while (blockBuffer.available > 0) {
     const reader = new BufferReader(blockBuffer.view, 0, options);
     let block: ReturnType<typeof decodeNativeBlockWithReader>;

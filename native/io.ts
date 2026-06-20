@@ -37,6 +37,22 @@ export const writeUtf8: (
     ? writeUtf8Buffer
     : writeUtf8Encoder;
 
+export function decodeUtf8Slice(buffer: Uint8Array, start: number, len: number): string {
+  // TextDecoder has a high fixed cost per call; short ASCII strings (the
+  // common case for row data) decode ~2.5x faster char by char.
+  if (len <= 64) {
+    const end = start + len;
+    let str = "";
+    for (let i = start; i < end; i++) {
+      const code = buffer[i]!;
+      if (code > 127) return TEXT_DECODER.decode(buffer.subarray(start, end));
+      str += String.fromCharCode(code);
+    }
+    return str;
+  }
+  return TEXT_DECODER.decode(buffer.subarray(start, start + len));
+}
+
 /**
  * VarInt (LEB128) encoding constants.
  * VarInt encodes integers in 7-bit groups with continuation bit.
@@ -298,8 +314,7 @@ export class BufferWriter {
   writeString(val: string) {
     const len = val.length;
 
-    // Fast path: short ASCII strings written char-by-char, avoiding
-    // TextEncoder.encodeInto overhead (subarray + encoder state per call).
+    // Below this length, char-by-char ASCII beats TextEncoder.encodeInto overhead.
     if (len <= 64) {
       this.ensure(len + 1);
       const buf = this.buffer;
@@ -377,20 +392,7 @@ export class BufferReader {
     this.ensureAvailable(len);
     const start = this.offset;
     this.offset += len;
-    // TextDecoder has a high fixed cost per call; short ASCII strings (the
-    // common case for row data) decode ~2.5x faster char by char.
-    if (len <= 64) {
-      const buffer = this.buffer;
-      const end = start + len;
-      let str = "";
-      for (let i = start; i < end; i++) {
-        const code = buffer[i]!;
-        if (code > 127) return TEXT_DECODER.decode(buffer.subarray(start, end));
-        str += String.fromCharCode(code);
-      }
-      return str;
-    }
-    return TEXT_DECODER.decode(this.buffer.subarray(start, start + len));
+    return decodeUtf8Slice(this.buffer, start, len);
   }
 
   // Zero-copy if aligned, copy otherwise

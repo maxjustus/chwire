@@ -80,12 +80,9 @@ async function* chunkedStream(data: Uint8Array, chunkSize: number): AsyncIterabl
   }
 }
 
-async function collectNative(
-  chunks: AsyncIterable<Uint8Array>,
-  options?: Parameters<typeof streamDecodeNative>[1],
-): Promise<RecordBatch> {
+async function collectNative(chunks: AsyncIterable<Uint8Array>): Promise<RecordBatch> {
   const blocks: RecordBatch[] = [];
-  for await (const block of streamDecodeNative(chunks, options)) {
+  for await (const block of streamDecodeNative(chunks)) {
     blocks.push(block);
   }
   if (blocks.length === 0) {
@@ -553,46 +550,12 @@ async function main() {
   );
   console.log(formatResult(stream1, ROWS));
 
-  const stream512k = await benchAsync(
-    "Stream decode (512KB, no backoff)",
-    () =>
-      collectNative(chunkedStream(simpleNativeEncoded, 512 * 1024), {
-        underflowRetryMaxBytes: 0,
-      }),
-    benchOptions,
-  );
-  console.log(formatResult(stream512k, ROWS));
-
-  const stream512kRetry = await benchAsync(
-    "Stream decode (512KB, adaptive)",
-    () => collectNative(chunkedStream(simpleNativeEncoded, 512 * 1024)),
-    benchOptions,
-  );
-  console.log(formatResult(stream512kRetry, ROWS));
-
-  const stream256k = await benchAsync(
-    "Stream decode (256KB chunks)",
-    () => collectNative(chunkedStream(simpleNativeEncoded, 256 * 1024)),
-    benchOptions,
-  );
-  console.log(formatResult(stream256k, ROWS));
-
   const stream64k = await benchAsync(
-    "Stream decode (64KB, no backoff)",
-    () =>
-      collectNative(chunkedStream(simpleNativeEncoded, 64 * 1024), {
-        underflowRetryMaxBytes: 0,
-      }),
-    benchOptions,
-  );
-  console.log(formatResult(stream64k, ROWS));
-
-  const stream64kRetry = await benchAsync(
-    "Stream decode (64KB, adaptive)",
+    "Stream decode (64KB chunks)",
     () => collectNative(chunkedStream(simpleNativeEncoded, 64 * 1024)),
     benchOptions,
   );
-  console.log(formatResult(stream64kRetry, ROWS));
+  console.log(formatResult(stream64k, ROWS));
 
   const stream4k = await benchAsync(
     "Stream decode (4KB chunks)",
@@ -625,19 +588,7 @@ async function main() {
     `  Decode (1 chunk): ${((stream1.meanMs / syncDec.meanMs - 1) * 100).toFixed(1)}% overhead`,
   );
   console.log(
-    `  Decode (512KB no): ${((stream512k.meanMs / syncDec.meanMs - 1) * 100).toFixed(1)}% overhead`,
-  );
-  console.log(
-    `  Decode (512KB):    ${((stream512kRetry.meanMs / syncDec.meanMs - 1) * 100).toFixed(1)}% overhead`,
-  );
-  console.log(
-    `  Decode (256KB):   ${((stream256k.meanMs / syncDec.meanMs - 1) * 100).toFixed(1)}% overhead`,
-  );
-  console.log(
-    `  Decode (64KB no):  ${((stream64k.meanMs / syncDec.meanMs - 1) * 100).toFixed(1)}% overhead`,
-  );
-  console.log(
-    `  Decode (64KB):     ${((stream64kRetry.meanMs / syncDec.meanMs - 1) * 100).toFixed(1)}% overhead`,
+    `  Decode (64KB):    ${((stream64k.meanMs / syncDec.meanMs - 1) * 100).toFixed(1)}% overhead`,
   );
   console.log(
     `  Decode (4KB):     ${((stream4k.meanMs / syncDec.meanMs - 1) * 100).toFixed(1)}% overhead`,

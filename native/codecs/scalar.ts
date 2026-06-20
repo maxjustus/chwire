@@ -673,7 +673,7 @@ export class StringCodec extends BaseCodec {
   }
 
   decodeDense(reader: BufferReader, rows: number): Column {
-    const values = new Array<string>(rows).fill("");
+    const values = new Array<string>(rows);
     for (let i = 0; i < rows; i++) values[i] = reader.readString();
     return new DataColumn(this.type, values);
   }
