@@ -1,4 +1,3 @@
-import { copyBytes } from "./util.ts";
 import { cityhash_102_128 } from "./vendor/cityhash/cityhash.js";
 
 // Build-time constant set by esbuild --define
@@ -30,7 +29,7 @@ function prependUint32LE(data: Uint8Array, size: number): Uint8Array {
   out[1] = (size >> 8) & 0xff;
   out[2] = (size >> 16) & 0xff;
   out[3] = (size >> 24) & 0xff;
-  copyBytes(out, data, 4);
+  out.set(data, 4);
   return out;
 }
 
@@ -311,11 +310,11 @@ export function encodeBlock(raw: Uint8Array, compression: Compression = "lz4"): 
 
   // Copy compressed data at offset 25
   const dataOffset = CHECKSUM_SIZE + HEADER_SIZE;
-  copyBytes(output, compressed, dataOffset);
+  output.set(compressed, dataOffset);
 
   // Calculate checksum over header + compressed data
   const checksum = cityHash128LE(output.subarray(headerOffset, dataOffset + compressed.length));
-  copyBytes(output, checksum, 0);
+  output.set(checksum, 0);
 
   return output.subarray(0, totalSize);
 }

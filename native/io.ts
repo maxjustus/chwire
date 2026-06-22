@@ -2,7 +2,6 @@
  * Buffer I/O utilities for Native format encoding/decoding.
  */
 
-import { copyBytes } from "../util.ts";
 import { type DecodeOptions, TEXT_DECODER, TEXT_ENCODER, type TypedArray } from "./types.ts";
 
 export function writeUtf8Encoder(
@@ -144,7 +143,7 @@ export class BlockBuffer {
   append(chunk: Uint8Array): void {
     if (chunk.length === 0) return;
     this.ensureCapacity(this.writeOffset + chunk.length);
-    copyBytes(this.buffer, chunk, this.writeOffset);
+    this.buffer.set(chunk, this.writeOffset);
     this.writeOffset += chunk.length;
   }
 
@@ -173,7 +172,7 @@ export class BlockBuffer {
     const trailingLength = this.writeOffset - start;
     const next = new Uint8Array(Math.max(this.initialSize, trailingLength));
     if (trailingLength > 0) {
-      copyBytes(next, this.buffer.subarray(start, this.writeOffset));
+      next.set(this.buffer.subarray(start, this.writeOffset));
     }
     this.buffer = next;
     this.readOffset = 0;
@@ -187,7 +186,7 @@ export class BlockBuffer {
       nextCapacity = Math.max(nextCapacity * 2, minCapacity);
     }
     const next = new Uint8Array(nextCapacity);
-    copyBytes(next, this.buffer.subarray(this.readOffset, this.writeOffset));
+    next.set(this.buffer.subarray(this.readOffset, this.writeOffset));
     this.buffer = next;
     this.writeOffset -= this.readOffset;
     this.readOffset = 0;
@@ -273,14 +272,14 @@ export class BufferWriter {
     if (needed <= this.buffer.length) return;
     const newSize = Math.max(this.buffer.length * 2, needed);
     const newBuffer = new Uint8Array(newSize);
-    copyBytes(newBuffer, this.buffer.subarray(0, this.offset));
+    newBuffer.set(this.buffer.subarray(0, this.offset));
     this.buffer = newBuffer;
     this.view = new DataView(this.buffer.buffer);
   }
 
   write(chunk: Uint8Array) {
     this.ensure(chunk.length);
-    copyBytes(this.buffer, chunk, this.offset);
+    this.buffer.set(chunk, this.offset);
     this.offset += chunk.length;
   }
 

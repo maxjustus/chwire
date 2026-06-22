@@ -6,25 +6,6 @@
  */
 export type CollectableAsyncGenerator<T> = AsyncGenerator<T, void, unknown> & PromiseLike<T[]>;
 
-/** Copy bytes between arbitrary ArrayBufferViews, preserving the target view type. */
-export function copyBytes<TTarget extends ArrayBufferView, TSource extends ArrayBufferView>(
-  target: TTarget,
-  source: TSource,
-  targetByteOffset = 0,
-  sourceByteLength = source.byteLength,
-): TTarget {
-  const available = target.byteLength - targetByteOffset;
-  if (targetByteOffset < 0 || available < 0) {
-    throw new RangeError(`Invalid target byte offset: ${targetByteOffset}`);
-  }
-  const byteLength = Math.min(source.byteLength, sourceByteLength, available);
-  if (byteLength <= 0) return target;
-  const dst = new Uint8Array(target.buffer, target.byteOffset + targetByteOffset, byteLength);
-  const src = new Uint8Array(source.buffer, source.byteOffset, byteLength);
-  dst.set(src);
-  return target;
-}
-
 /** Wrap an async generator so `await gen` collects all yielded items. */
 export function collectable<T>(
   gen: AsyncGenerator<T, void, unknown>,
