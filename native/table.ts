@@ -1,19 +1,8 @@
+import { type ColumnBuilder, columnFromRows, makeDefaultColumnBuilder } from "./codecs/base.ts";
 import { getCodec } from "./codecs.ts";
-import { type Column, DataColumn } from "./columns.ts";
-import {
-  toInt8,
-  toInt16,
-  toInt32,
-  toInt64,
-  toNumber,
-  toUInt8,
-  toUInt16,
-  toUInt32,
-  toUInt64,
-} from "./coercion.ts";
+import type { Column } from "./columns.ts";
 import type { Block } from "./index.ts";
-import type { TypedArrayConstructor } from "./io.ts";
-import type { ColumnDef, TypedArray } from "./types.ts";
+import type { ColumnDef } from "./types.ts";
 
 /**
  * Brand keyed in the global symbol registry so `isRecordBatch` recognizes
@@ -23,60 +12,9 @@ import type { ColumnDef, TypedArray } from "./types.ts";
  */
 const RECORD_BATCH_BRAND = Symbol.for("chwire.RecordBatch");
 
-type NumericConverter = (v: unknown) => number | bigint;
-
-/** Map of numeric ClickHouse types to their TypedArray constructors and converters. */
-const NUMERIC_TYPES: Record<
-  string,
-  { ctor: TypedArrayConstructor<any>; convert: NumericConverter }
-> = {
-  Int8: { ctor: Int8Array, convert: toInt8 },
-  Int16: { ctor: Int16Array, convert: toInt16 },
-  Int32: { ctor: Int32Array, convert: toInt32 },
-  Int64: { ctor: BigInt64Array, convert: toInt64 },
-  UInt8: { ctor: Uint8Array, convert: toUInt8 },
-  UInt16: { ctor: Uint16Array, convert: toUInt16 },
-  UInt32: { ctor: Uint32Array, convert: toUInt32 },
-  UInt64: { ctor: BigUint64Array, convert: toUInt64 },
-  Float32: { ctor: Float32Array, convert: toNumber },
-  Float64: { ctor: Float64Array, convert: toNumber },
-};
-
-function getNumericTypeInfo(
-  type: string,
-): { ctor: TypedArrayConstructor<any>; convert: NumericConverter } | undefined {
-  return NUMERIC_TYPES[type];
-}
-
-/**
- * Growing TypedArray for efficient numeric accumulation.
- * Doubles capacity when full, returns trimmed subarray at finish.
- * Coerces values using the provided converter function.
- */
-class GrowingTypedArray<T extends TypedArray> {
-  private arr: T;
-  private offset = 0;
-  private Ctor: TypedArrayConstructor<T>;
-  private convert: NumericConverter;
-
-  constructor(Ctor: TypedArrayConstructor<T>, convert: NumericConverter, initialCapacity = 1024) {
-    this.Ctor = Ctor;
-    this.convert = convert;
-    this.arr = new Ctor(initialCapacity) as T;
-  }
-
-  push(value: unknown): void {
-    if (this.offset >= this.arr.length) {
-      const newArr = new this.Ctor(this.arr.length * 2) as T;
-      (newArr as any).set(this.arr);
-      this.arr = newArr;
-    }
-    (this.arr as any)[this.offset++] = this.convert(value);
-  }
-
-  finish(): T {
-    return this.arr.subarray(0, this.offset) as T;
-  }
+function makeColumnBuilder(type: string, expectedRows?: number): ColumnBuilder {
+  const codec = getCodec(type);
+  return codec.makeBuilder?.(expectedRows) ?? makeDefaultColumnBuilder(codec, expectedRows);
 }
 
 /** Options for materializing row data. */
@@ -277,17 +215,13 @@ function createRowProxy(batch: RecordBatch, rowIndex: number, options?: Material
  */
 export class RecordBatchBuilder {
   private schema: ColumnDef[];
-  private accumulators: (unknown[] | GrowingTypedArray<any>)[];
+  private builders: ColumnBuilder[];
   private _rowCount: number = 0;
   private finished: boolean = false;
 
   constructor(schema: ColumnDef[], expectedRows?: number) {
     this.schema = schema;
-    const initialCapacity = expectedRows ?? 1024;
-    this.accumulators = schema.map((col) => {
-      const info = getNumericTypeInfo(col.type);
-      return info ? new GrowingTypedArray(info.ctor, info.convert, initialCapacity) : [];
-    });
+    this.builders = schema.map((col) => makeColumnBuilder(col.type, expectedRows));
   }
 
   get rowCount(): number {
@@ -298,7 +232,7 @@ export class RecordBatchBuilder {
   appendRow(values: unknown[]): this {
     if (values.length !== this.schema.length) throw new Error("Row length mismatch");
     for (let i = 0; i < values.length; i++) {
-      this.accumulators[i]!.push(values[i]);
+      this.builders[i]!.push(values[i]);
     }
     this._rowCount++;
     return this;
@@ -308,13 +242,7 @@ export class RecordBatchBuilder {
   finish(): RecordBatch {
     if (this.finished) throw new Error("Builder already finished");
     this.finished = true;
-    const columnData = this.accumulators.map((acc, i) => {
-      const type = this.schema[i]!.type;
-      if (acc instanceof GrowingTypedArray) {
-        return new DataColumn(type, acc.finish());
-      }
-      return getCodec(type).fromValues(acc);
-    });
+    const columnData = this.builders.map((builder) => builder.finish());
     return new RecordBatch({
       columns: this.schema,
       columnData,
@@ -363,11 +291,20 @@ export function batchFromRows(
       return builder.finish();
     })();
   }
-  // Sync path: array or iterable
-  const builder = new RecordBatchBuilder(schema, expectedRows);
-  for (const row of rows as Iterable<unknown[]>) {
-    builder.appendRow(row);
+  if (Array.isArray(rows)) {
+    const numCols = schema.length;
+    for (const row of rows) {
+      if (row.length !== numCols) throw new Error("Row length mismatch");
+    }
+    const columnData = schema.map((col, i) => {
+      const codec = getCodec(col.type);
+      return codec.fromRows?.(rows, i) ?? columnFromRows(codec, rows, i);
+    });
+    return new RecordBatch({ columns: schema, columnData, rowCount: rows.length });
   }
+
+  const builder = new RecordBatchBuilder(schema, expectedRows);
+  for (const row of rows as Iterable<unknown[]>) builder.appendRow(row);
   return builder.finish();
 }
 

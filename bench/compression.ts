@@ -37,7 +37,7 @@ function generateTestDataSets(): TestDataSet[] {
   const repeated = new Uint8Array(5_000_000);
   const pattern = encoder.encode("AAAAAAAAAA");
   for (let i = 0; i < repeated.length; i++) {
-    repeated[i] = pattern[i % pattern.length];
+    repeated[i] = pattern[i % pattern.length]!;
   }
   datasets.push({
     name: "repeated",

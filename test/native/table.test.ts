@@ -1,6 +1,8 @@
 import assert from "node:assert";
 import { describe, it } from "node:test";
+import { DataColumn } from "../../native/columns.ts";
 import {
+  BufferReader,
   BufferWriter,
   batchFromCols,
   batchFromRows,
@@ -11,6 +13,7 @@ import {
   streamDecodeNative,
   streamEncodeNative,
 } from "../../native/index.ts";
+import { writeUtf8Buffer, writeUtf8Encoder } from "../../native/io.ts";
 import { collect, decodeBatch, encodeNativeRows, toArrayRows, toAsync } from "../test_utils.ts";
 
 function encodeInvalidNativeBlock(type = "NotAType"): Uint8Array {
@@ -79,6 +82,19 @@ describe("streamDecodeNative", () => {
     assert.strictEqual(results.length, 1);
     assert.ok(results[0] instanceof RecordBatch);
     assert.deepStrictEqual(toArrayRows(results[0]), [[1], [2], [3]]);
+  });
+
+  it("flushes retry-throttled partial chunks at EOF", async () => {
+    const columns: ColumnDef[] = [{ name: "id", type: "Int32" }];
+    const block = encodeNativeRows(columns, [[1], [2], [3]]);
+
+    // Split into 1-byte chunks so the adaptive backoff throttles retries,
+    // then verify the EOF flush path still decodes the complete block.
+    const oneByteChunks = Array.from({ length: block.length }, (_, i) => block.subarray(i, i + 1));
+    const results = await collect(streamDecodeNative(toAsync(oneByteChunks)));
+
+    assert.strictEqual(results.length, 1);
+    assert.deepStrictEqual(toArrayRows(results[0]!), [[1], [2], [3]]);
   });
 
   it("throws on invalid trailing block at EOF instead of swallowing it", async () => {
@@ -238,6 +254,26 @@ describe("RecordBatch static methods", () => {
     assert.deepStrictEqual(rows[2], [3, 3.5]);
   });
 
+  it("fromRows coerces Bool values on the array row path", () => {
+    const table = batchFromRows(
+      [
+        { name: "id", type: "UInt32" },
+        { name: "active", type: "Bool" },
+      ],
+      [
+        [1, true],
+        [2, false],
+        [3, "1"],
+      ],
+    );
+
+    assert.deepStrictEqual(toArrayRows(table), [
+      [1, 1],
+      [2, 0],
+      [3, 1],
+    ]);
+  });
+
   it("fromRows accepts sync generator", async () => {
     const schema: ColumnDef[] = [
       { name: "x", type: "Int32" },
@@ -319,6 +355,25 @@ describe("getCodec().fromValues()", () => {
     assert.strictEqual(col.get(0), 1);
     assert.strictEqual(col.get(1), 2);
     assert.strictEqual(col.get(2), 3);
+  });
+
+  it("String fromValues copies caller-owned arrays", () => {
+    const values = ["alice", "bob"];
+    const col = getCodec("String").fromValues(values);
+    values[0] = "mutated";
+
+    assert.strictEqual(col.get(0), "alice");
+    assert.strictEqual(col.get(1), "bob");
+  });
+
+  it("String encode coerces non-string DataColumn values", () => {
+    const codec = getCodec("String");
+    const encoded = codec.encode(new DataColumn("String", [1, null, { a: 2 }]));
+    const reader = new BufferReader(encoded);
+
+    assert.strictEqual(reader.readString(), "1");
+    assert.strictEqual(reader.readString(), "");
+    assert.strictEqual(reader.readString(), '{"a":2}');
   });
 
   it("works with complex types", async () => {
@@ -798,5 +853,54 @@ describe("RecordBatch.isRecordBatch", () => {
     const foreign = { [Symbol.for("chwire.RecordBatch")]: true } as unknown;
     assert.strictEqual(foreign instanceof RecordBatch, false);
     assert.strictEqual(RecordBatch.isRecordBatch(foreign), true);
+  });
+});
+
+describe("writeUtf8 implementations", () => {
+  const cases = [
+    { label: "ASCII", str: "hello world" },
+    { label: "multibyte", str: "éèêë" },
+    { label: "emoji", str: "test 🚀 rocket" },
+    { label: "long ASCII", str: "a".repeat(200) },
+    { label: "long multibyte", str: "ü".repeat(200) },
+    { label: "empty", str: "" },
+  ];
+
+  for (const { label, str } of cases) {
+    it(`Buffer and Encoder agree on ${label} strings`, () => {
+      const maxLen = str.length * 3;
+      const bufA = new Uint8Array(maxLen);
+      const bufB = new Uint8Array(maxLen);
+      const lenA = writeUtf8Buffer(str, bufA, 0, maxLen);
+      const lenB = writeUtf8Encoder(str, bufB, 0, maxLen);
+      assert.strictEqual(lenA, lenB, `byte lengths differ for "${label}"`);
+      assert.deepStrictEqual(bufA.subarray(0, lenA), bufB.subarray(0, lenB));
+    });
+  }
+
+  it("works at non-zero offset", () => {
+    const str = "café";
+    const maxLen = str.length * 3;
+    const offset = 10;
+    const bufA = new Uint8Array(offset + maxLen);
+    const bufB = new Uint8Array(offset + maxLen);
+    const lenA = writeUtf8Buffer(str, bufA, offset, maxLen);
+    const lenB = writeUtf8Encoder(str, bufB, offset, maxLen);
+    assert.strictEqual(lenA, lenB);
+    assert.deepStrictEqual(
+      bufA.subarray(offset, offset + lenA),
+      bufB.subarray(offset, offset + lenB),
+    );
+  });
+
+  it("round-trips through BufferWriter.writeString + BufferReader.readString", () => {
+    const strings = ["hello", "élève", "a".repeat(200), "🚀💻🌟"];
+    const writer = new BufferWriter();
+    for (const s of strings) writer.writeString(s);
+    const buf = writer.finish();
+    const reader = new BufferReader(buf);
+    for (const s of strings) {
+      assert.strictEqual(reader.readString(), s);
+    }
   });
 });

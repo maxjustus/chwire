@@ -55,13 +55,14 @@ function compareDynamicCell(resolve: CodecResolver, a: unknown, b: unknown): boo
 function decodeGroups(
   reader: BufferReader,
   codecs: Codec[],
-  counts: Map<number, number>,
+  counts: Uint32Array,
   state: DeserializerState,
 ): Map<number, Column> {
   const groups = new Map<number, Column>();
   for (let i = 0; i < codecs.length; i++) {
-    if (counts.has(i)) {
-      groups.set(i, codecs[i]!.decode(reader, counts.get(i)!, childState(state, i)));
+    const n = counts[i]!;
+    if (n > 0) {
+      groups.set(i, codecs[i]!.decode(reader, n, childState(state, i)));
     }
   }
   return groups;
@@ -317,14 +318,21 @@ export class DynamicCodec implements Codec {
   }
 
   fromValues(values: unknown[]): DynamicColumn {
-    const typeMap = new Map<string, unknown[]>();
     const typeIndex = new Map<string, number>();
     const typeOrder: string[] = [];
-    const discriminators = new Uint8Array(values.length);
+    const typeValues: unknown[][] = [];
+    const n = values.length;
+    const discriminators = new Uint8Array(n);
+    // nullDisc is set after the loop once we know typeOrder.length;
+    // track null positions to back-fill in one scan.
+    let hasNulls = false;
 
-    for (let i = 0; i < values.length; i++) {
+    for (let i = 0; i < n; i++) {
       const v = values[i];
-      if (v == null) continue;
+      if (v == null) {
+        hasNulls = true;
+        continue;
+      }
       const typed = v instanceof DynamicValue;
       const vType = typed ? v.type : this.guessType(v);
       const actual = typed ? v.value : v;
@@ -333,22 +341,22 @@ export class DynamicCodec implements Codec {
         idx = typeOrder.length;
         typeIndex.set(vType, idx);
         typeOrder.push(vType);
-        typeMap.set(vType, []);
+        typeValues.push([]);
       }
       discriminators[i] = idx;
-      typeMap.get(vType)!.push(actual);
+      typeValues[idx]!.push(actual);
     }
 
-    const nullDisc = typeOrder.length;
-    for (let i = 0; i < values.length; i++) {
-      if (values[i] == null) discriminators[i] = nullDisc;
+    if (hasNulls) {
+      const nullDisc = typeOrder.length;
+      for (let i = 0; i < n; i++) {
+        if (values[i] == null) discriminators[i] = nullDisc;
+      }
     }
 
     const groups = new Map<number, Column>();
     for (let ti = 0; ti < typeOrder.length; ti++) {
-      const t = typeOrder[ti]!;
-      const codec = this.resolveCodec(t);
-      groups.set(ti, codec.fromValues(typeMap.get(t)!));
+      groups.set(ti, this.resolveCodec(typeOrder[ti]!).fromValues(typeValues[ti]!));
     }
 
     return new DynamicColumn(typeOrder, discriminators, groups);
@@ -520,35 +528,53 @@ export class JsonCodec implements Codec {
   }
 
   fromValues(values: unknown[]): JsonColumn {
-    const extractPath = (path: string) =>
-      values.map((v) =>
-        v && typeof v === "object" ? ((v as Record<string, unknown>)[path] ?? null) : null,
-      );
+    const n = values.length;
+    const typedPathArrays = this.typedPaths.map(() => new Array<unknown>(n).fill(null));
+    const dynamicPathArrays = new Map<string, unknown[]>();
+    const dynamicPathOrder: string[] = [];
 
-    const pathColumns = new Map<string, Column>();
-    for (const tp of this.typedPaths) {
-      pathColumns.set(tp.name, tp.codec.fromValues(extractPath(tp.name)));
-    }
+    for (let i = 0; i < n; i++) {
+      const v = values[i];
+      if (!v || typeof v !== "object") continue;
+      if (Array.isArray(v)) {
+        throw new TypeError(
+          "JSON column values must be plain objects; top-level arrays are not supported",
+        );
+      }
+      const obj = v as Record<string, unknown>;
 
-    const dynamicPaths = this.discoverDynamicPaths(values);
-    const dynCodec = new DynamicCodec(this.resolveCodec);
-    for (const path of dynamicPaths) {
-      pathColumns.set(path, dynCodec.fromValues(extractPath(path)));
-    }
+      for (let tp = 0; tp < this.typedPaths.length; tp++) {
+        const val = obj[this.typedPaths[tp]!.name];
+        if (val !== undefined) typedPathArrays[tp]![i] = val;
+      }
 
-    return new JsonColumn([...this.typedPathNames, ...dynamicPaths], pathColumns, values.length);
-  }
-
-  private discoverDynamicPaths(values: unknown[]): string[] {
-    const paths = new Set<string>();
-    for (const v of values) {
-      if (v && typeof v === "object" && !Array.isArray(v)) {
-        for (const key of Object.keys(v)) {
-          if (!this.typedPathNames.has(key)) paths.add(key);
+      for (const key of Object.keys(obj)) {
+        if (this.typedPathNames.has(key)) continue;
+        let arr = dynamicPathArrays.get(key);
+        if (!arr) {
+          arr = new Array<unknown>(n).fill(null);
+          dynamicPathArrays.set(key, arr);
+          dynamicPathOrder.push(key);
         }
+        arr[i] = obj[key];
       }
     }
-    return [...paths].sort(byteOrder);
+
+    const pathColumns = new Map<string, Column>();
+    for (let tp = 0; tp < this.typedPaths.length; tp++) {
+      pathColumns.set(
+        this.typedPaths[tp]!.name,
+        this.typedPaths[tp]!.codec.fromValues(typedPathArrays[tp]!),
+      );
+    }
+
+    dynamicPathOrder.sort(byteOrder);
+    const dynCodec = new DynamicCodec(this.resolveCodec);
+    for (const path of dynamicPathOrder) {
+      pathColumns.set(path, dynCodec.fromValues(dynamicPathArrays.get(path)!));
+    }
+
+    return new JsonColumn([...this.typedPathNames, ...dynamicPathOrder], pathColumns, n);
   }
 
   zeroValue() {

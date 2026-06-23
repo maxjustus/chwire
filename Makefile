@@ -1,4 +1,4 @@
-.PHONY: build test test-tcp fuzz bench bench-formats bench-concurrent bench-profile profile-escape profile-complex profile-variant profile-dynamic profile-json profile-json-caching publish update-settings
+.PHONY: build test test-tcp test-browser fuzz bench bench-formats bench-concurrent bench-profile profile-escape profile-complex profile-variant profile-dynamic profile-json profile-json-caching publish update-settings
 
 build:
 	npm run build
@@ -10,6 +10,9 @@ test: build
 
 test-tcp: build
 	npm run test:tcp
+
+test-browser:
+	node --experimental-strip-types --test test/browser.test.ts
 
 fuzz: build
 	npm run test:fuzz

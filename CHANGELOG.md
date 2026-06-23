@@ -13,6 +13,7 @@ release includes the unreleased changes since `@maxjustus/chttp@1.15.0`.
 - Added `RecordBatch.isRecordBatch()` for identity-safe batch detection across module copies (ESM/CJS, source vs. bundle); insert and external-table dispatch use it instead of `instanceof`.
 - Added a clear error when the server mandates the chunked TCP protocol, instead of desyncing after the handshake.
 - Added TCP TLS coverage in the test suite.
+- Added adaptive underflow retry backoff to `streamDecodeNative()` (configurable via `underflowRetryMinBytes` / `underflowRetryMaxBytes`) to avoid retrying partial Native blocks after every small chunk.
 
 ### Fixed
 
@@ -36,12 +37,14 @@ release includes the unreleased changes since `@maxjustus/chttp@1.15.0`.
 - Hardened TCP lifecycle and draining: repeated `connect()` now refuses to replace an active socket, and compressed query drains can discard Data packets without materializing ignored batches.
 - Hardened Native compression decode with decompressed-size caps and size verification.
 - Fixed stateful `Dynamic(...)` codecs bypassing the Native codec cache, matching `Dynamic`/`JSON` cache behavior.
+- Native JSON inserts now reject top-level arrays with a clear error instead of silently encoding them as empty objects.
 
 ### Changed
 
 - **Breaking**: HTTP `query()` and `insert()` signatures changed — `sessionId` is no longer a positional parameter. It moves into the options object as `options.sessionId` and is now optional; omitting it produces a stateless request (no `session_id` URL param sent). Old: `query(sql, sessionId, options)` / `insert(sql, data, sessionId, options)`. New: `query(sql, options?)` / `insert(sql, data, options?)`.
 - **Breaking**: Renamed HTTP option `baseUrl` to `url`.
 - Decode short ASCII strings (<= 64 bytes) without TextDecoder, whose per-call overhead dominated string-heavy reads; cuts Native block decode time roughly in half on short-string workloads.
+- Optimized `concat()` with 0/1 chunk fast paths.
 - Improved fragmented Native stream decoding performance.
 - Applied resumable Native block decoding more consistently across compressed and uncompressed TCP reads.
 - Split Native codec internals into smaller scalar, composite, dynamic, base, and registry modules.

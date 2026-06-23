@@ -277,9 +277,28 @@ export async function* streamEncodeNative(
 
 export async function* streamDecodeNative(
   chunks: AsyncIterable<Uint8Array>,
-  options?: DecodeOptions & { debug?: boolean; minBufferSize?: number },
+  options?: DecodeOptions & {
+    debug?: boolean;
+    minBufferSize?: number;
+    /** Initial bytes to buffer after an underflow before retrying decode. Defaults to observed chunk size. */
+    underflowRetryMinBytes?: number;
+    /** Double the underflow retry wait up to this byte cap; set 0 to disable backoff. */
+    underflowRetryMaxBytes?: number;
+  },
 ): AsyncGenerator<RecordBatch> {
   const minBuffer = options?.minBufferSize ?? 64 * 1024;
+  // After an underflow, wait for `retryWaitBytes` more buffered bytes before retrying,
+  // doubling each retry up to `retryMaxBytes` (0 disables). Initial wait is the
+  // observed chunk size (or `underflowRetryMinBytes` when set), so small blocks
+  // still flush promptly while huge variable-width columns back off quickly.
+  const retryMaxBytes = Math.max(0, options?.underflowRetryMaxBytes ?? 1024 * 1024);
+  const retryMinBytes = options?.underflowRetryMinBytes;
+  const initialRetryWait = (chunkLength: number): number =>
+    retryMinBytes !== undefined
+      ? Math.min(retryMinBytes, retryMaxBytes)
+      : retryMaxBytes > 0
+        ? Math.min(chunkLength, retryMaxBytes)
+        : 0;
   const blockBuffer = new BlockBuffer(minBuffer);
   let columns: ColumnDef[] = [];
   let totalBytesReceived = 0;
@@ -291,18 +310,24 @@ export async function* streamDecodeNative(
   // completed columns so the retry resumes from the last column boundary
   // instead of re-parsing everything from scratch.
   let partial: PartialBlockState | undefined;
+  let retryAfterAvailable = 0;
+  let retryWaitBytes = 0;
 
   for await (const chunk of chunks) {
     blockBuffer.append(chunk);
     totalBytesReceived += chunk.length;
 
     while (blockBuffer.available >= 2) {
+      if (retryAfterAvailable > 0 && blockBuffer.available < retryAfterAvailable) break;
+      retryAfterAvailable = 0;
+
       const reader = new BufferReader(blockBuffer.view, 0, options);
 
       try {
         const block = decodeNativeBlockWithReader(reader, options, partial);
         blockBuffer.startNextBlock(block.bytesConsumed);
         partial = undefined;
+        retryWaitBytes = 0;
 
         if (block.isEndMarker) continue;
         if (columns.length === 0) columns = block.columns;
@@ -313,16 +338,24 @@ export async function* streamDecodeNative(
           rowCount: block.rowCount,
         });
       } catch (e) {
+        if (!(e instanceof BufferUnderflowError)) throw e;
         if (e instanceof BlockUnderflowError) {
+          // Resume from the last completed column. Reset the backoff when we've
+          // made column progress (or on the first underflow for this block).
+          const prevCol = partial?.nextColIndex;
           partial = e.partial;
-          underruns++;
-          break; // need more data
+          if (prevCol !== partial.nextColIndex || retryWaitBytes === 0)
+            retryWaitBytes = initialRetryWait(chunk.length);
+        } else if (retryWaitBytes === 0) {
+          // Header underflow (no partial yet).
+          retryWaitBytes = initialRetryWait(chunk.length);
         }
-        if (e instanceof BufferUnderflowError) {
-          underruns++;
-          break; // need more data (header underflow, no partial yet)
+        underruns++;
+        if (retryWaitBytes > 0) {
+          retryAfterAvailable = blockBuffer.available + retryWaitBytes;
+          retryWaitBytes = Math.min(retryWaitBytes * 2, retryMaxBytes);
         }
-        throw e;
+        break; // need more data
       }
     }
   }

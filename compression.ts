@@ -109,13 +109,18 @@ export async function init(): Promise<void> {
 }
 
 // Uint8Array helpers
-export function concat(arrays: Uint8Array<ArrayBufferLike>[]): Uint8Array {
-  const totalLength = arrays.reduce((sum, arr) => sum + arr.length, 0);
+export function concat(arrays: Uint8Array<ArrayBufferLike>[]): Uint8Array<ArrayBufferLike> {
+  if (arrays.length === 0) return new Uint8Array(0);
+  if (arrays.length === 1) return arrays[0]!;
+
+  let totalLength = 0;
+  for (let i = 0; i < arrays.length; i++) totalLength += arrays[i]!.byteLength;
   const result = new Uint8Array(totalLength);
   let offset = 0;
-  for (const arr of arrays) {
+  for (let i = 0; i < arrays.length; i++) {
+    const arr = arrays[i]!;
     result.set(arr, offset);
-    offset += arr.length;
+    offset += arr.byteLength;
   }
   return result;
 }

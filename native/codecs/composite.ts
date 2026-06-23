@@ -1,3 +1,4 @@
+import { isArrayLike } from "../coercion.ts";
 import {
   ArrayColumn,
   assertOffsetsFitInJsNumber,
@@ -11,15 +12,14 @@ import { LowCardinality as LC } from "../constants.ts";
 import { type BufferReader, BufferWriter } from "../io.ts";
 import type { DeserializerState } from "../serialization.ts";
 import type { TypedArray } from "../types.ts";
-import { isArrayLike } from "../coercion.ts";
 import {
   asBytes,
   BaseCodec,
-  childState,
   type Codec,
+  childState,
   defaultDeserializerState,
   type GenContext,
-  isNumericLikeCodec,
+  makeDefaultColumnBuilder,
   nullToLiteral,
   readKinds1,
   readKinds2,
@@ -114,57 +114,23 @@ export class ArrayCodec extends BaseCodec {
   fromValues(values: unknown[]): ArrayColumn {
     const offsets = new BigUint64Array(values.length);
 
-    const lengths = new Array<number>(values.length);
     let totalCount = 0;
     for (let i = 0; i < values.length; i++) {
       const v = values[i];
-      if (v == null) {
-        lengths[i] = 0;
-        continue;
+      if (v != null) {
+        if (!isArrayLike(v))
+          throw new TypeError(`Expected array for ${this.type}, got ${typeof v}`);
+        totalCount += (v as ArrayLike<unknown>).length;
       }
-      if (!isArrayLike(v)) {
-        throw new TypeError(`Expected array for ${this.type}, got ${typeof v}`);
-      }
-      const len = (v as ArrayLike<unknown>).length;
-      lengths[i] = len;
-      totalCount += len;
+      offsets[i] = BigInt(totalCount);
     }
 
-    if (isNumericLikeCodec(this.inner)) {
-      const inner = this.inner;
-      const allInner = new inner.Ctor(totalCount);
-      const convert = inner.converter;
-      let offset = 0n;
-      let idx = 0;
-      for (let i = 0; i < values.length; i++) {
-        const v = values[i];
-        if (v == null) {
-          offsets[i] = offset;
-          continue;
-        }
-        const arr = v as ArrayLike<unknown>;
-        for (let j = 0; j < arr.length; j++)
-          allInner[idx++] = (convert ? convert(arr[j]) : arr[j]) as never;
-        offset += BigInt(lengths[i]!);
-        offsets[i] = offset;
-      }
-      return new ArrayColumn(this.type, offsets, new DataColumn(this.inner.type, allInner));
+    const builder =
+      this.inner.makeBuilder?.(totalCount) ?? makeDefaultColumnBuilder(this.inner, totalCount);
+    for (const v of values) {
+      if (v != null) builder.pushAll(v as ArrayLike<unknown>);
     }
-
-    const allInner: unknown[] = [];
-    let offset = 0n;
-    for (let i = 0; i < values.length; i++) {
-      const v = values[i];
-      if (v == null) {
-        offsets[i] = offset;
-        continue;
-      }
-      const arr = v as ArrayLike<unknown> & Iterable<unknown>;
-      for (const item of arr) allInner.push(item);
-      offset += BigInt(arr.length);
-      offsets[i] = offset;
-    }
-    return new ArrayColumn(this.type, offsets, this.inner.fromValues(allInner));
+    return new ArrayColumn(this.type, offsets, builder.finish());
   }
 
   zeroValue() {

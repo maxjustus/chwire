@@ -648,6 +648,12 @@ for await (const batch of streamDecodeNative(
 }
 ```
 
+For highly fragmented byte streams, `streamDecodeNative()` backs off retries after repeated underflows: the retry wait starts at the observed chunk size (or `underflowRetryMinBytes` when set), then doubles up to `underflowRetryMaxBytes` (default 1 MiB). This improves throughput by reducing repeated partial column decode work, at the cost of potentially delaying a batch until more bytes arrive (or the stream ends). Set the max to `0` to disable backoff:
+
+```ts
+streamDecodeNative(chunks, { underflowRetryMaxBytes: 0 });
+```
+
 ### Building Columns from Values
 
 Build columns independently with `getCodec().fromValues()`:
@@ -793,66 +799,71 @@ LZ4 and ZSTD use native Node addons (`lz4-napi`, `zstd-napi`) installed automati
 
 ## Performance
 
-Benchmarks on Apple M4 Max, 100k rows, 50 iterations. As of [`904b1ea`](../../commit/904b1ea).
+Benchmarks on Apple M4 Max / Node v25.9.0, 100k rows, adaptive iterations (the benchmark output prints warmup/sample counts).
 
 ### Encode (raw, no compression)
 
 | Scenario | JSON | Native | Speedup |
 |----------|------|--------|---------|
-| Simple (6 cols) | 103ms | 27ms | 3.9x |
-| Escape-heavy strings | 22ms | 28ms | 0.8x |
-| Arrays (50 floats/row) | 186ms | 151ms | 1.2x |
-| Variant | 6.1ms | 13.7ms | 0.4x |
-| Dynamic | 5.2ms | 11.1ms | 0.5x |
-| JSON column | 11ms | 52ms | 0.2x |
+| Simple (6 cols) | 98ms | 23ms | 4.2x |
+| Escape-heavy strings | 21ms | 20ms | 1.1x |
+| Arrays (50 floats/row) | 182ms | 65ms | 2.8x |
+| Arrays typed (50 floats/row) | 179ms | 67ms | 2.7x |
+| Variant | 5.6ms | 7.9ms | 0.7x |
+| Dynamic | 5.0ms | 6.8ms | 0.7x |
+| JSON column | 11ms | 36ms | 0.3x |
 
 ### Decode (raw)
 
 | Scenario | JSON | Native | Speedup |
 |----------|------|--------|---------|
-| Simple (6 cols) | 46ms | 27ms | 1.7x |
-| Escape-heavy strings | 41ms | 47ms | 0.9x |
-| Arrays (50 floats/row) | 246ms | 52ms | 4.7x |
-| Variant | 22ms | 2.4ms | 9.0x |
-| Dynamic | 20ms | 2.3ms | 8.8x |
-| JSON column | 47ms | 8.1ms | 5.8x |
+| Simple (6 cols) | 45ms | 26ms | 1.8x |
+| Escape-heavy strings | 49ms | 82ms | 0.6x |
+| Arrays (50 floats/row) | 238ms | 50ms | 4.8x |
+| Arrays typed (50 floats/row) | 232ms | 52ms | 4.5x |
+| Variant | 21ms | 1.5ms | 13.6x |
+| Dynamic | 21ms | 1.2ms | 17.7x |
+| JSON column | 46ms | 7.8ms | 5.9x |
 
 ### Encode + Compress (full path)
 
 | Scenario | JSON+LZ4 | Native+LZ4 | JSON+ZSTD | Native+ZSTD | JSON+gzip | Native+gzip |
 |----------|----------|------------|-----------|-------------|-----------|-------------|
-| Simple (6 cols) | 115ms | 35ms | 123ms | 36ms | 206ms | 112ms |
-| Escape-heavy strings | 27ms | 35ms | 28ms | 35ms | 62ms | 74ms |
-| Arrays (50 floats/row) | 286ms | 90ms | 637ms | 116ms | 3648ms | 1512ms |
-| Variant | 10ms | 11ms | 13ms | 12ms | 54ms | 55ms |
-| Dynamic | 8.1ms | 9.9ms | 9.9ms | 10ms | 38ms | 49ms |
-| JSON column | 20ms | 45ms | 27ms | 47ms | 106ms | 102ms |
+| Simple (6 cols) | 123ms | 30ms | 135ms | 33ms | 179ms | 100ms |
+| Escape-heavy strings | 47ms | 26ms | 40ms | 28ms | 49ms | 64ms |
+| Arrays (50 floats/row) | 362ms | 87ms | 735ms | 119ms | 2879ms | 1097ms |
+| Arrays typed (50 floats/row) | 363ms | 118ms | 723ms | 180ms | 2834ms | 1121ms |
+| Variant | 9.3ms | 10ms | 12ms | 12ms | 50ms | 52ms |
+| Dynamic | 7.8ms | 9.7ms | 9.4ms | 8.8ms | 36ms | 44ms |
+| JSON column | 35ms | 43ms | 46ms | 44ms | 97ms | 103ms |
 
-### Compressed Size (Native as % of JSON, lower = smaller)
+### Compressed Size (Native as % of JSONEachRow compressed with same codec, lower = smaller)
 
 | Scenario | LZ4 | ZSTD | gzip |
 |----------|-----|------|------|
 | Simple (6 cols) | 66% | 65% | 65% |
 | Escape-heavy strings | 93% | 158%* | 81% |
 | Arrays (50 floats/row) | 48% | 82% | 85% |
+| Arrays typed (50 floats/row) | 48% | 82% | 85% |
 | Variant | 70% | 81% | 68% |
 | Dynamic | 72% | 93% | 61% |
-| JSON column | 56% | 62% | 65% |
+| JSON column | 56% | 63% | 65% |
 
-Native wins big on decode (2-9x) and array-heavy data. JSON is faster for encode-only on string-heavy and self-describing types (Variant, Dynamic, JSON column) where Native pays schema overhead. With compression, Native's smaller wire size closes the gap or flips the result. LZ4 is fastest, ZSTD compresses best.
+*Escape-heavy strings with ZSTD: JSON's escaping creates repetitive byte patterns that ZSTD exploits.
 
-Run `make bench-formats` to reproduce.
+Run `make bench` (or `npm run bench`) to reproduce.
 
 ## Development
 
-Requires Node.js 22+.
+Requires Node.js 22+. The default test suite includes browser coverage; after `npm ci`, install the Playwright browser once with `npx playwright install chromium` (CI uses `--with-deps`).
 
 ```bash
 make test              # build + run full test matrix across ClickHouse versions
 make test-tcp          # TCP client tests only
 make fuzz              # generated/native fuzz suite
 make format            # run Biome formatter
-make bench-formats          # Native vs JSON encode/compress benchmark
+make bench                  # Native vs JSON encode/compress benchmark
+make bench-formats          # Same benchmark via direct node runner
 make bench-concurrent       # HTTP vs TCP connect+query throughput under concurrency
 make profile-json-caching   # JSON codec schema caching across batches
 npm run bench:tcp            # TCP bulk-read throughput + wall-time ratio vs official clickhouse-client

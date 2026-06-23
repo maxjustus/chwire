@@ -129,11 +129,11 @@ function stringifyReplacer(_key: string, value: unknown): unknown {
 }
 
 export function coerceToString(v: unknown): string {
+  if (typeof v === "string") return v;
   if (v == null) return "";
   if (v instanceof Date) return v.toJSON();
   if (v instanceof ClickHouseDateTime64) return v.toJSON();
   switch (typeof v) {
-    case "string":
     case "number":
     case "boolean":
     case "bigint":

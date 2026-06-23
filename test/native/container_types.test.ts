@@ -415,6 +415,15 @@ describe("JSON", () => {
     assert.deepStrictEqual(decodedRows[1]![0], {});
   });
 
+  it("rejects top-level JSON arrays instead of silently dropping them", () => {
+    const columns: ColumnDef[] = [{ name: "j", type: "JSON" }];
+
+    assert.throws(
+      () => encodeNativeRows(columns, [[[]], [["x", "y"]]]),
+      /JSON column values must be plain objects; top-level arrays are not supported/,
+    );
+  });
+
   it("parses JSON with typed paths from type string", async () => {
     // Tests that the type parser correctly extracts typed paths
     const columns: ColumnDef[] = [
@@ -696,10 +705,10 @@ describe("Deep nested structure edge cases", () => {
   });
 });
 
-// Tests for ArrayCodec code paths (fast path vs converter/NaN paths)
+// Tests for ArrayCodec bulk builder paths (typed arrays, converters, NaN)
 describe("ArrayCodec code paths", () => {
-  // Fast path: Array of integers with TypedArray input
-  it("Array(Int32) with Int32Array input (fast path)", async () => {
+  // Bulk path: Array of integers with TypedArray input
+  it("Array(Int32) with Int32Array input (bulk path)", async () => {
     const columns: ColumnDef[] = [{ name: "arr", type: "Array(Int32)" }];
     const rows = [
       [new Int32Array([1, 2, 3])],
@@ -718,7 +727,7 @@ describe("ArrayCodec code paths", () => {
     );
   });
 
-  it("Array(UInt32) with Uint32Array input (fast path)", async () => {
+  it("Array(UInt32) with Uint32Array input (bulk path)", async () => {
     const columns: ColumnDef[] = [{ name: "arr", type: "Array(UInt32)" }];
     const rows = [[new Uint32Array([0, 100, 4294967295])], [new Uint32Array([42])]];
     const encoded = encodeNativeRows(columns, rows);
@@ -729,7 +738,7 @@ describe("ArrayCodec code paths", () => {
     assert.deepStrictEqual(Array.from(decodedRows[1]![0] as Uint32Array), [42]);
   });
 
-  it("Array(Int16) with regular array (fast path, non-TypedArray input)", async () => {
+  it("Array(Int16) with regular array (bulk path, non-TypedArray input)", async () => {
     const columns: ColumnDef[] = [{ name: "arr", type: "Array(Int16)" }];
     const rows = [[[-32768, 0, 32767]], [[1, 2, 3]]];
     const encoded = encodeNativeRows(columns, rows);
