@@ -6,6 +6,9 @@
   "engines": {
     "node": ">=22"
   },
+  "publishConfig": {
+    "access": "public"
+  },
   "main": "./dist/chwire.js",
   "bin": {
     "chwire": "./dist/cli.js"
