@@ -6,6 +6,7 @@
 
 ### Added
 
+- Added `JsonCodec.fromCols()` for constructing JSON columns path-by-path from columnar data, skipping row-object shredding. `getCodec("JSON(...)")` now returns a narrowed type with the method available.
 - Added configurable ZSTD compression level via `compression: { method: "zstd", level }` (replaces the separate `zstdLevel` option).
 - Added `DynamicValue` for inserting `Dynamic`-column values with an explicit ClickHouse type, bypassing runtime type inference.
 - Added exported `ClickHouseException` support for structured ClickHouse server errors.
@@ -16,6 +17,7 @@
 
 ### Fixed
 
+- `JsonColumn.type` now preserves the declared type string (e.g. `JSON(id UInt32)`) instead of always reporting `JSON`, so `batchFromCols` schema inference picks up typed-path declarations.
 - HTTP requests now send `Accept-Encoding: identity`: the client already does its own block compression, and against ClickHouse 26.x a non-identity Accept-Encoding combined with `compress=1` made the server return empty error bodies (errors surfaced as "Unknown" with no message).
 - Fixed mid-stream HTTP exception detection against ClickHouse 26.x, which frames the `__exception__` trailer with the random tag announced in `X-ClickHouse-Exception-Tag`. The old parser missed tagged trailers entirely: text formats returned silently truncated results, and Native streams surfaced decoder garbage (e.g. "Need 4 bytes at offset N") instead of the server exception.
 - Native stream decoding now reports "stream ended mid-block" with byte counts when the source ends inside a block, instead of a bare buffer-underflow error.
