@@ -438,6 +438,24 @@ function generateColumnarNumericData(count: number) {
   return { columns, rows, columnar: [ids, xs, ys, zs] };
 }
 
+function generateJsonColumnarData(count: number) {
+  const type = "JSON(id UInt32, score Float64)";
+
+  const ids = new Uint32Array(count);
+  const scores = new Float64Array(count);
+  const names: unknown[] = new Array(count);
+  const rowObjects: Record<string, unknown>[] = new Array(count);
+
+  for (let i = 0; i < count; i++) {
+    ids[i] = i;
+    scores[i] = Math.random() * 100;
+    names[i] = `user_${i}`;
+    rowObjects[i] = { id: i, score: scores[i], name: `user_${i}` };
+  }
+
+  return { type, ids, scores, names, rowObjects };
+}
+
 // --- Main ---
 
 async function main() {
@@ -625,6 +643,63 @@ async function main() {
 
   console.log(
     `\nSpeedup: ${(nativeRowEnc.meanMs / nativeColEnc.meanMs).toFixed(2)}x faster with TypedArray columnar input`,
+  );
+
+  // JSON fromCols vs fromValues benchmarks
+  console.log("\n=== JSON fromCols vs fromValues ===\n");
+  const jsonColumnar = generateJsonColumnarData(ROWS);
+  const jsonCodec = getCodec("JSON(id UInt32, score Float64)");
+
+  console.log("Column construction only:");
+  const jsonFromValues = benchSync(
+    "fromValues (row objects)",
+    () => jsonCodec.fromValues(jsonColumnar.rowObjects),
+    benchOptions,
+  );
+  console.log(formatResult(jsonFromValues, ROWS));
+
+  const jsonFromCols = benchSync(
+    "fromCols (columnar)",
+    () =>
+      jsonCodec.fromCols({
+        id: jsonColumnar.ids,
+        score: jsonColumnar.scores,
+        name: jsonColumnar.names,
+      }),
+    benchOptions,
+  );
+  console.log(formatResult(jsonFromCols, ROWS));
+
+  console.log(
+    `\nSpeedup: ${(jsonFromValues.meanMs / jsonFromCols.meanMs).toFixed(2)}x faster with fromCols`,
+  );
+
+  console.log("\nFull encode path (construct + encodeNative):");
+  const jsonFvEncode = benchSync(
+    "fromValues + encode",
+    () => encodeNative(batchFromCols({ data: jsonCodec.fromValues(jsonColumnar.rowObjects) })),
+    benchOptions,
+  );
+  console.log(formatResult(jsonFvEncode, ROWS));
+
+  const jsonFcEncode = benchSync(
+    "fromCols + encode",
+    () =>
+      encodeNative(
+        batchFromCols({
+          data: jsonCodec.fromCols({
+            id: jsonColumnar.ids,
+            score: jsonColumnar.scores,
+            name: jsonColumnar.names,
+          }),
+        }),
+      ),
+    benchOptions,
+  );
+  console.log(formatResult(jsonFcEncode, ROWS));
+
+  console.log(
+    `\nFull path speedup: ${(jsonFvEncode.meanMs / jsonFcEncode.meanMs).toFixed(2)}x faster with fromCols`,
   );
 }
 
