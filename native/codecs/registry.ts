@@ -109,7 +109,7 @@ export function createCodec(type: string): Codec {
   if (type === "Dynamic" || type.startsWith("Dynamic(")) return new DynamicCodec(getCodec);
   if (type === "JSON" || type.startsWith("JSON")) {
     const typedPaths = parseJsonTypedPaths(type);
-    return new JsonCodec(getCodec, typedPaths);
+    return new JsonCodec(getCodec, typedPaths, type);
   }
 
   if (type.startsWith("FixedString"))

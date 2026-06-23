@@ -425,14 +425,19 @@ export class DynamicCodec implements Codec {
 }
 
 export class JsonCodec implements Codec {
-  readonly type = "JSON";
+  readonly type: string;
   private typedPaths: { name: string; type: string; codec: Codec }[] = [];
   private typedPathNames: Set<string>;
   private dynamicPaths: string[] = [];
   private dynamicCodecs = new Map<string, DynamicCodec>();
   private resolveCodec: CodecResolver;
 
-  constructor(resolveCodec: CodecResolver, typedPaths: { name: string; type: string }[] = []) {
+  constructor(
+    resolveCodec: CodecResolver,
+    typedPaths: { name: string; type: string }[] = [],
+    type = "JSON",
+  ) {
+    this.type = type;
     this.resolveCodec = resolveCodec;
     // ClickHouse canonicalizes JSON typed paths into lexicographic order. The
     // sub-columns are serialized positionally (no per-path name on the wire), so
@@ -524,7 +529,7 @@ export class JsonCodec implements Codec {
     }
 
     const allPaths = [...this.typedPaths.map((tp) => tp.name), ...this.dynamicPaths];
-    return new JsonColumn(allPaths, pathColumns, rows);
+    return new JsonColumn(allPaths, pathColumns, rows, this.type);
   }
 
   fromValues(values: unknown[]): JsonColumn {
@@ -574,7 +579,7 @@ export class JsonCodec implements Codec {
       pathColumns.set(path, dynCodec.fromValues(dynamicPathArrays.get(path)!));
     }
 
-    return new JsonColumn([...this.typedPathNames, ...dynamicPathOrder], pathColumns, n);
+    return new JsonColumn([...this.typedPathNames, ...dynamicPathOrder], pathColumns, n, this.type);
   }
 
   zeroValue() {
