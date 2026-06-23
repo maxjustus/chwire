@@ -243,7 +243,11 @@ export function toValidDecimal(v: unknown): string {
 
 // --- Array detection ---
 
+export function isTypedArray(v: unknown): v is TypedArray {
+  return ArrayBuffer.isView(v) && !(v instanceof DataView);
+}
+
 /** Check if value is an array-like (regular array or TypedArray) */
 export function isArrayLike(v: unknown): v is unknown[] | TypedArray {
-  return Array.isArray(v) || (ArrayBuffer.isView(v) && !(v instanceof DataView));
+  return Array.isArray(v) || isTypedArray(v);
 }

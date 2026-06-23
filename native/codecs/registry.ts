@@ -198,6 +198,8 @@ export function createCodec(type: string): Codec {
 const CODEC_CACHE = new Map<string, Codec>();
 const CODEC_CACHE_LIMIT = 131072;
 
+export function getCodec(type: "JSON" | `JSON(${string})`): JsonCodec;
+export function getCodec(type: string): Codec;
 export function getCodec(type: string): Codec {
   if (type.startsWith("Dynamic") || type === "JSON" || type.startsWith("JSON(")) {
     return createCodec(type);

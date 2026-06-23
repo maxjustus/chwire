@@ -6,8 +6,9 @@ import {
   JsonColumn,
   VariantColumn,
 } from "../columns.ts";
+import { isTypedArray } from "../coercion.ts";
 import { Dynamic, JSONFormat, Variant } from "../constants.ts";
-import { DynamicValue } from "../types.ts";
+import { DynamicValue, type TypedArray } from "../types.ts";
 import { type BufferReader, BufferWriter } from "../io.ts";
 import type { DeserializerState } from "../serialization.ts";
 import {
@@ -424,6 +425,16 @@ export class DynamicCodec implements Codec {
   }
 }
 
+function isColumn(v: unknown): v is Column {
+  return (
+    typeof v === "object" &&
+    v !== null &&
+    typeof (v as any).get === "function" &&
+    typeof (v as any).type === "string" &&
+    typeof (v as any).length === "number"
+  );
+}
+
 export class JsonCodec implements Codec {
   readonly type: string;
   private typedPaths: { name: string; type: string; codec: Codec }[] = [];
@@ -580,6 +591,70 @@ export class JsonCodec implements Codec {
     }
 
     return new JsonColumn([...this.typedPathNames, ...dynamicPathOrder], pathColumns, n, this.type);
+  }
+
+  fromCols(input: Record<string, Column | unknown[] | TypedArray>): JsonColumn {
+    const keys = Object.keys(input);
+
+    let rowCount = 0;
+    let rowCountSource: string | undefined;
+    for (const key of keys) {
+      const v = input[key]!;
+      const len = (v as { length: number }).length;
+      if (rowCountSource === undefined) {
+        rowCount = len;
+        rowCountSource = key;
+      } else if (len !== rowCount) {
+        throw new Error(
+          `Column length mismatch: '${rowCountSource}' has ${rowCount} rows, '${key}' has ${len}`,
+        );
+      }
+    }
+
+    const pathColumns = new Map<string, Column>();
+
+    for (const tp of this.typedPaths) {
+      const value = input[tp.name];
+      if (value === undefined) {
+        throw new Error(`Missing typed path '${tp.name}' (declared in ${this.type})`);
+      }
+      if (isColumn(value)) {
+        if (value.type !== tp.type) {
+          throw new Error(
+            `Type mismatch for typed path '${tp.name}': expected '${tp.type}', got '${value.type}'`,
+          );
+        }
+        pathColumns.set(tp.name, value);
+      } else {
+        pathColumns.set(tp.name, tp.codec.fromValues(value));
+      }
+    }
+
+    const dynamicPathOrder: string[] = [];
+    const dynCodec = new DynamicCodec(this.resolveCodec);
+    for (const key of keys) {
+      if (this.typedPathNames.has(key)) continue;
+      const value = input[key]!;
+      if (isTypedArray(value)) {
+        throw new TypeError(
+          `Dynamic path '${key}' cannot be a TypedArray (type information is lost). ` +
+            `Use DynamicValue[] or a plain array instead.`,
+        );
+      }
+      if (isColumn(value)) {
+        throw new TypeError(
+          `Dynamic path '${key}' cannot be a pre-built Column. ` +
+            `Use Array.from(column) to pass values.`,
+        );
+      }
+      dynamicPathOrder.push(key);
+      pathColumns.set(key, dynCodec.fromValues(value));
+    }
+
+    dynamicPathOrder.sort(byteOrder);
+
+    const allPaths = [...this.typedPaths.map((tp) => tp.name), ...dynamicPathOrder];
+    return new JsonColumn(allPaths, pathColumns, rowCount, this.type);
   }
 
   zeroValue() {
