@@ -2,8 +2,7 @@
 
 ## 1.0.0
 
-`@maxjustus/chwire` is the renamed successor to `@maxjustus/chttp`. This first
-release includes the unreleased changes since `@maxjustus/chttp@1.15.0`.
+`@maxjustus/chwire` is the renamed successor to `@maxjustus/chttp`, continuing from `1.15.0`.
 
 ### Added
 
