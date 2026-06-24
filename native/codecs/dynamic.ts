@@ -584,13 +584,12 @@ export class JsonCodec implements Codec {
       );
     }
 
-    dynamicPathOrder.sort(byteOrder);
     const dynCodec = new DynamicCodec(this.resolveCodec);
     for (const path of dynamicPathOrder) {
       pathColumns.set(path, dynCodec.fromValues(dynamicPathArrays.get(path)!));
     }
 
-    return new JsonColumn([...this.typedPathNames, ...dynamicPathOrder], pathColumns, n, this.type);
+    return this.assembleColumn(pathColumns, dynamicPathOrder, n);
   }
 
   fromCols(input: Record<string, Column | unknown[] | TypedArray>): JsonColumn {
@@ -651,8 +650,15 @@ export class JsonCodec implements Codec {
       pathColumns.set(key, dynCodec.fromValues(value));
     }
 
-    dynamicPathOrder.sort(byteOrder);
+    return this.assembleColumn(pathColumns, dynamicPathOrder, rowCount);
+  }
 
+  private assembleColumn(
+    pathColumns: Map<string, Column>,
+    dynamicPathOrder: string[],
+    rowCount: number,
+  ): JsonColumn {
+    dynamicPathOrder.sort(byteOrder);
     const allPaths = [...this.typedPaths.map((tp) => tp.name), ...dynamicPathOrder];
     return new JsonColumn(allPaths, pathColumns, rowCount, this.type);
   }
