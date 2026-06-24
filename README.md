@@ -10,15 +10,7 @@ npm install @maxjustus/chwire
 
 ## HTTP vs TCP
 
-| Feature | HTTP | TCP |
-|---------|------|-----|
-| Real-time progress | No | Yes (rows read/written, bytes, memory, CPU) |
-| Server logs | No | Yes (via `send_logs_level` setting) |
-| Profile events | No | Yes (detailed execution metrics) |
-| Long-running queries | Timeout-prone | Robust (persistent connection) |
-| Browser support | Yes | No (Node/Bun/Deno only) |
-
-Use **HTTP** for browser apps or simple queries. Use **TCP** for observability, long-running queries, and lower latency.
+TCP works better for long-running queries and gives you streaming telemetry (progress, logs, profile events). HTTP works anywhere (including browsers) and supports all ClickHouse input/output formats.
 
 ## Quick Start
 
@@ -189,7 +181,7 @@ await insert(
 
 ### External Tables
 
-Send temporary in-memory tables with your query. Schema is auto-extracted from RecordBatch:
+Send temporary in-memory tables with your query. Schema is auto-extracted from RecordBatch (see [Native Format](#native-format) for construction):
 
 ```ts
 import { batchFromCols, getCodec, query, collectText } from "@maxjustus/chwire";
@@ -310,6 +302,8 @@ await client.insert("INSERT INTO table", [{ id: 1, name: "alice" }]);
 
 client.close();
 ```
+
+TCP connections hold a persistent socket — always call `client.close()` when done, or use [`await using`](#auto-close-on-scope-exit) for automatic cleanup.
 
 ### Connection Options
 
@@ -500,26 +494,6 @@ await client.query("SELECT sum(id) FROM data", {
 });
 ```
 
-### Streaming Between Tables
-
-Use separate connections for concurrent read/write:
-
-```ts
-import { TcpClient, recordBatches } from "@maxjustus/chwire/tcp";
-
-const readClient = new TcpClient(options);
-const writeClient = new TcpClient(options);
-await readClient.connect();
-await writeClient.connect();
-
-// Stream RecordBatches from one table to another
-await writeClient.insert(
-  "INSERT INTO dst",
-  // recordBatches extracts record batch objects from Data packets in the result packet stream.
-  recordBatches(readClient.query("SELECT * FROM src")),
-);
-```
-
 ### Cancellation
 
 ```ts
@@ -560,7 +534,7 @@ try {
 }
 ```
 
-Connection and protocol errors throw standard `Error`:
+Connection and protocol errors throw JavaScript's built-in `Error` (not `ClickHouseException`):
 
 ```ts
 try {
@@ -648,11 +622,16 @@ for await (const batch of streamDecodeNative(
 }
 ```
 
+<details>
+<summary>Tuning fragmented-stream backoff</summary>
+
 For highly fragmented byte streams, `streamDecodeNative()` backs off retries after repeated underflows: the retry wait starts at the observed chunk size (or `underflowRetryMinBytes` when set), then doubles up to `underflowRetryMaxBytes` (default 1 MiB). This improves throughput by reducing repeated partial column decode work, at the cost of potentially delaying a batch until more bytes arrive (or the stream ends). Set the max to `0` to disable backoff:
 
 ```ts
 streamDecodeNative(chunks, { underflowRetryMaxBytes: 0 });
 ```
+
+</details>
 
 ### Building Columns from Values
 
@@ -717,7 +696,8 @@ batchFromCols({
   dyn: getCodec("Dynamic").fromValues(["hello", 42, true, [1, 2, 3], null]),
 });
 
-// Dynamic with an explicit per-value type (skips inference) via DynamicValue
+// Dynamic with explicit per-value types via DynamicValue — use when you need
+// a specific type that inference wouldn't pick (e.g. Int8 instead of Int64)
 batchFromCols({
   dyn: getCodec("Dynamic").fromValues([new DynamicValue("Int8", 5), new DynamicValue("Float64", 3)]),
 });
@@ -799,66 +779,66 @@ LZ4 and ZSTD use native Node addons (`lz4-napi`, `zstd-napi`) installed automati
 
 ## Performance
 
-Benchmarks on Apple M4 Max / Node v25.9.0, 100k rows, adaptive iterations (the benchmark output prints warmup/sample counts).
+Benchmarks on Apple M4 Max / Node v25.9.0, 1M rows.
 
 ### Encode (raw, no compression)
 
-| Scenario | JSON | Native | Speedup |
-|----------|------|--------|---------|
-| Simple (6 cols) | 99ms | 22ms | 4.5x |
-| Escape-heavy strings | 22ms | 22ms | 1.0x |
-| Arrays (50 floats/row) | 174ms | 66ms | 2.7x |
-| Arrays typed (50 floats/row) | 180ms | 70ms | 2.6x |
-| Variant | 5.8ms | 8.5ms | 0.7x |
-| Dynamic | 5.2ms | 6.9ms | 0.8x |
-| JSON column | 11ms | 33ms | 0.3x |
+| Scenario | JSONEachRow | Native | Speedup |
+|----------|------------|--------|---------|
+| Simple (6 cols) | 2267ms | 862ms | 2.6x |
+| Escape-heavy strings | 1510ms | 630ms | 2.4x |
+| Arrays (50 floats/row) | 7585ms | 1245ms | 6.1x |
+| Arrays typed (50 floats/row) | 7691ms | 1501ms | 5.1x |
+| Variant | 323ms | 633ms | 0.5x |
+| Dynamic | 290ms | 337ms | 0.9x |
+| JSON column | 762ms | 916ms | 0.8x |
 
 ### Decode (raw)
 
-| Scenario | JSON | Native | Speedup |
-|----------|------|--------|---------|
-| Simple (6 cols) | 47ms | 28ms | 1.7x |
-| Escape-heavy strings | 41ms | 46ms | 0.9x |
-| Arrays (50 floats/row) | 245ms | 50ms | 4.9x |
-| Arrays typed (50 floats/row) | 247ms | 52ms | 4.8x |
-| Variant | 22ms | 1.5ms | 14.1x |
-| Dynamic | 21ms | 1.2ms | 17.5x |
-| JSON column | 46ms | 8.1ms | 5.7x |
+| Scenario | JSONEachRow | Native | Speedup |
+|----------|------------|--------|---------|
+| Simple (6 cols) | 984ms | 521ms | 1.9x |
+| Escape-heavy strings | 833ms | 1011ms | 0.8x |
+| Arrays (50 floats/row) | 6368ms | 804ms | 7.9x |
+| Arrays typed (50 floats/row) | 6251ms | 1054ms | 5.9x |
+| Variant | 488ms | 109ms | 4.5x |
+| Dynamic | 488ms | 181ms | 2.7x |
+| JSON column | 1109ms | 352ms | 3.2x |
 
 ### Encode + Compress (full path)
 
-| Scenario | JSON+LZ4 | Native+LZ4 | JSON+ZSTD | Native+ZSTD | JSON+gzip | Native+gzip |
-|----------|----------|------------|-----------|-------------|-----------|-------------|
-| Simple (6 cols) | 125ms | 30ms | 140ms | 38ms | 187ms | 105ms |
-| Escape-heavy strings | 41ms | 27ms | 41ms | 32ms | 49ms | 66ms |
-| Arrays (50 floats/row) | 362ms | 105ms | 743ms | 114ms | 2973ms | 1149ms |
-| Arrays typed (50 floats/row) | 380ms | 127ms | 754ms | 179ms | 2939ms | 1155ms |
-| Variant | 9.5ms | 11ms | 12ms | 11ms | 51ms | 55ms |
-| Dynamic | 8.0ms | 8.3ms | 9.8ms | 8.4ms | 37ms | 47ms |
-| JSON column | 31ms | 41ms | 47ms | 44ms | 100ms | 104ms |
+| Scenario | JSONEachRow+LZ4 | Native+LZ4 | JSONEachRow+ZSTD | Native+ZSTD | JSONEachRow+gzip | Native+gzip |
+|----------|----------------|------------|-----------------|-------------|-----------------|-------------|
+| Simple (6 cols) | 2755ms | 1459ms | 2340ms | 1410ms | 3196ms | 1435ms |
+| Escape-heavy strings | 1271ms | 627ms | 1356ms | 623ms | 1552ms | 939ms |
+| Arrays (50 floats/row) | 8768ms | 1933ms | 12601ms | 2231ms | 38306ms | 15073ms |
+| Arrays typed (50 floats/row) | 9077ms | 2049ms | 12868ms | 2442ms | 38675ms | 15122ms |
+| Variant | 711ms | 660ms | 718ms | 659ms | 866ms | 1104ms |
+| Dynamic | 881ms | 653ms | 734ms | 611ms | 711ms | 965ms |
+| JSON column | 906ms | 845ms | 1145ms | 847ms | 3491ms | 3155ms |
 
 ### Compressed Size (Native as % of JSONEachRow compressed with same codec, lower = smaller)
 
 | Scenario | LZ4 | ZSTD | gzip |
 |----------|-----|------|------|
-| Simple (6 cols) | 66% | 65% | 65% |
-| Escape-heavy strings | 93% | 158%* | 81% |
-| Arrays (50 floats/row) | 48% | 82% | 85% |
-| Arrays typed (50 floats/row) | 48% | 82% | 85% |
-| Variant | 70% | 81% | 68% |
-| Dynamic | 72% | 93% | 61% |
-| JSON column | 56% | 62% | 65% |
+| Simple (6 cols) | 64% | 65% | 66% |
+| Escape-heavy strings | 93% | 164%* | 80% |
+| Arrays (50 floats/row) | 48% | 81% | 85% |
+| Arrays typed (50 floats/row) | 48% | 81% | 85% |
+| Variant | 70% | 78% | 67% |
+| Dynamic | 72% | 93% | 60% |
+| JSON column | 56% | 62% | 66% |
 
 *Escape-heavy strings with ZSTD: JSON's escaping creates repetitive byte patterns that ZSTD exploits.
 
 ### JSON fromCols vs fromValues
 
-Column construction for `JSON(id UInt32, score Float64)` with one dynamic string path, 100k rows:
+Column construction for `JSON(id UInt32, score Float64)` with one dynamic string path, 1M rows:
 
 | | fromValues | fromCols | Speedup |
 |--|-----------|----------|---------|
-| Column construction | 6.9ms | 1.5ms | 4.6x |
-| Full encode path | 16ms | 8.1ms | 1.9x |
+| Column construction | 249ms | 35ms | 7.1x |
+| Full encode path | 977ms | 718ms | 1.4x |
 
 `fromCols` skips row-object shredding: typed paths forward TypedArrays directly, dynamic paths bypass per-row key enumeration.
 

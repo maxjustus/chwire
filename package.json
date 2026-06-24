@@ -69,7 +69,7 @@
     "test:fuzz": "tsx fuzz/parallel.ts --all",
     "test:fuzz:verbose": "tsx fuzz/parallel.ts --all --verbose",
     "test:tcp": "tsx --test tcp_client/test/*.test.ts",
-    "bench": "tsx bench/formats.ts",
+    "bench": "NODE_OPTIONS='--max-old-space-size=8192' tsx bench/formats.ts",
     "bench:check": "tsc -p tsconfig.bench.json",
     "bench:compression": "tsx bench/compression.ts",
     "bench:tcp": "tsx bench/tcp-read-profile.ts --cli",

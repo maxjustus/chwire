@@ -61,17 +61,48 @@ const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 
 function encodeJsonEachRow(rows: Record<string, unknown>[]): Uint8Array {
-  let json = "";
-  for (const row of rows) json += `${JSON.stringify(row)}\n`;
-  return encoder.encode(json);
+  const chunks: Uint8Array[] = [];
+  let totalLength = 0;
+  let batch = "";
+  for (const row of rows) {
+    batch += JSON.stringify(row) + "\n";
+    if (batch.length >= 50_000_000) {
+      const encoded = encoder.encode(batch);
+      chunks.push(encoded);
+      totalLength += encoded.length;
+      batch = "";
+    }
+  }
+  if (batch.length > 0) {
+    const encoded = encoder.encode(batch);
+    chunks.push(encoded);
+    totalLength += encoded.length;
+  }
+  if (chunks.length === 1) return chunks[0]!;
+  const result = new Uint8Array(totalLength);
+  let offset = 0;
+  for (const chunk of chunks) {
+    result.set(chunk, offset);
+    offset += chunk.length;
+  }
+  return result;
 }
 
 function decodeJsonEachRow<T>(data: Uint8Array): T[] {
-  return decoder
-    .decode(data)
-    .trim()
-    .split("\n")
-    .map((line) => JSON.parse(line) as T);
+  const CHUNK = 64 * 1024 * 1024;
+  const results: T[] = [];
+  let carry = "";
+  for (let offset = 0; offset < data.length; offset += CHUNK) {
+    const slice = data.subarray(offset, Math.min(offset + CHUNK, data.length));
+    const text = carry + decoder.decode(slice, { stream: offset + CHUNK < data.length });
+    const lines = text.split("\n");
+    carry = lines.pop()!;
+    for (const line of lines) {
+      if (line) results.push(JSON.parse(line) as T);
+    }
+  }
+  if (carry) results.push(JSON.parse(carry) as T);
+  return results;
 }
 
 async function* chunkedStream(data: Uint8Array, chunkSize: number): AsyncIterable<Uint8Array> {
@@ -463,9 +494,9 @@ async function main() {
 
   reportEnvironment();
   const benchOptions = readBenchOptions();
-  const ROWS = 100_000;
+  const ROWS = 1_000_000;
 
-  console.log(`Benchmarking with ${ROWS} rows (adaptive iterations)\n`);
+  console.log(`Benchmarking with ${ROWS} rows\n`);
 
   // Generate all test data
   const simple = generateSimpleData(ROWS);
