@@ -622,17 +622,6 @@ for await (const batch of streamDecodeNative(
 }
 ```
 
-<details>
-<summary>Tuning fragmented-stream backoff</summary>
-
-For highly fragmented byte streams, `streamDecodeNative()` backs off retries after repeated underflows: the retry wait starts at the observed chunk size (or `underflowRetryMinBytes` when set), then doubles up to `underflowRetryMaxBytes` (default 1 MiB). This improves throughput by reducing repeated partial column decode work, at the cost of potentially delaying a batch until more bytes arrive (or the stream ends). Set the max to `0` to disable backoff:
-
-```ts
-streamDecodeNative(chunks, { underflowRetryMaxBytes: 0 });
-```
-
-</details>
-
 ### Building Columns from Values
 
 Build columns independently with `getCodec().fromValues()`:
