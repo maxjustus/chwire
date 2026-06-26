@@ -83,6 +83,7 @@ export class VariantCodec implements Codec {
   readonly type: string;
   private typeStrings: string[];
   private codecs: Codec[];
+  private primitiveDisc: Record<string, number>;
 
   constructor(typeStrings: string[], codecs: Codec[]) {
     // ClickHouse canonicalizes a Variant by sorting its arms by type name and
@@ -95,6 +96,16 @@ export class VariantCodec implements Codec {
     this.typeStrings = order.map((i) => typeStrings[i]!);
     this.codecs = order.map((i) => codecs[i]!);
     this.type = `Variant(${this.typeStrings.join(", ")})`;
+
+    this.primitiveDisc = Object.create(null) as Record<string, number>;
+    for (let i = 0; i < this.typeStrings.length; i++) {
+      const t = this.typeStrings[i]!;
+      if (t === "String") this.primitiveDisc.string ??= i;
+      else if (t === "Bool") this.primitiveDisc.boolean ??= i;
+      else if (t === "Int64" || t === "UInt64") this.primitiveDisc.bigint ??= i;
+      else if (t.startsWith("Int") || t.startsWith("UInt") || t.startsWith("Float"))
+        this.primitiveDisc.number ??= i;
+    }
   }
 
   writePrefix(writer: BufferWriter, col: Column) {
@@ -144,31 +155,38 @@ export class VariantCodec implements Codec {
   }
 
   fromValues(values: unknown[]): VariantColumn {
-    const discriminators = new Uint8Array(values.length);
-    const variantValues: unknown[][] = this.codecs.map(() => []);
+    const n = values.length;
+    const discriminators = new Uint8Array(n);
+    const armCount = this.codecs.length;
+    const variantValues: unknown[][] = new Array(armCount);
+    for (let k = 0; k < armCount; k++) variantValues[k] = [];
 
-    for (let i = 0; i < values.length; i++) {
+    for (let i = 0; i < n; i++) {
       const v = values[i];
       if (v == null) {
         discriminators[i] = Variant.NULL_DISCRIMINATOR;
-      } else if (Array.isArray(v) && v.length === 2 && typeof v[0] === "number") {
-        const disc = v[0] as number;
-        if (disc < 0 || disc >= this.codecs.length) {
-          throw new Error(
-            `Invalid Variant discriminator ${disc}, expected 0-${this.codecs.length - 1}`,
-          );
-        }
+        continue;
+      }
+      const disc = this.primitiveDisc[typeof v];
+      if (disc !== undefined) {
         discriminators[i] = disc;
-        variantValues[disc]!.push(v[1]);
+        variantValues[disc]!.push(v);
+      } else if (Array.isArray(v) && v.length === 2 && typeof v[0] === "number") {
+        const d = v[0] as number;
+        if (d < 0 || d >= armCount) {
+          throw new Error(`Invalid Variant discriminator ${d}, expected 0-${armCount - 1}`);
+        }
+        discriminators[i] = d;
+        variantValues[d]!.push(v[1]);
       } else {
-        const variantIdx = this.findVariantIndex(v, this.typeStrings);
-        discriminators[i] = variantIdx;
-        variantValues[variantIdx]!.push(v);
+        const idx = this.findVariantIndex(v, this.typeStrings);
+        discriminators[i] = idx;
+        variantValues[idx]!.push(v);
       }
     }
 
     const groups = new Map<number, Column>();
-    for (let vi = 0; vi < this.codecs.length; vi++) {
+    for (let vi = 0; vi < armCount; vi++) {
       const vals = variantValues[vi]!;
       if (vals.length > 0) {
         groups.set(vi, this.codecs[vi]!.fromValues(vals));
@@ -372,16 +390,24 @@ export class DynamicCodec implements Codec {
   }
 
   guessType(value: unknown): string {
-    if (value === null) return "String";
-    if (typeof value === "string") return "String";
-    if (typeof value === "number") return Number.isInteger(value) ? "Int64" : "Float64";
-    if (typeof value === "bigint") return "Int64";
-    if (typeof value === "boolean") return "Bool";
-    if (value instanceof Date) return "DateTime64(3)";
-    if (Array.isArray(value))
-      return value.length ? `Array(${this.guessType(value[0])})` : "Array(String)";
-    if (typeof value === "object") return "Map(String,String)";
-    return "String";
+    switch (typeof value) {
+      case "string":
+        return "String";
+      case "number":
+        return Number.isInteger(value) ? "Int64" : "Float64";
+      case "bigint":
+        return "Int64";
+      case "boolean":
+        return "Bool";
+      case "object":
+        if (value === null) return "String";
+        if (value instanceof Date) return "DateTime64(3)";
+        if (Array.isArray(value))
+          return value.length ? `Array(${this.guessType(value[0])})` : "Array(String)";
+        return "Map(String,String)";
+      default:
+        return "String";
+    }
   }
 
   readKinds(reader: BufferReader) {
