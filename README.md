@@ -691,9 +691,20 @@ batchFromCols({
   dyn: getCodec("Dynamic").fromValues([new DynamicValue("Int8", 5), new DynamicValue("Float64", 3)]),
 });
 
-// JSON - plain objects
+// JSON - plain objects (fromValues shreds row objects into columnar paths)
 batchFromCols({
   data: getCodec("JSON").fromValues([{ a: 1, b: "x" }, { a: 2, c: true }]),
+});
+
+// JSON - columnar construction (fromCols skips row-object shredding, ~7x faster
+// for column construction — see Performance section)
+const jsonCodec = getCodec("JSON(id UInt32, score Float64)");
+batchFromCols({
+  data: jsonCodec.fromCols({
+    id: new Uint32Array([1, 2, 3]),         // typed path: TypedArray, array, or Column
+    score: new Float64Array([0.5, 1.0, 2.5]),
+    tag: ["a", "b", null],                  // dynamic path: plain array (nulls OK)
+  }),
 });
 
 // Nested(a UInt32, b String) - encoded as Array(Tuple(a UInt32, b String)).
