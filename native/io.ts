@@ -220,6 +220,7 @@ export function varIntSize(value: number | bigint): number {
 
 export function writeVarInt(buffer: Uint8Array, offset: number, value: number | bigint): number {
   let v = BigInt(value);
+  if (v < 0n) throw new RangeError(`Cannot write negative VarInt: ${value}`);
   let pos = offset;
   while (v >= VarInt.CONTINUATION_THRESHOLD) {
     buffer[pos++] = Number((v & VarInt.DATA_MASK) | VarInt.CONTINUATION_BIT);
@@ -236,11 +237,15 @@ export function readVarInt(buffer: Uint8Array, cursor: { offset: number }): numb
     if (cursor.offset >= buffer.length)
       throw new BufferUnderflowError("Buffer underflow reading varint");
     const byte = buffer[cursor.offset++]!;
+    // At shift 28 only 4 data bits remain in 32; anything above (or a
+    // continuation into a 6th byte) would silently flip/drop bits.
+    if (shift === 28 && (byte & 0xf0) !== 0) throw new RangeError("VarInt overflows 32-bit read");
     result |= (byte & VarInt.DATA_MASK_NUM) << shift;
     if ((byte & VarInt.CONT_BIT) === 0) break;
     shift += VarInt.BITS_PER_BYTE_NUM;
   }
-  return result;
+  // `|` is signed 32-bit; reinterpret as unsigned so lengths never go negative.
+  return result >>> 0;
 }
 
 export function readVarInt64(buffer: Uint8Array, cursor: { offset: number }): bigint {
@@ -253,6 +258,7 @@ export function readVarInt64(buffer: Uint8Array, cursor: { offset: number }): bi
     result |= (byte & VarInt.DATA_MASK) << shift;
     if ((byte & VarInt.CONTINUATION_BIT) === 0n) break;
     shift += VarInt.BITS_PER_BYTE;
+    if (shift >= 70n) throw new RangeError("VarInt longer than 10 bytes");
   }
   return result;
 }
@@ -421,6 +427,9 @@ export class BufferReader {
   }
 
   ensureAvailable(bytes: number): void {
+    if (bytes < 0) {
+      throw new RangeError(`Invalid negative length: ${bytes}`);
+    }
     if (this.offset + bytes > this.buffer.length) {
       throw new BufferUnderflowError(
         `Need ${bytes} bytes at offset ${this.offset}, only ${this.buffer.length - this.offset} available`,
