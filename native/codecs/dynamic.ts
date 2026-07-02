@@ -110,14 +110,16 @@ export class VariantCodec implements Codec {
     this.codecs = order.map((i) => codecs[i]!);
     this.type = `Variant(${this.typeStrings.join(", ")})`;
 
-    // Fast typeof->arm cache; must stay in sync with findVariantIndex's rules.
+    // Fast typeof->arm cache; must stay in sync with findVariantIndex's
+    // rules. Independent ifs: an Int64/UInt64 arm serves both bigint and
+    // number, exactly as findVariantIndex would match it.
     this.primitiveDisc = Object.create(null) as Record<string, number>;
     for (let i = 0; i < this.typeStrings.length; i++) {
       const t = this.typeStrings[i]!;
       if (t === "String") this.primitiveDisc.string ??= i;
-      else if (t === "Bool") this.primitiveDisc.boolean ??= i;
-      else if (t === "Int64" || t === "UInt64") this.primitiveDisc.bigint ??= i;
-      else if (t.startsWith("Int") || t.startsWith("UInt") || t.startsWith("Float"))
+      if (t === "Bool") this.primitiveDisc.boolean ??= i;
+      if (t === "Int64" || t === "UInt64") this.primitiveDisc.bigint ??= i;
+      if (t.startsWith("Int") || t.startsWith("UInt") || t.startsWith("Float"))
         this.primitiveDisc.number ??= i;
     }
   }
@@ -360,9 +362,11 @@ export class DynamicCodec implements Codec {
 
   /**
    * Build a column from sparse data: `values[j]` belongs to row
-   * `rowIndices[j]`; every other row is null. `rowIndices === null` means
-   * identity (`values[j]` is row `j`), with rows past `values.length` null.
-   * Lets JsonCodec scatter only the keys a row actually has instead of
+   * `rowIndices[j]`; every other row is null. `rowIndices` must be strictly
+   * ascending — group values are stored in scan order, so out-of-order or
+   * duplicate indices pair rows with the wrong values. `rowIndices === null`
+   * means identity (`values[j]` is row `j`), with rows past `values.length`
+   * null. Lets JsonCodec scatter only the keys a row actually has instead of
    * materializing a dense rows-length array per path.
    */
   fromSparse(rowIndices: number[] | null, values: unknown[], rows: number): DynamicColumn {
@@ -407,9 +411,15 @@ export class DynamicCodec implements Codec {
     const nullDisc = typeOrder.length;
     if (rowIndices) {
       if (nullDisc !== 0) wide.fill(nullDisc);
+      let prevRow = -1;
       for (let j = 0; j < k; j++) {
+        const row = rowIndices[j]!;
+        if (row <= prevRow) {
+          throw new Error(`fromSparse: rowIndices must be strictly ascending (index ${j})`);
+        }
+        prevRow = row;
         const d = discs[j]!;
-        wide[rowIndices[j]!] = d === NULL_SENTINEL ? nullDisc : d;
+        wide[row] = d === NULL_SENTINEL ? nullDisc : d;
       }
     } else {
       if (hasNulls) {

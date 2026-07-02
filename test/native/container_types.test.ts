@@ -241,6 +241,19 @@ describe("Variant", () => {
     assert.deepStrictEqual(decodedRows[2]![0], new VariantValue(1, 123n));
   });
 
+  it("routes bare numbers to the first numeric arm even when it is Int64/UInt64", async () => {
+    // Int64 sorts before UInt8, so 300 must go to Int64 (findVariantIndex
+    // order), not overflow the UInt8 arm.
+    const columns: ColumnDef[] = [{ name: "v", type: "Variant(Int64, UInt8)" }];
+    const rows = [[300], [-5], [5]];
+    const encoded = encodeNativeRows(columns, rows);
+    const decodedRows = toArrayRows(decodeBatch(encoded));
+
+    assert.deepStrictEqual(decodedRows[0]![0], new VariantValue(0, 300n));
+    assert.deepStrictEqual(decodedRows[1]![0], new VariantValue(0, -5n));
+    assert.deepStrictEqual(decodedRows[2]![0], new VariantValue(0, 5n));
+  });
+
   it("treats Variant undefined as null", async () => {
     const columns: ColumnDef[] = [{ name: "v", type: "Variant(String, UInt64)" }];
     const rows = [[new VariantValue(0, "test")], [undefined], [new VariantValue(1, 123n)]];
