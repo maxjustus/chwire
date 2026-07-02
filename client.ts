@@ -438,12 +438,9 @@ async function insert(
 ): Promise<InsertResult> {
   await init();
   const baseUrl = options.url || "http://localhost:8123/";
-  const {
-    compression = "lz4",
-    bufferSize = 1024 * 1024,
-    threshold = bufferSize - 2048,
-    onProgress = null,
-  } = options;
+  const { compression = "lz4", bufferSize = 1024 * 1024, onProgress = null } = options;
+  // A threshold above bufferSize can never trigger a flush, so clamp it.
+  const threshold = Math.min(options.threshold ?? bufferSize - 2048, bufferSize);
 
   const params: Record<string, string> = {
     query: query,
