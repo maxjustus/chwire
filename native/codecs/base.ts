@@ -61,7 +61,19 @@ export function parseTypeList(inner: string): string[] {
   return types;
 }
 
-export function parseTupleElements(inner: string): { name: string | null; type: string }[] {
+export interface NamedElement {
+  name: string | null;
+  type: string;
+  /**
+   * True when the name was backtick-quoted. A quoted name is always a literal
+   * identifier — `` `SKIP` `` is a path named SKIP, while an unquoted SKIP in a
+   * JSON type is a skip directive — so consumers that treat keywords specially
+   * must check this.
+   */
+  quoted: boolean;
+}
+
+export function parseTupleElements(inner: string): NamedElement[] {
   return parseTypeList(inner).map(parseNamedElement);
 }
 
@@ -90,7 +102,7 @@ const IDENT_ESCAPES: Record<string, string> = {
  * also accepted on input. A bare type with no name (a Tuple element, a config
  * param) returns name=null.
  */
-function parseNamedElement(part: string): { name: string | null; type: string } {
+function parseNamedElement(part: string): NamedElement {
   if (part.startsWith("`")) {
     let name = "";
     let i = 1;
@@ -113,11 +125,11 @@ function parseNamedElement(part: string): { name: string | null; type: string } 
       name += part[i];
     }
     const type = part.slice(i).trim();
-    return type ? { name, type } : { name: null, type: part };
+    return type ? { name, type, quoted: true } : { name: null, type: part, quoted: false };
   }
   const match = part.match(/^([a-z_][a-z0-9_]*(?:\.[a-z_][a-z0-9_]*)*)\s+(.+)$/i);
-  if (match) return { name: match[1]!, type: match[2]! };
-  return { name: null, type: part };
+  if (match) return { name: match[1]!, type: match[2]!, quoted: false };
+  return { name: null, type: part, quoted: false };
 }
 
 // Extracts the content between the outermost parentheses: "Array(Int32)" -> "Int32"

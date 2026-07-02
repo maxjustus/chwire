@@ -50,11 +50,13 @@ function parseJsonTypedPaths(type: string): { name: string; type: string }[] {
   return elements
     .filter(
       // Config params (e.g. max_dynamic_paths=16) have no space, so
-      // parseTupleElements leaves them name=null; SKIP directives parse as
-      // name="SKIP" (exact — a typed path legitimately named "skipped" must be
-      // kept). An Enum typed path's type legitimately contains '=', so it must
-      // NOT be filtered on '='.
-      (el): el is { name: string; type: string } => el.name !== null && el.name !== "SKIP",
+      // parseTupleElements leaves them name=null; SKIP directives parse as an
+      // UNQUOTED name="SKIP" (exact — a typed path legitimately named "skipped"
+      // must be kept, and a backtick-quoted `SKIP` is a literal path name, not a
+      // directive). An Enum typed path's type legitimately contains '=', so it
+      // must NOT be filtered on '='.
+      (el): el is { name: string; type: string; quoted: boolean } =>
+        el.name !== null && (el.name !== "SKIP" || el.quoted),
     )
     .map((el) => ({ name: el.name, type: el.type }));
 }

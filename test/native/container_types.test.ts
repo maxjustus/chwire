@@ -472,6 +472,21 @@ describe("JSON", () => {
     assert.strictEqual(obj0.skipped, 5);
   });
 
+  it("keeps a typed path literally named SKIP when backtick-quoted", async () => {
+    // ClickHouse distinguishes the quoted path `SKIP` from the SKIP directive
+    // (CREATE TABLE (v JSON(`SKIP` Int64, SKIP b)) canonicalizes to exactly
+    // that); only the unquoted keyword form is a directive.
+    const columns: ColumnDef[] = [{ name: "j", type: "JSON(`SKIP` UInt32, SKIP a.b)" }];
+    const rows = [[{ SKIP: 7 }]];
+    const encoded = encodeNativeRows(columns, rows);
+    const decodedRows = toArrayRows(decodeBatch(encoded));
+
+    const obj0 = decodedRows[0]![0] as Record<string, unknown>;
+    // If `SKIP` were wrongly treated as a directive the typed path would be
+    // dropped and the value would fall through to a Dynamic path (bigint).
+    assert.strictEqual(obj0.SKIP, 7);
+  });
+
   it("handles JSON with typed paths and dynamic paths together", async () => {
     const columns: ColumnDef[] = [{ name: "j", type: "JSON(currency String, amount Int64)" }];
     const rows = [
