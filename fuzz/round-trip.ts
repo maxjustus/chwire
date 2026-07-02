@@ -17,6 +17,7 @@ import type { Codec } from "../native/codecs/base.ts";
 import { type ColumnDef, encodeNative, streamDecodeNative } from "../native/index.ts";
 import { batchFromRows } from "../native/table.ts";
 import type { Compression } from "./config.ts";
+import { renderIdent } from "./identifiers.ts";
 import { consume } from "./util.ts";
 
 /** Settings required for experimental/complex types in CREATE/INSERT/SELECT. */
@@ -80,17 +81,21 @@ export async function roundTripCells(opts: {
    * this exercises shared-codec-state bugs across sibling columns of a block.
    */
   duplicateCells?: unknown[];
+  /** Column name (default "v"); may need quoting in DDL/SQL (poison pool). */
+  columnName?: string;
   /** Context appended to mismatch errors so a failure can be replayed. */
   replayHint?: string;
 }): Promise<void> {
   const { declaredType, codec, cells, compression, conn, table, duplicateCells } = opts;
   const { url, auth } = conn;
 
+  const baseName = opts.columnName ?? "v";
   const columnCells = duplicateCells ? [cells, duplicateCells] : [cells];
-  const columnNames = duplicateCells ? ["v", "w"] : ["v"];
+  const columnNames = duplicateCells ? [baseName, `${baseName}_2`] : [baseName];
+  const renderedNames = columnNames.map(renderIdent);
 
   if (!opts.preCreated) {
-    const defs = columnNames.map((n) => `${n} ${declaredType}`).join(", ");
+    const defs = renderedNames.map((n) => `${n} ${declaredType}`).join(", ");
     await consume(
       query(`CREATE TABLE ${table} (${defs}) ENGINE = Memory`, {
         url,
@@ -113,7 +118,7 @@ export async function roundTripCells(opts: {
     settings: COMPLEX_TYPE_SETTINGS,
   });
 
-  const queryResult = query(`SELECT ${columnNames.join(", ")} FROM ${table} FORMAT Native`, {
+  const queryResult = query(`SELECT ${renderedNames.join(", ")} FROM ${table} FORMAT Native`, {
     url,
     auth,
     sessionId: opts.sessionId,

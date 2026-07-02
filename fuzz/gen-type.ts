@@ -26,6 +26,7 @@
  * boundaries, so the type-parameter seams get hit on purpose.
  */
 import type { Rng } from "../native/codecs/base.ts";
+import { maybePoisonName, renderIdent } from "./identifiers.ts";
 
 /** Random element of a non-empty array. */
 const pick = <T>(rng: Rng, arr: readonly T[]): T => arr[rng.int(0, arr.length - 1)]!;
@@ -193,7 +194,15 @@ function genTupleType(rng: Rng, depth: number): string {
     const at = rng.int(0, types.length - 1);
     types.splice(at, 0, types[at]!);
   }
-  const elems = types.map((t, i) => (named ? `c${i} ${t}` : t));
+  // Named elements sometimes draw from the poison pool (keywords, quotes,
+  // backticks, unicode) to exercise identifier quoting/escaping seams.
+  const usedNames: string[] = [];
+  const elems = types.map((t, i) => {
+    if (!named) return t;
+    const name = maybePoisonName(rng, `c${i}`, usedNames);
+    usedNames.push(name);
+    return `${renderIdent(name)} ${t}`;
+  });
   return `Tuple(${elems.join(", ")})`;
 }
 
