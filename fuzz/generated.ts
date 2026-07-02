@@ -132,6 +132,7 @@ const SUBSTREAM_SALT = {
   "dup-column": 0x1b873593,
   rerender: 0x85ebca6b,
   "column-name": 0xc2b2ae35,
+  "pool-size": 0x27d4eb2f,
 } as const;
 
 /** A deterministic RNG substream derived from an iteration seed for one purpose. */
@@ -288,12 +289,16 @@ function dynamicArmAllowed(type: string): boolean {
  * allows as a Dynamic arm. Bounded by DYNAMIC_POOL_SIZE. The pool gets its own
  * seeded rng so it stays deterministic for replay without perturbing per-row gen.
  */
-async function buildDynamicTypePool(rng: Rng, source: TypeSource): Promise<string[]> {
+async function buildDynamicTypePool(
+  rng: Rng,
+  source: TypeSource,
+  size = DYNAMIC_POOL_SIZE,
+): Promise<string[]> {
   const pool: string[] = [];
   const seen = new Set<string>();
   for (
     let attempt = 0;
-    attempt < DYNAMIC_POOL_SIZE * 4 && pool.length < DYNAMIC_POOL_SIZE;
+    attempt < DYNAMIC_POOL_SIZE * 4 && pool.length < Math.min(size, DYNAMIC_POOL_SIZE);
     attempt++
   ) {
     const type = await source(rng);
@@ -306,7 +311,20 @@ async function buildDynamicTypePool(rng: Rng, source: TypeSource): Promise<strin
       pool.push(type);
     }
   }
-  return pool.length > 0 ? pool : PROBE_DYNAMIC_TYPES;
+  if (pool.length === 0) pool.push(...PROBE_DYNAMIC_TYPES);
+  // A big-pool iteration (see the "pool-size" roll) asks for ~250-300 distinct
+  // types to straddle the 255-distinct-type cap on a Dynamic column. Drawing
+  // that many from the type source would cost hundreds of probe/CH round-trips,
+  // so the tail is padded with cheap deterministic distinct types. Default-size
+  // pools are never padded: falling short there keeps the original behavior.
+  for (let k = 1; size > DYNAMIC_POOL_SIZE && pool.length < size; k++) {
+    const filler = k % 2 === 0 ? `FixedString(${k})` : `Array(FixedString(${k}))`;
+    if (!seen.has(filler)) {
+      seen.add(filler);
+      pool.push(filler);
+    }
+  }
+  return pool;
 }
 
 /** Roll a random column type matching one of the requested kinds. */
@@ -838,6 +856,41 @@ function assertRerenderRoundTrip(
   }
 }
 
+/** Number of distinct concrete types carried by a Dynamic column's cells. */
+function distinctDynamicTypes(cells: unknown[]): number {
+  const types = new Set<string>();
+  for (const c of cells) {
+    if (c instanceof DynamicValue) types.add(c.type);
+  }
+  return types.size;
+}
+
+/**
+ * Encoding a Dynamic column with >255 distinct types must fail with the
+ * explicit RangeError from DynamicCodec (mirroring ClickHouse's own cap), not
+ * encode a corrupt discriminator stream and not fail with an unrelated error.
+ */
+function assertOverCapThrows(declaredType: string, cells: unknown[]): void {
+  const schema: ColumnDef[] = [{ name: "v", type: declaredType }];
+  const count = distinctDynamicTypes(cells);
+  try {
+    encodeNative(
+      batchFromRows(
+        schema,
+        cells.map((c) => [c]),
+      ),
+    );
+  } catch (err) {
+    if (err instanceof RangeError && String((err as Error).message).includes("distinct types")) {
+      return;
+    }
+    throw new Error(
+      `expected RangeError(distinct types cap) encoding a ${count}-type Dynamic column, got: ${err}`,
+    );
+  }
+  throw new Error(`encoding a Dynamic column with ${count} distinct types (>255) did not throw`);
+}
+
 /**
  * Run the Tier-1 oracle for a single generated column and assert compare()
  * holds for every row. Generates the per-row cells for the rolled kind, then
@@ -886,6 +939,19 @@ async function runColumn(opts: {
     !opts.preCreated && subStream(seed, "dup-column").int(0, 3) === 0
       ? generateCells(kind, canonicalType, rng, rowCount, opts.dynamicTypePool)
       : undefined;
+
+  // A Dynamic column with >255 distinct types does not fit the wire format's
+  // discriminator byte; the client must throw the clear RangeError at encode
+  // time, never corrupt. When a big-pool iteration crosses the cap, assert the
+  // throw and stop — there is nothing valid to round-trip.
+  if (kind === "dynamic" && canonicalType.startsWith("Dynamic")) {
+    const columns = duplicateCells ? [cells, duplicateCells] : [cells];
+    const overCap = columns.find((cs) => distinctDynamicTypes(cs) > 255);
+    if (overCap) {
+      assertOverCapThrows(canonicalType, overCap);
+      return;
+    }
+  }
 
   // Variant cells need arm-aware rewriting and JSON objects carry untyped
   // dynamic paths, so the re-render oracle covers the other kinds (Dynamic cells
@@ -965,19 +1031,29 @@ describe("Native client-generated Fuzz Tests", { timeout: 600000 }, () => {
             console.log(`[generated fuzz ${i + 1}/${N}] no generatable type rolled, skipping`);
             continue;
           }
-          const { kind, type: columnType } = rolled;
+          const { kind, type: rolledType } = rolled;
           // Variant rolls bring a pre-created, CH-canonicalized table; reuse it.
           const table = rolled.table ?? `generated_fuzz_${suffix}`;
 
+          // 1-in-8 Dynamic iterations roll a ~250-300 type pool to straddle the
+          // 255-distinct-type cap on one Dynamic column: <=255 distinct types
+          // must round-trip, >255 must throw the clear RangeError instead of
+          // corrupting discriminators. The column is forced to bare Dynamic so
+          // the cap seam sits on the column itself, not a nested composite.
+          const poolSizeRng = subStream(seed, "pool-size");
+          const bigPool = kind === "dynamic" && poolSizeRng.int(0, 7) === 0;
+          const poolSize = bigPool ? poolSizeRng.int(250, 300) : DYNAMIC_POOL_SIZE;
+          const columnType = bigPool ? "Dynamic" : rolledType;
+
           console.log(
-            `[generated fuzz ${i + 1}/${N} compression=${compression}] ${sourceName} ${kind} ${columnType} seed=${seed}`,
+            `[generated fuzz ${i + 1}/${N} compression=${compression}] ${sourceName} ${kind} ${columnType} seed=${seed}${bigPool ? ` pool=${poolSize}` : ""}`,
           );
 
           // Only Dynamic-bearing kinds sample the pool; building it for the rest
           // would spend round-trips no cell ever reads.
           const dynamicTypePool =
             kind === "dynamic" || kind === "json"
-              ? await buildDynamicTypePool(subStream(seed, "dynamic-pool"), source)
+              ? await buildDynamicTypePool(subStream(seed, "dynamic-pool"), source, poolSize)
               : PROBE_DYNAMIC_TYPES;
 
           try {
