@@ -856,41 +856,6 @@ function assertRerenderRoundTrip(
   }
 }
 
-/** Number of distinct concrete types carried by a Dynamic column's cells. */
-function distinctDynamicTypes(cells: unknown[]): number {
-  const types = new Set<string>();
-  for (const c of cells) {
-    if (c instanceof DynamicValue) types.add(c.type);
-  }
-  return types.size;
-}
-
-/**
- * Encoding a Dynamic column with >255 distinct types must fail with the
- * explicit RangeError from DynamicCodec (mirroring ClickHouse's own cap), not
- * encode a corrupt discriminator stream and not fail with an unrelated error.
- */
-function assertOverCapThrows(declaredType: string, cells: unknown[]): void {
-  const schema: ColumnDef[] = [{ name: "v", type: declaredType }];
-  const count = distinctDynamicTypes(cells);
-  try {
-    encodeNative(
-      batchFromRows(
-        schema,
-        cells.map((c) => [c]),
-      ),
-    );
-  } catch (err) {
-    if (err instanceof RangeError && String((err as Error).message).includes("distinct types")) {
-      return;
-    }
-    throw new Error(
-      `expected RangeError(distinct types cap) encoding a ${count}-type Dynamic column, got: ${err}`,
-    );
-  }
-  throw new Error(`encoding a Dynamic column with ${count} distinct types (>255) did not throw`);
-}
-
 /**
  * Run the Tier-1 oracle for a single generated column and assert compare()
  * holds for every row. Generates the per-row cells for the rolled kind, then
@@ -939,19 +904,6 @@ async function runColumn(opts: {
     !opts.preCreated && subStream(seed, "dup-column").int(0, 3) === 0
       ? generateCells(kind, canonicalType, rng, rowCount, opts.dynamicTypePool)
       : undefined;
-
-  // A Dynamic column with >255 distinct types does not fit the wire format's
-  // discriminator byte; the client must throw the clear RangeError at encode
-  // time, never corrupt. When a big-pool iteration crosses the cap, assert the
-  // throw and stop — there is nothing valid to round-trip.
-  if (kind === "dynamic" && canonicalType.startsWith("Dynamic")) {
-    const columns = duplicateCells ? [cells, duplicateCells] : [cells];
-    const overCap = columns.find((cs) => distinctDynamicTypes(cs) > 255);
-    if (overCap) {
-      assertOverCapThrows(canonicalType, overCap);
-      return;
-    }
-  }
 
   // Variant cells need arm-aware rewriting and JSON objects carry untyped
   // dynamic paths, so the re-render oracle covers the other kinds (Dynamic cells
@@ -1036,10 +988,10 @@ describe("Native client-generated Fuzz Tests", { timeout: 600000 }, () => {
           const table = rolled.table ?? `generated_fuzz_${suffix}`;
 
           // 1-in-8 Dynamic iterations roll a ~250-300 type pool to straddle the
-          // 255-distinct-type cap on one Dynamic column: <=255 distinct types
-          // must round-trip, >255 must throw the clear RangeError instead of
-          // corrupting discriminators. The column is forced to bare Dynamic so
-          // the cap seam sits on the column itself, not a nested composite.
+          // UInt8/UInt16 flattened-index width seam (256 indexes = 255 types +
+          // null): both sides must round-trip through CH, which spills types
+          // beyond max_types into the shared variant on unflatten. The column
+          // is forced to bare Dynamic so the seam sits on the column itself.
           const poolSizeRng = subStream(seed, "pool-size");
           const bigPool = kind === "dynamic" && poolSizeRng.int(0, 7) === 0;
           const poolSize = bigPool ? poolSizeRng.int(250, 300) : DYNAMIC_POOL_SIZE;

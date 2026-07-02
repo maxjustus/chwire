@@ -34,6 +34,19 @@ export type CodecResolver = (type: string) => Codec;
 const byteOrder = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
 
 /**
+ * Smallest typed array whose element width can address `numIndexes` distinct
+ * values; mirrors ClickHouse's getSmallestIndexesType, which sizes the V3
+ * flattened Dynamic index column as num_types + 1 (for the null index).
+ */
+function smallestIndexArrayCtor(
+  numIndexes: number,
+): Uint8ArrayConstructor | Uint16ArrayConstructor | Uint32ArrayConstructor {
+  if (numIndexes <= 256) return Uint8Array;
+  if (numIndexes <= 65536) return Uint16Array;
+  return Uint32Array;
+}
+
+/**
  * Compare one Dynamic cell: `a` may be a generated `DynamicValue` carrying an
  * explicit type; `b` is the bare decoded value. Unwrap both, null-check, then
  * compare via the declared type's codec when either side is type-tagged, else
@@ -327,12 +340,16 @@ export class DynamicCodec implements Codec {
 
   decode(reader: BufferReader, rows: number, state: DeserializerState): DynamicColumn {
     const nullDisc = this.types.length;
-    const discLimit = nullDisc + 1;
-
-    let discriminators: DiscriminatorArray;
-    if (discLimit <= 256) discriminators = reader.readTypedArray(Uint8Array, rows);
-    else if (discLimit <= 65536) discriminators = reader.readTypedArray(Uint16Array, rows);
-    else discriminators = reader.readTypedArray(Uint32Array, rows);
+    // V3 flattened indexes use the smallest width that fits nullDisc + 1
+    // values (CH getSmallestIndexesType); shared-variant overflow means the
+    // flattened type list is NOT bounded by max_types, so >255 is legal.
+    const Ctor = smallestIndexArrayCtor(nullDisc + 1);
+    const discriminators: DiscriminatorArray =
+      Ctor === Uint8Array
+        ? reader.readTypedArray(Uint8Array, rows)
+        : Ctor === Uint16Array
+          ? reader.readTypedArray(Uint16Array, rows)
+          : reader.readTypedArray(Uint32Array, rows);
 
     const { counts, indices } = countAndIndexDiscriminators(discriminators, nullDisc);
     const groups = decodeGroups(reader, this.codecs, counts, state);
@@ -344,7 +361,9 @@ export class DynamicCodec implements Codec {
     const typeOrder: string[] = [];
     const typeValues: unknown[][] = [];
     const n = values.length;
-    const discriminators = new Uint8Array(n);
+    // The final discriminator width depends on the type count, which is only
+    // known after the scan; collect wide and narrow at the end.
+    const wideDiscs = new Uint32Array(n);
     // nullDisc is set after the loop once we know typeOrder.length;
     // track null positions to back-fill in one scan.
     let hasNulls = false;
@@ -365,16 +384,21 @@ export class DynamicCodec implements Codec {
         typeOrder.push(vType);
         typeValues.push([]);
       }
-      discriminators[i] = idx;
+      wideDiscs[i] = idx;
       typeValues[idx]!.push(actual);
     }
 
     if (hasNulls) {
       const nullDisc = typeOrder.length;
       for (let i = 0; i < n; i++) {
-        if (values[i] == null) discriminators[i] = nullDisc;
+        if (values[i] == null) wideDiscs[i] = nullDisc;
       }
     }
+
+    // Server-side, types beyond max_types overflow into the shared variant on
+    // unflatten, so any count the index width can address is legal.
+    const Ctor = smallestIndexArrayCtor(typeOrder.length + 1);
+    const discriminators = Ctor === Uint32Array ? wideDiscs : new Ctor(wideDiscs);
 
     const groups = new Map<number, Column>();
     for (let ti = 0; ti < typeOrder.length; ti++) {

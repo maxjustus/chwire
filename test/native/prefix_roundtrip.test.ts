@@ -180,5 +180,29 @@ describe("prefix round-trip tests", () => {
       assert.strictEqual(col.get(2), null);
       assert.strictEqual(col.get(3), "b");
     });
+
+    it("reads UInt16 flattened indexes when the prefix declares more than 255 types", () => {
+      // Shared-variant overflow means a V3 flattened type list is not bounded
+      // by max_types; the index width scales (CH getSmallestIndexesType).
+      const data = buildTestBlock({
+        colName: "val",
+        colType: "Dynamic",
+        rows: 2,
+        prefix: (w) => {
+          w.writeU64LE(Dynamic.VERSION_V3);
+          w.writeVarint(300);
+          for (let i = 1; i <= 300; i++) w.writeString(`FixedString(${i})`);
+        },
+        data: (w) => {
+          // UInt16LE indexes: type 0 (FixedString(1)), then 300 = null
+          w.write(new Uint8Array([0, 0, 44, 1]));
+          w.write(new Uint8Array([97])); // FixedString(1) value "a"
+        },
+      });
+
+      const result = decodeNativeBlock(data, 0, { clientVersion: 54454 });
+      assert.deepStrictEqual(result.columnData[0]!.get(0), new Uint8Array([97]));
+      assert.strictEqual(result.columnData[0]!.get(1), null);
+    });
   });
 });

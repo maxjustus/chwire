@@ -1,6 +1,9 @@
 import assert from "node:assert";
 import { describe, it } from "node:test";
 import type { ColumnDef } from "../../native/index.ts";
+import type { DynamicColumn } from "../../native/columns.ts";
+import { getCodec } from "../../native/codecs.ts";
+import { DynamicValue } from "../../native/types.ts";
 import { decodeBatch, encodeNativeRows, toArrayRows } from "../test_utils.ts";
 import { VariantValue } from "../../native/types.ts";
 
@@ -339,6 +342,20 @@ describe("Dynamic", () => {
     assert.strictEqual(decodedRows[0]![0], "test");
     assert.strictEqual(decodedRows[1]![0], null);
     assert.strictEqual(decodedRows[2]![0], 123n); // Int64 decoded as bigint
+  });
+
+  it("widens Dynamic discriminators beyond 255 distinct types", () => {
+    // V3 flattened indexes scale with the type count (CH getSmallestIndexesType):
+    // 255 types + null still fits UInt8; 256 types needs UInt16.
+    const values = Array.from(
+      { length: 256 },
+      (_, i) => new DynamicValue(`FixedString(${i + 1})`, "x".repeat(i + 1)),
+    );
+    const at255 = getCodec("Dynamic").fromValues(values.slice(0, 255)) as DynamicColumn;
+    assert.ok(at255.discriminators instanceof Uint8Array);
+    const at256 = getCodec("Dynamic").fromValues(values) as DynamicColumn;
+    assert.ok(at256.discriminators instanceof Uint16Array);
+    assert.deepStrictEqual(at256.get(255), new TextEncoder().encode("x".repeat(256)));
   });
 
   it("treats Dynamic undefined as null", async () => {
