@@ -117,6 +117,7 @@ const SUBSTREAM_SALT = {
   "source-choice": 0x7f4a7c15,
   "type-roll": 0x5bd1e995,
   "dynamic-pool": 0x2545f491,
+  "dup-column": 0x1b873593,
 } as const;
 
 /** A deterministic RNG substream derived from an iteration seed for one purpose. */
@@ -812,10 +813,21 @@ async function runColumn(opts: {
   const rng = makeRng(seed);
   const cells = generateCells(kind, canonicalType, rng, rowCount, opts.dynamicTypePool);
 
+  // 1-in-4: give the table a second column with the IDENTICAL type string and
+  // independently generated cells (the per-row rng continues, so the draw stays
+  // replay-deterministic). Two columns sharing one type string exercise
+  // shared-codec-instance state across sibling columns of a block. Pre-created
+  // Variant tables already hold a single canonical column, so they are exempt.
+  const duplicateCells =
+    !opts.preCreated && subStream(seed, "dup-column").int(0, 3) === 0
+      ? generateCells(kind, canonicalType, rng, rowCount, opts.dynamicTypePool)
+      : undefined;
+
   await roundTripCells({
     declaredType: canonicalType,
     codec,
     cells,
+    duplicateCells,
     compression: opts.compression,
     conn: { url: opts.url, auth: opts.auth },
     sessionId: opts.sessionId,

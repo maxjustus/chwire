@@ -46,6 +46,7 @@ export function stringify(value: unknown): string {
 
 interface Mismatch {
   rowIndex: number;
+  columnIndex: number;
   expected: string;
   actual: string;
 }
@@ -73,15 +74,25 @@ export async function roundTripCells(opts: {
   table: string;
   /** When true the table already exists (a Variant roll pre-creates it). */
   preCreated?: boolean;
+  /**
+   * Cells for a second column `w` declared with the IDENTICAL type string. Two
+   * columns sharing one type string can resolve to the same codec instance, so
+   * this exercises shared-codec-state bugs across sibling columns of a block.
+   */
+  duplicateCells?: unknown[];
   /** Context appended to mismatch errors so a failure can be replayed. */
   replayHint?: string;
 }): Promise<void> {
-  const { declaredType, codec, cells, compression, conn, table } = opts;
+  const { declaredType, codec, cells, compression, conn, table, duplicateCells } = opts;
   const { url, auth } = conn;
 
+  const columnCells = duplicateCells ? [cells, duplicateCells] : [cells];
+  const columnNames = duplicateCells ? ["v", "w"] : ["v"];
+
   if (!opts.preCreated) {
+    const defs = columnNames.map((n) => `${n} ${declaredType}`).join(", ");
     await consume(
-      query(`CREATE TABLE ${table} (v ${declaredType}) ENGINE = Memory`, {
+      query(`CREATE TABLE ${table} (${defs}) ENGINE = Memory`, {
         url,
         auth,
         sessionId: opts.sessionId,
@@ -91,8 +102,8 @@ export async function roundTripCells(opts: {
     );
   }
 
-  const schema: ColumnDef[] = [{ name: "v", type: declaredType }];
-  const rows: unknown[][] = cells.map((c) => [c]);
+  const schema: ColumnDef[] = columnNames.map((n) => ({ name: n, type: declaredType }));
+  const rows: unknown[][] = cells.map((_c, r) => columnCells.map((col) => col[r]));
   const encoded = encodeNative(batchFromRows(schema, rows));
 
   await insert(`INSERT INTO ${table} FORMAT Native`, encoded, {
@@ -102,7 +113,7 @@ export async function roundTripCells(opts: {
     settings: COMPLEX_TYPE_SETTINGS,
   });
 
-  const queryResult = query(`SELECT v FROM ${table} FORMAT Native`, {
+  const queryResult = query(`SELECT ${columnNames.join(", ")} FROM ${table} FORMAT Native`, {
     url,
     auth,
     sessionId: opts.sessionId,
@@ -110,34 +121,48 @@ export async function roundTripCells(opts: {
     settings: COMPLEX_TYPE_SETTINGS,
   });
 
-  const decoded: unknown[] = [];
+  const decoded: unknown[][] = columnNames.map(() => []);
   for await (const block of streamDecodeNative(dataChunks(queryResult), { mapAsArray: true })) {
-    for (const row of block.columnData[0]!) {
-      decoded.push(row);
+    for (let c = 0; c < columnNames.length; c++) {
+      for (const row of block.columnData[c]!) {
+        decoded[c]!.push(row);
+      }
     }
   }
 
   const hint = opts.replayHint ? ` (${opts.replayHint})` : "";
 
-  if (decoded.length !== rows.length) {
-    throw new Error(
-      `Row count mismatch for ${declaredType}${hint}: expected ${rows.length}, got ${decoded.length}`,
-    );
+  for (let c = 0; c < columnNames.length; c++) {
+    if (decoded[c]!.length !== rows.length) {
+      throw new Error(
+        `Row count mismatch for ${declaredType}${hint} col ${c}: expected ${rows.length}, got ${decoded[c]!.length}`,
+      );
+    }
   }
 
   const mismatches: Mismatch[] = [];
-  for (let r = 0; r < rows.length; r++) {
-    const expected = rows[r]![0];
-    const actual = decoded[r];
-    if (!codec.compare(expected, actual)) {
-      mismatches.push({ rowIndex: r, expected: stringify(expected), actual: stringify(actual) });
-      if (mismatches.length >= 5) break;
+  for (let c = 0; c < columnNames.length && mismatches.length < 5; c++) {
+    for (let r = 0; r < rows.length; r++) {
+      const expected = columnCells[c]![r];
+      const actual = decoded[c]![r];
+      if (!codec.compare(expected, actual)) {
+        mismatches.push({
+          rowIndex: r,
+          columnIndex: c,
+          expected: stringify(expected),
+          actual: stringify(actual),
+        });
+        if (mismatches.length >= 5) break;
+      }
     }
   }
 
   if (mismatches.length > 0) {
     const detail = mismatches
-      .map((m) => `  row ${m.rowIndex} col 0: expected ${m.expected}, actual ${m.actual}`)
+      .map(
+        (m) =>
+          `  row ${m.rowIndex} col ${m.columnIndex}: expected ${m.expected}, actual ${m.actual}`,
+      )
       .join("\n");
     throw new Error(`compare mismatch for ${declaredType}${hint}:\n${detail}`);
   }

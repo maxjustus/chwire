@@ -183,11 +183,17 @@ function genLowCardinalityInner(rng: Rng): string {
 function genTupleType(rng: Rng, depth: number): string {
   const count = rng.int(1, 4);
   const named = rng.int(0, 1) === 0;
-  const elems: string[] = [];
-  for (let i = 0; i < count; i++) {
-    const t = genType(rng, depth - 1);
-    elems.push(named ? `c${i} ${t}` : t);
+  const types: string[] = [];
+  for (let i = 0; i < count; i++) types.push(genType(rng, depth - 1));
+  // 1-in-4: duplicate one element's type as an adjacent sibling. Two identical
+  // sibling type strings can resolve to the same shared codec instance, so this
+  // targets shared-codec-state bugs (the codec-cache corruption fired only when
+  // a cached composite like Array(Dynamic) appeared twice as a sibling).
+  if (rng.int(0, 3) === 0) {
+    const at = rng.int(0, types.length - 1);
+    types.splice(at, 0, types[at]!);
   }
+  const elems = types.map((t, i) => (named ? `c${i} ${t}` : t));
   return `Tuple(${elems.join(", ")})`;
 }
 
