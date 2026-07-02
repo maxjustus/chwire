@@ -7,6 +7,8 @@
  *
  * Options:
  *   --unit       Run unit tests
+ *   --corruption Run byte-mutation decode tests
+ *   --insert     Run insert() option tests
  *   --http       Run HTTP integration tests
  *   --tcp        Run TCP integration tests
  *   --generated  Run client-generated CH-anchored tests
@@ -46,7 +48,10 @@ interface JobResult {
   peakRssBytes: number | null;
 }
 
-type Suite = "unit" | "http" | "tcp" | "generated";
+type Suite = "unit" | "corruption" | "insert" | "http" | "tcp" | "generated";
+
+/** Suites that run offline — no ClickHouse server, no compression matrix. */
+const LOCAL_SUITES: ReadonlySet<Suite> = new Set(["unit", "corruption", "insert"]);
 
 const memoryPollMs = readPositiveIntEnv("FUZZ_MEMORY_POLL_MS", 250);
 const memoryWarnBytes = readPositiveIntEnv("FUZZ_MEMORY_WARN_MB", 0) * 1024 * 1024;
@@ -85,6 +90,10 @@ function parseArgs(): {
   for (const arg of args) {
     if (arg === "--unit") {
       suites.push("unit");
+    } else if (arg === "--corruption") {
+      suites.push("corruption");
+    } else if (arg === "--insert") {
+      suites.push("insert");
     } else if (arg === "--http") {
       suites.push("http");
     } else if (arg === "--tcp") {
@@ -92,14 +101,14 @@ function parseArgs(): {
     } else if (arg === "--generated") {
       suites.push("generated");
     } else if (arg === "--all") {
-      suites.push("unit", "http", "tcp", "generated");
+      suites.push("unit", "corruption", "insert", "http", "tcp", "generated");
     } else if (arg === "--verbose" || arg === "-v") {
       verbose = true;
     }
   }
 
   if (suites.length === 0) {
-    suites.push("unit", "http", "tcp", "generated");
+    suites.push("unit", "corruption", "insert", "http", "tcp", "generated");
   }
 
   return { suites: [...new Set(suites)], verbose };
@@ -109,11 +118,11 @@ function buildJobs(suites: Suite[]): Job[] {
   const jobs: Job[] = [];
 
   for (const suite of suites) {
-    if (suite === "unit") {
+    if (LOCAL_SUITES.has(suite)) {
       for (let i = 0; i < config.iterations; i++) {
         jobs.push({
-          name: `unit[${i}]`,
-          file: "fuzz/unit.ts",
+          name: `${suite}[${i}]`,
+          file: `fuzz/${suite}.ts`,
           env: { FUZZ_ITERATION_INDEX: String(i) },
         });
       }
@@ -262,7 +271,7 @@ async function main() {
 
   // Start one ClickHouse server shared by every worker process (each connects
   // via FUZZ_CH_URL instead of starting its own container). "unit" needs none.
-  const needsClickHouse = suites.some((s) => s !== "unit") && !process.env.FUZZ_CH_URL;
+  const needsClickHouse = suites.some((s) => !LOCAL_SUITES.has(s)) && !process.env.FUZZ_CH_URL;
   if (needsClickHouse) {
     const ch = await startClickHouse();
     process.env.FUZZ_CH_URL = ch.url;

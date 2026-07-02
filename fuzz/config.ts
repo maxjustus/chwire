@@ -109,13 +109,16 @@ export function logFuzzError(ctx: FuzzErrorContext, err: unknown): void {
   console.error(lines.join("\n"));
 }
 
-export function logConfig(testType: "unit" | "http" | "tcp" | "generated"): void {
+export function logConfig(
+  testType: "unit" | "http" | "tcp" | "generated" | "corruption" | "insert",
+): void {
   let mode = `iterations=${config.iterations}`;
   const iterIdx = getIterationIndex();
   if (iterIdx !== null) {
     mode = `iteration=${iterIdx + 1}/${config.iterations}`;
   }
 
-  const compressions = testType === "unit" ? "n/a" : JSON.stringify(config.compressions);
+  const local = testType === "unit" || testType === "corruption" || testType === "insert";
+  const compressions = local ? "n/a" : JSON.stringify(config.compressions);
   console.log(`[fuzz ${testType}] ${mode}, compressions=${compressions}, rows=${config.rows}`);
 }
