@@ -241,7 +241,7 @@ describe("Variant", () => {
     assert.deepStrictEqual(decodedRows[2]![0], new VariantValue(1, 123n));
   });
 
-  it("round-trips bare numbers that fit only the wider of two numeric arms", async () => {
+  it("round-trips bare numbers like 300 and -5 in Variant(Int64, UInt8)", async () => {
     // Arms sort alphabetically, so Int64 precedes UInt8 and takes all bare
     // numbers; 300 and -5 would throw if matched against UInt8.
     const columns: ColumnDef[] = [{ name: "v", type: "Variant(Int64, UInt8)" }];
