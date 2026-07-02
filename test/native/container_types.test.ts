@@ -472,6 +472,20 @@ describe("JSON", () => {
     assert.strictEqual(obj0.skipped, 5);
   });
 
+  it("parses dotted JSON paths with quoted segments", async () => {
+    // ClickHouse accepts per-segment quoting (JSON(`sp ace`.s0 Int64)) and
+    // canonicalizes it to a whole-quoted path (JSON(`sp ace.s0` Int64)); both
+    // spellings must parse to the same dotted path.
+    for (const type of ["JSON(`sp ace`.s0 UInt32)", "JSON(`sp ace.s0` UInt32)"]) {
+      const columns: ColumnDef[] = [{ name: "j", type }];
+      const rows = [[{ "sp ace.s0": 9 }]];
+      const encoded = encodeNativeRows(columns, rows);
+      const decodedRows = toArrayRows(decodeBatch(encoded));
+      const obj0 = decodedRows[0]![0] as Record<string, unknown>;
+      assert.strictEqual(obj0["sp ace.s0"], 9, `for ${type}`);
+    }
+  });
+
   it("keeps a typed path literally named SKIP when backtick-quoted", async () => {
     // ClickHouse distinguishes the quoted path `SKIP` from the SKIP directive
     // (CREATE TABLE (v JSON(`SKIP` Int64, SKIP b)) canonicalizes to exactly

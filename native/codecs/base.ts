@@ -94,42 +94,73 @@ const IDENT_ESCAPES: Record<string, string> = {
 };
 
 /**
- * Split a "name Type" element into name and type. Names are either bare
- * identifiers that may contain dots (JSON nested paths like `a.b.c`) or, when the
- * name has characters ClickHouse must quote, a backtick-quoted string (`` `a.b` ``).
- * Inside the quotes ClickHouse renders a literal backtick/backslash/control char
- * backslash-escaped (`` `a\`b` ``); a doubled backtick escaping a literal one is
- * also accepted on input. A bare type with no name (a Tuple element, a config
- * param) returns name=null.
+ * Split a "name Type" element into name and type. A name is a dotted path of
+ * segments (JSON nested paths like `a.b.c`), each segment either a bare
+ * identifier or, when it has characters ClickHouse must quote, backtick-quoted
+ * (`` `sp ace`.s0 ``; ClickHouse also canonicalizes whole paths to a single
+ * quoted `` `sp ace.s0` ``, where the dots still mean nesting). Inside quotes a
+ * literal backtick/backslash/control char is backslash-escaped (`` `a\`b` ``); a
+ * doubled backtick escaping a literal one is also accepted on input. A bare type
+ * with no name (a Tuple element, a config param) returns name=null.
  */
 function parseNamedElement(part: string): NamedElement {
-  if (part.startsWith("`")) {
-    let name = "";
-    let i = 1;
-    for (; i < part.length; i++) {
-      if (part[i] === "\\" && i + 1 < part.length) {
-        const next = part[i + 1]!;
-        name += IDENT_ESCAPES[next] ?? next;
-        i++;
-        continue;
-      }
-      if (part[i] === "`") {
-        if (part[i + 1] === "`") {
-          name += "`";
-          i++;
+  const path = scanNamePath(part);
+  if (path && /\s/.test(part[path.end] ?? "")) {
+    const type = part.slice(path.end).trim();
+    if (type) return { name: path.name, type, quoted: path.quoted };
+  }
+  return { name: null, type: part, quoted: false };
+}
+
+/**
+ * Scan a dotted identifier path (segments bare or backtick-quoted) from the
+ * start of `part`. Returns the decoded name, the offset just past it, and
+ * whether any segment was quoted; null when `part` does not start with one.
+ */
+function scanNamePath(part: string): { name: string; end: number; quoted: boolean } | null {
+  let i = 0;
+  let name = "";
+  let quoted = false;
+  while (true) {
+    if (part[i] === "`") {
+      quoted = true;
+      i++;
+      let closed = false;
+      while (i < part.length) {
+        const c = part[i]!;
+        if (c === "\\" && i + 1 < part.length) {
+          const next = part[i + 1]!;
+          name += IDENT_ESCAPES[next] ?? next;
+          i += 2;
           continue;
         }
-        i++; // consume the closing backtick
-        break;
+        if (c === "`") {
+          if (part[i + 1] === "`") {
+            name += "`";
+            i += 2;
+            continue;
+          }
+          i++; // consume the closing backtick
+          closed = true;
+          break;
+        }
+        name += c;
+        i++;
       }
-      name += part[i];
+      if (!closed) return null;
+    } else {
+      const m = /^[a-z_][a-z0-9_]*/i.exec(part.slice(i));
+      if (!m) return null;
+      name += m[0];
+      i += m[0].length;
     }
-    const type = part.slice(i).trim();
-    return type ? { name, type, quoted: true } : { name: null, type: part, quoted: false };
+    if (part[i] === ".") {
+      name += ".";
+      i++;
+      continue;
+    }
+    return { name, end: i, quoted };
   }
-  const match = part.match(/^([a-z_][a-z0-9_]*(?:\.[a-z_][a-z0-9_]*)*)\s+(.+)$/i);
-  if (match) return { name: match[1]!, type: match[2]!, quoted: false };
-  return { name: null, type: part, quoted: false };
 }
 
 // Extracts the content between the outermost parentheses: "Array(Int32)" -> "Int32"
