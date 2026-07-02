@@ -357,20 +357,38 @@ export class DynamicCodec implements Codec {
   }
 
   fromValues(values: unknown[]): DynamicColumn {
+    return this.build(values, null, values.length);
+  }
+
+  /**
+   * Build a column from sparse data: `values[j]` belongs to row
+   * `rowIndices[j]`; every other row is null. `rowIndices === null` means
+   * identity (`values[j]` is row `j`), with rows past `values.length` null.
+   * Lets JsonCodec scatter only the keys a row actually has instead of
+   * materializing a dense rows-length array per path.
+   */
+  fromSparse(rowIndices: number[] | null, values: unknown[], rows: number): DynamicColumn {
+    return this.build(values, rowIndices, rows);
+  }
+
+  private build(values: unknown[], rowIndices: number[] | null, rows: number): DynamicColumn {
+    const NULL_SENTINEL = 0xffffffff;
     const typeIndex = new Map<string, number>();
     const typeOrder: string[] = [];
     const typeValues: unknown[][] = [];
-    const n = values.length;
-    // The final discriminator width depends on the type count, which is only
-    // known after the scan; collect wide and narrow at the end.
-    const wideDiscs = new Uint32Array(n);
-    // nullDisc is set after the loop once we know typeOrder.length;
-    // track null positions to back-fill in one scan.
+    const k = values.length;
+    // The discriminator width depends on the type count, which is only known
+    // after the scan; collect wide and narrow at the end. In the dense case
+    // (k === rows) discriminators are written in place; sparse input scans
+    // into a scratch array and scatters to final row positions afterwards.
+    const wide = new Uint32Array(rows);
+    const discs = rowIndices ? new Uint32Array(k) : wide;
     let hasNulls = false;
 
-    for (let i = 0; i < n; i++) {
-      const v = values[i];
+    for (let j = 0; j < k; j++) {
+      const v = values[j];
       if (v == null) {
+        discs[j] = NULL_SENTINEL;
         hasNulls = true;
         continue;
       }
@@ -384,24 +402,33 @@ export class DynamicCodec implements Codec {
         typeOrder.push(vType);
         typeValues.push([]);
       }
-      wideDiscs[i] = idx;
+      discs[j] = idx;
       typeValues[idx]!.push(actual);
     }
 
-    if (hasNulls) {
-      const nullDisc = typeOrder.length;
-      for (let i = 0; i < n; i++) {
-        if (values[i] == null) wideDiscs[i] = nullDisc;
+    const nullDisc = typeOrder.length;
+    if (rowIndices) {
+      if (nullDisc !== 0) wide.fill(nullDisc);
+      for (let j = 0; j < k; j++) {
+        const d = discs[j]!;
+        wide[rowIndices[j]!] = d === NULL_SENTINEL ? nullDisc : d;
       }
+    } else {
+      if (hasNulls) {
+        for (let i = 0; i < k; i++) {
+          if (wide[i] === NULL_SENTINEL) wide[i] = nullDisc;
+        }
+      }
+      if (k < rows && nullDisc !== 0) wide.fill(nullDisc, k);
     }
 
     // Server-side, types beyond max_types overflow into the shared variant on
     // unflatten, so any count the index width can address is legal.
-    const Ctor = smallestIndexArrayCtor(typeOrder.length + 1);
-    const discriminators = Ctor === Uint32Array ? wideDiscs : new Ctor(wideDiscs);
+    const Ctor = smallestIndexArrayCtor(nullDisc + 1);
+    const discriminators = Ctor === Uint32Array ? wide : new Ctor(wide);
 
     const groups = new Map<number, Column>();
-    for (let ti = 0; ti < typeOrder.length; ti++) {
+    for (let ti = 0; ti < nullDisc; ti++) {
       groups.set(ti, this.resolveCodec(typeOrder[ti]!).fromValues(typeValues[ti]!));
     }
 
@@ -601,7 +628,10 @@ export class JsonCodec implements Codec {
   fromValues(values: unknown[]): JsonColumn {
     const n = values.length;
     const typedPathArrays = this.typedPaths.map(() => new Array<unknown>(n).fill(null));
-    const dynamicPathArrays = new Map<string, unknown[]>();
+    // rows === null means the path has appeared in every row so far (identity
+    // indices); it is materialized only when a gap shows up, so fully-dense
+    // paths never allocate an index array.
+    const dynamicPathEntries = new Map<string, { rows: number[] | null; values: unknown[] }>();
     const dynamicPathOrder: string[] = [];
 
     for (let i = 0; i < n; i++) {
@@ -621,13 +651,17 @@ export class JsonCodec implements Codec {
 
       for (const key of Object.keys(obj)) {
         if (this.typedPathNames.has(key)) continue;
-        let arr = dynamicPathArrays.get(key);
-        if (!arr) {
-          arr = new Array<unknown>(n).fill(null);
-          dynamicPathArrays.set(key, arr);
+        let entry = dynamicPathEntries.get(key);
+        if (!entry) {
+          entry = { rows: null, values: [] };
+          dynamicPathEntries.set(key, entry);
           dynamicPathOrder.push(key);
         }
-        arr[i] = obj[key];
+        if (entry.rows === null && entry.values.length !== i) {
+          entry.rows = Array.from({ length: entry.values.length }, (_, j) => j);
+        }
+        entry.rows?.push(i);
+        entry.values.push(obj[key]);
       }
     }
 
@@ -641,7 +675,8 @@ export class JsonCodec implements Codec {
 
     const dynCodec = new DynamicCodec(this.resolveCodec);
     for (const path of dynamicPathOrder) {
-      pathColumns.set(path, dynCodec.fromValues(dynamicPathArrays.get(path)!));
+      const entry = dynamicPathEntries.get(path)!;
+      pathColumns.set(path, dynCodec.fromSparse(entry.rows, entry.values, n));
     }
 
     return this.assembleColumn(pathColumns, dynamicPathOrder, n);

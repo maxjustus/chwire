@@ -437,6 +437,36 @@ describe("JSON", () => {
     assert.strictEqual(obj2.age, 40n);
   });
 
+  it("encodes JSON paths that are dense, prefix-only, late, and explicitly null", async () => {
+    const columns: ColumnDef[] = [{ name: "j", type: "JSON" }];
+    const rows = [
+      [{ dense: 1, prefix: "a" }],
+      [{ dense: 2, prefix: "b", nul: null }],
+      [{ dense: 3, late: "y" }],
+      [{ dense: 4, late: "z", nul: "x" }],
+    ];
+    const encoded = encodeNativeRows(columns, rows);
+    const decodedRows = toArrayRows(decodeBatch(encoded));
+    const objs = decodedRows.map((r) => r![0] as Record<string, unknown>);
+
+    assert.deepStrictEqual(
+      objs.map((o) => o.dense),
+      [1n, 2n, 3n, 4n],
+    );
+    assert.deepStrictEqual(
+      objs.map((o) => o.prefix),
+      ["a", "b", undefined, undefined],
+    );
+    assert.deepStrictEqual(
+      objs.map((o) => o.late),
+      [undefined, undefined, "y", "z"],
+    );
+    assert.deepStrictEqual(
+      objs.map((o) => o.nul),
+      [undefined, undefined, undefined, "x"],
+    );
+  });
+
   it("encodes empty JSON objects", async () => {
     const columns: ColumnDef[] = [{ name: "j", type: "JSON" }];
     const rows = [[{}], [{}]];
