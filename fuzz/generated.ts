@@ -20,18 +20,28 @@
 import { describe, it } from "node:test";
 import { collectText, init, query } from "../client.ts";
 import {
+  type Codec,
   extractTypeArgs,
   type GenContext,
   parseTypeList,
   type Rng,
 } from "../native/codecs/base.ts";
 import type { JsonCodec } from "../native/codecs/dynamic.ts";
-import { DynamicValue, getCodec, VariantValue } from "../native/index.ts";
+import {
+  type ColumnDef,
+  decodeNativeBlock,
+  DynamicValue,
+  encodeNative,
+  getCodec,
+  VariantValue,
+} from "../native/index.ts";
+import { batchFromRows } from "../native/table.ts";
 import { startClickHouse, stopClickHouse } from "../test/setup.ts";
 import { type Compression, config, getIterationIndex, logConfig, logFuzzError } from "./config.ts";
 import { genType } from "./gen-type.ts";
+import { rerenderCells } from "./rerender.ts";
 import { makeRng } from "./rng.ts";
-import { COMPLEX_TYPE_SETTINGS, type Conn, roundTripCells } from "./round-trip.ts";
+import { COMPLEX_TYPE_SETTINGS, type Conn, roundTripCells, stringify } from "./round-trip.ts";
 import { consume, unTsvEscape, uniqueSuffix } from "./util.ts";
 
 logConfig("generated");
@@ -118,6 +128,7 @@ const SUBSTREAM_SALT = {
   "type-roll": 0x5bd1e995,
   "dynamic-pool": 0x2545f491,
   "dup-column": 0x1b873593,
+  rerender: 0x85ebca6b,
 } as const;
 
 /** A deterministic RNG substream derived from an iteration seed for one purpose. */
@@ -775,6 +786,39 @@ function generateJsonCells(
 }
 
 /**
+ * In-process re-render oracle: rewrite the canonical cells into alternate
+ * accepted input forms (fuzz/rerender.ts), feed them through fromValues via
+ * encodeNative, decode, and assert the result still compares equal to the
+ * CANONICAL cells. A coercion branch that silently corrupts an alternate form
+ * shows up here as a compare mismatch before any server round-trip.
+ */
+function assertRerenderRoundTrip(
+  codec: Codec,
+  declaredType: string,
+  cells: unknown[],
+  rng: Rng,
+  replayHint: string,
+): void {
+  const altCells = rerenderCells(declaredType, cells, rng);
+  const schema: ColumnDef[] = [{ name: "v", type: declaredType }];
+  const encoded = encodeNative(
+    batchFromRows(
+      schema,
+      altCells.map((c) => [c]),
+    ),
+  );
+  const decoded = [...decodeNativeBlock(encoded, 0, { mapAsArray: true }).columnData[0]!];
+  for (let r = 0; r < cells.length; r++) {
+    if (!codec.compare(cells[r], decoded[r])) {
+      throw new Error(
+        `re-render mismatch for ${declaredType} (${replayHint}):\n` +
+          `  row ${r}: canonical ${stringify(cells[r])}, rewritten ${stringify(altCells[r])}, decoded ${stringify(decoded[r])}`,
+      );
+    }
+  }
+}
+
+/**
  * Run the Tier-1 oracle for a single generated column and assert compare()
  * holds for every row. Generates the per-row cells for the rolled kind, then
  * delegates the CREATE/INSERT/SELECT/compare round-trip to roundTripCells.
@@ -822,6 +866,19 @@ async function runColumn(opts: {
     !opts.preCreated && subStream(seed, "dup-column").int(0, 3) === 0
       ? generateCells(kind, canonicalType, rng, rowCount, opts.dynamicTypePool)
       : undefined;
+
+  // Variant cells need arm-aware rewriting and JSON objects carry untyped
+  // dynamic paths, so the re-render oracle covers the other kinds (Dynamic cells
+  // carry their concrete type on the DynamicValue, so they are rewritable).
+  if (kind === "scalar" || kind === "composite" || kind === "dynamic") {
+    assertRerenderRoundTrip(
+      codec,
+      canonicalType,
+      cells,
+      subStream(seed, "rerender"),
+      `requested ${columnType}, seed=${seed}`,
+    );
+  }
 
   await roundTripCells({
     declaredType: canonicalType,
