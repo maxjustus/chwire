@@ -33,9 +33,18 @@ export function parseTypeList(inner: string): string[] {
   let depth = 0;
   let inQuote = false;
   let current = "";
-  for (const char of inner) {
+  for (let i = 0; i < inner.length; i++) {
+    const char = inner[i]!;
     // A backtick-quoted name (e.g. a JSON path `a.b`) may contain commas/parens
-    // that must not be treated as list or type delimiters.
+    // that must not be treated as list or type delimiters. Inside quotes a
+    // backslash escapes the next character (ClickHouse's canonical rendering of
+    // a literal backtick/backslash in an identifier), so it must not toggle the
+    // quote state or be split on.
+    if (inQuote && char === "\\" && i + 1 < inner.length) {
+      current += char + inner[i + 1];
+      i++;
+      continue;
+    }
     if (char === "`") inQuote = !inQuote;
     if (!inQuote) {
       if (char === "(") depth++;
@@ -57,17 +66,41 @@ export function parseTupleElements(inner: string): { name: string | null; type: 
 }
 
 /**
+ * ClickHouse escape sequences valid inside a backtick-quoted identifier. Any
+ * other escaped character (`` \` ``, `\\`, `\'`) decodes to the character itself,
+ * matching ClickHouse's parser.
+ */
+const IDENT_ESCAPES: Record<string, string> = {
+  n: "\n",
+  r: "\r",
+  t: "\t",
+  b: "\b",
+  f: "\f",
+  a: "\x07",
+  v: "\v",
+  "0": "\0",
+};
+
+/**
  * Split a "name Type" element into name and type. Names are either bare
  * identifiers that may contain dots (JSON nested paths like `a.b.c`) or, when the
- * name has characters ClickHouse must quote, a backtick-quoted string (`` `a.b` ``,
- * a doubled backtick escaping a literal one). A bare type with no name (a Tuple
- * element, a config param) returns name=null.
+ * name has characters ClickHouse must quote, a backtick-quoted string (`` `a.b` ``).
+ * Inside the quotes ClickHouse renders a literal backtick/backslash/control char
+ * backslash-escaped (`` `a\`b` ``); a doubled backtick escaping a literal one is
+ * also accepted on input. A bare type with no name (a Tuple element, a config
+ * param) returns name=null.
  */
 function parseNamedElement(part: string): { name: string | null; type: string } {
   if (part.startsWith("`")) {
     let name = "";
     let i = 1;
     for (; i < part.length; i++) {
+      if (part[i] === "\\" && i + 1 < part.length) {
+        const next = part[i + 1]!;
+        name += IDENT_ESCAPES[next] ?? next;
+        i++;
+        continue;
+      }
       if (part[i] === "`") {
         if (part[i + 1] === "`") {
           name += "`";

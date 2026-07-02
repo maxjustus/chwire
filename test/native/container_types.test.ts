@@ -892,6 +892,23 @@ describe("named Tuple field detection", () => {
     assert.strictEqual(row.StringId, "hello");
   });
 
+  // Regression: ClickHouse renders a literal backtick/backslash in a quoted
+  // identifier backslash-escaped (Tuple(`a\`b` Int8)). The parser only understood
+  // doubled backticks, so a SELECT header containing such a type failed to decode
+  // ("Unknown type: ...").
+  it("parses backslash-escaped backticks and backslashes in quoted field names", async () => {
+    const type = "Tuple(`back\\`tick` Int8, `back\\\\slash` Int8, `new\\nline` Int8)";
+    const columns: ColumnDef[] = [{ name: "t", type }];
+    const rows = [[{ "back`tick": 1, "back\\slash": 2, "new\nline": 3 }]];
+    const encoded = encodeNativeRows(columns, rows);
+    const decoded = decodeBatch(encoded);
+
+    const row = decoded.get(0).t as Record<string, unknown>;
+    assert.strictEqual(row["back`tick"], 1);
+    assert.strictEqual(row["back\\slash"], 2);
+    assert.strictEqual(row["new\nline"], 3);
+  });
+
   it("treats a field named exactly as a type keyword as a named field", async () => {
     // "UUID" is both a type keyword and a valid field name
     const columns: ColumnDef[] = [{ name: "t", type: "Tuple(UUID String)" }];
