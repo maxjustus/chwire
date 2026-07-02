@@ -603,6 +603,15 @@ describe("additional scalar types", () => {
     assert.throws(() => encodeNativeRows(columns, [["1.123"]]), /precision/i);
   });
 
+  it("accepts Decimal values with exact trailing zeros beyond scale", async () => {
+    const columns: ColumnDef[] = [{ name: "d", type: "Decimal32(1)" }];
+    const encoded = encodeNativeRows(columns, [["1.50"], ["-2.000"], ["3"]]);
+    const decoded = toArrayRows(decodeBatch(encoded));
+    assert.deepStrictEqual(decoded, [["1.5"], ["-2.0"], ["3.0"]]);
+    // Non-zero digits beyond scale still throw.
+    assert.throws(() => encodeNativeRows(columns, [["1.51"]]), /precision/i);
+  });
+
   it("encodes Enum8 and supports both decode modes", async () => {
     const columns: ColumnDef[] = [{ name: "e", type: "Enum8('a' = 1, 'b' = 2)" }];
     const rows = [[1], [2], [1]];

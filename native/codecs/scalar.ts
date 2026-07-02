@@ -120,11 +120,16 @@ function parseDecimalToScaledBigInt(str: string, scale: number): bigint {
     fracP = str.slice(dot + 1);
   }
 
+  // Trailing zeros beyond the scale are exact, not precision loss ("1.50" fits scale 1).
+  if (fracP.length > scale) {
+    const trimmed = fracP.replace(/0+$/, "");
+    if (trimmed.length > scale)
+      throw new TypeError(
+        `Decimal precision loss: "${str}" has ${trimmed.length} significant fractional digits but scale is ${scale}`,
+      );
+    fracP = trimmed;
+  }
   if (fracP.length < scale) fracP = fracP.padEnd(scale, "0");
-  else if (fracP.length > scale)
-    throw new TypeError(
-      `Decimal precision loss: "${str}" has ${fracP.length} fractional digits but scale is ${scale}`,
-    );
 
   const val = BigInt(intP + fracP);
   return neg ? -val : val;
