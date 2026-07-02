@@ -26,7 +26,7 @@ import {
   type Rng,
 } from "../native/codecs/base.ts";
 import type { JsonCodec } from "../native/codecs/dynamic.ts";
-import { DynamicValue, getCodec } from "../native/index.ts";
+import { DynamicValue, getCodec, VariantValue } from "../native/index.ts";
 import { startClickHouse, stopClickHouse } from "../test/setup.ts";
 import { type Compression, config, getIterationIndex, logConfig, logFuzzError } from "./config.ts";
 import { genType } from "./gen-type.ts";
@@ -652,13 +652,16 @@ function generateCells(
 
   // Top-level Variant routes through the shape scheduler; a Variant nested in a
   // composite (Array(Variant) etc.) falls through to the generic recursive
-  // generate below, where VariantCodec.generate emits each [disc, value] cell.
+  // generate below, where VariantCodec.generate emits each VariantValue cell.
   if (kind === "variant" && canonicalType.startsWith("Variant")) {
     const armCodecs = parseTypeList(extractTypeArgs(canonicalType)).map((t) => getCodec(t));
-    return shapedCells(shape, rowCount, armCodecs.length, rng, (sel) => [
-      sel,
-      armCodecs[sel].generate(ctx()),
-    ]);
+    return shapedCells(
+      shape,
+      rowCount,
+      armCodecs.length,
+      rng,
+      (sel) => new VariantValue(sel, armCodecs[sel].generate(ctx())),
+    );
   }
 
   // Top-level Dynamic (bare or capped) routes through the shape scheduler; a

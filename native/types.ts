@@ -300,3 +300,19 @@ export class DynamicValue {
     this.value = value;
   }
 }
+
+/**
+ * A Variant cell tagged with its arm discriminator (in the ClickHouse-sorted
+ * arm order), e.g. `new VariantValue(1, 42n)`. `VariantColumn.get` returns
+ * these on decode; on encode, wrap a value to force a specific arm instead of
+ * relying on runtime-type inference.
+ */
+export class VariantValue {
+  readonly discriminator: number;
+  readonly value: unknown;
+
+  constructor(discriminator: number, value: unknown) {
+    this.discriminator = discriminator;
+    this.value = value;
+  }
+}

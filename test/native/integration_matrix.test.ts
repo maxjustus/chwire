@@ -9,6 +9,7 @@ import { collectBytes, init, insert, query } from "../../client.ts";
 import type { ColumnDef } from "../../native/index.ts";
 import { startClickHouse, stopClickHouse } from "../setup.ts";
 import { consume, decodeBatch, encodeNativeRows, toArrayRows } from "../test_utils.ts";
+import { VariantValue } from "../../native/types.ts";
 
 describe("Native integration type matrix", { timeout: 120000 }, () => {
   let url: string;
@@ -76,7 +77,7 @@ describe("Native integration type matrix", { timeout: 120000 }, () => {
           "active",
           [1n, -2n],
           { a: 1n, b: 2n },
-          [0, "hello"],
+          new VariantValue(0, "hello"),
           [1.5, 2.5],
         ],
         [
@@ -89,7 +90,7 @@ describe("Native integration type matrix", { timeout: 120000 }, () => {
           null,
           [],
           {},
-          [1, 42n],
+          new VariantValue(1, 42n),
           [0.0, 0.0],
         ],
       ];
@@ -137,8 +138,8 @@ describe("Native integration type matrix", { timeout: 120000 }, () => {
       ]);
       assert.deepStrictEqual(Array.from(map1), []);
 
-      assert.deepStrictEqual(decodedRows[0]![9], [0, "hello"]);
-      assert.deepStrictEqual(decodedRows[1]![9], [1, 42n]);
+      assert.deepStrictEqual(decodedRows[0]![9], new VariantValue(0, "hello"));
+      assert.deepStrictEqual(decodedRows[1]![9], new VariantValue(1, 42n));
       assert.deepStrictEqual(decodedRows[0]![10], [1.5, 2.5]);
       assert.deepStrictEqual(decodedRows[1]![10], [0.0, 0.0]);
     } finally {

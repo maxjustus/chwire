@@ -1,6 +1,7 @@
 import assert from "node:assert";
 import { describe, it } from "node:test";
 import { decodeBatch, encodeNativeRows, toArrayRows } from "../test_utils.ts";
+import { VariantValue } from "../../native/types.ts";
 
 type MatrixCase = {
   type: string;
@@ -174,8 +175,8 @@ describe("Native type matrix", () => {
       },
       {
         type: "Variant(String, UInt64)",
-        value: [1, 42n],
-        assert: (v) => assert.deepStrictEqual(v, [1, 42n]),
+        value: new VariantValue(1, 42n),
+        assert: (v) => assert.deepStrictEqual(v, new VariantValue(1, 42n)),
       },
       {
         type: "Dynamic",

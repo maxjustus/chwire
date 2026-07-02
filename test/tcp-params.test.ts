@@ -1,6 +1,7 @@
 import assert from "node:assert";
 import { describe, it, before, after } from "node:test";
 import { TcpClient, type QueryParamValue } from "../tcp_client/client.ts";
+import { VariantValue } from "../native/types.ts";
 import { startClickHouse, stopClickHouse } from "./setup.ts";
 
 let ch: Awaited<ReturnType<typeof startClickHouse>>;
@@ -117,22 +118,20 @@ describe("TCP Query Parameters", { timeout: 60000 }, () => {
   });
 
   it("handles Variant param with string", async () => {
-    // Variant returns [discriminator, value] tuple
+    // Variant returns a VariantValue cell
     const result = await queryScalar("SELECT {v: Variant(String, Int64)}", {
       v: "hello",
     });
-    // Result is [discriminator, value] tuple
-    assert.ok(Array.isArray(result));
-    assert.strictEqual((result as unknown[])[1], "hello");
+    assert.ok(result instanceof VariantValue);
+    assert.strictEqual(result.value, "hello");
   });
 
   it("handles Variant param with small integer as Int8", async () => {
     const result = await queryScalar("SELECT {v: Variant(Int8, String)}", { v: 42 });
-    assert.ok(Array.isArray(result));
-    const arr = result as unknown[];
+    assert.ok(result instanceof VariantValue);
     // Int8 is discriminator 0 (first in type list)
-    assert.strictEqual(arr[0], 0);
-    assert.strictEqual(Number(arr[1]), 42);
+    assert.strictEqual(result.discriminator, 0);
+    assert.strictEqual(Number(result.value), 42);
   });
 
   // Dynamic type requires V3 serialization format - enabled via setting

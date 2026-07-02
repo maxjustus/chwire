@@ -35,6 +35,7 @@ export {
   type ColumnDef,
   type DecodeOptions,
   DynamicValue,
+  VariantValue,
   TEXT_DECODER,
 } from "./types.ts";
 

@@ -2,6 +2,7 @@ import assert from "node:assert";
 import { describe, it } from "node:test";
 import type { ColumnDef } from "../../native/index.ts";
 import { decodeBatch, encodeNativeRows, toArrayRows } from "../test_utils.ts";
+import { VariantValue } from "../../native/types.ts";
 
 describe("LowCardinality", () => {
   it("encodes LowCardinality(String)", async () => {
@@ -205,48 +206,48 @@ describe("Geo types", () => {
 describe("Variant", () => {
   it("encodes simple Variant(String, UInt64)", async () => {
     const columns: ColumnDef[] = [{ name: "v", type: "Variant(String, UInt64)" }];
-    // Values are [discriminator, value] tuples
+    // Values are VariantValue(discriminator, value) cells
     const rows = [
-      [[0, "hello"]], // String (disc 0)
-      [[1, 42n]], // UInt64 (disc 1)
-      [[0, "world"]], // String (disc 0)
+      [new VariantValue(0, "hello")], // String (disc 0)
+      [new VariantValue(1, 42n)], // UInt64 (disc 1)
+      [new VariantValue(0, "world")], // String (disc 0)
     ];
     const encoded = encodeNativeRows(columns, rows);
     const decoded = decodeBatch(encoded);
     const decodedRows = toArrayRows(decoded);
 
     assert.deepStrictEqual(decoded.columns, columns);
-    assert.deepStrictEqual(decodedRows[0]![0], [0, "hello"]);
-    assert.deepStrictEqual(decodedRows[1]![0], [1, 42n]);
-    assert.deepStrictEqual(decodedRows[2]![0], [0, "world"]);
+    assert.deepStrictEqual(decodedRows[0]![0], new VariantValue(0, "hello"));
+    assert.deepStrictEqual(decodedRows[1]![0], new VariantValue(1, 42n));
+    assert.deepStrictEqual(decodedRows[2]![0], new VariantValue(0, "world"));
   });
 
   it("encodes Variant with nulls", async () => {
     const columns: ColumnDef[] = [{ name: "v", type: "Variant(String, UInt64)" }];
     const rows = [
-      [[0, "test"]],
+      [new VariantValue(0, "test")],
       [null], // null discriminator (0xFF)
-      [[1, 123n]],
+      [new VariantValue(1, 123n)],
     ];
     const encoded = encodeNativeRows(columns, rows);
     const decoded = decodeBatch(encoded);
     const decodedRows = toArrayRows(decoded);
 
-    assert.deepStrictEqual(decodedRows[0]![0], [0, "test"]);
+    assert.deepStrictEqual(decodedRows[0]![0], new VariantValue(0, "test"));
     assert.strictEqual(decodedRows[1]![0], null);
-    assert.deepStrictEqual(decodedRows[2]![0], [1, 123n]);
+    assert.deepStrictEqual(decodedRows[2]![0], new VariantValue(1, 123n));
   });
 
   it("treats Variant undefined as null", async () => {
     const columns: ColumnDef[] = [{ name: "v", type: "Variant(String, UInt64)" }];
-    const rows = [[[0, "test"]], [undefined], [[1, 123n]]];
+    const rows = [[new VariantValue(0, "test")], [undefined], [new VariantValue(1, 123n)]];
     const encoded = encodeNativeRows(columns, rows);
     const decoded = decodeBatch(encoded);
     const decodedRows = toArrayRows(decoded);
 
-    assert.deepStrictEqual(decodedRows[0]![0], [0, "test"]);
+    assert.deepStrictEqual(decodedRows[0]![0], new VariantValue(0, "test"));
     assert.strictEqual(decodedRows[1]![0], null);
-    assert.deepStrictEqual(decodedRows[2]![0], [1, 123n]);
+    assert.deepStrictEqual(decodedRows[2]![0], new VariantValue(1, 123n));
   });
 
   it("encodes Variant with all nulls", async () => {
@@ -265,18 +266,18 @@ describe("Variant", () => {
   it("encodes Variant with complex nested types", async () => {
     const columns: ColumnDef[] = [{ name: "v", type: "Variant(Array(Int32), String)" }];
     const rows = [
-      [[0, [1, 2, 3]]], // Array(Int32)
-      [[1, "test"]], // String
-      [[0, []]], // Empty array
+      [new VariantValue(0, [1, 2, 3])], // Array(Int32)
+      [new VariantValue(1, "test")], // String
+      [new VariantValue(0, [])], // Empty array
     ];
     const encoded = encodeNativeRows(columns, rows);
     const decoded = decodeBatch(encoded);
     const decodedRows = toArrayRows(decoded);
 
     // Arrays return plain arrays of values
-    assert.deepStrictEqual(decodedRows[0]![0], [0, [1, 2, 3]]);
-    assert.deepStrictEqual(decodedRows[1]![0], [1, "test"]);
-    assert.deepStrictEqual(decodedRows[2]![0], [0, []]);
+    assert.deepStrictEqual(decodedRows[0]![0], new VariantValue(0, [1, 2, 3]));
+    assert.deepStrictEqual(decodedRows[1]![0], new VariantValue(1, "test"));
+    assert.deepStrictEqual(decodedRows[2]![0], new VariantValue(0, []));
   });
 
   it("throws on unmatched Variant value type", () => {
@@ -291,6 +292,21 @@ describe("Variant", () => {
       () => encodeNativeRows(columns, [[() => {}]]),
       /Cannot match value of type function to any variant/,
     );
+  });
+
+  it("infers a plain [1, 5] as the Array arm, not a discriminator pair", async () => {
+    // Arms sort to [Array(Int64)=0, Int64=1]
+    const columns: ColumnDef[] = [{ name: "v", type: "Variant(Array(Int64), Int64)" }];
+    const encoded = encodeNativeRows(columns, [[[1, 5]]]);
+    const decodedRows = toArrayRows(decodeBatch(encoded));
+    assert.deepStrictEqual(decodedRows[0]![0], new VariantValue(0, [1n, 5n]));
+  });
+
+  it("VariantValue forces a specific arm", async () => {
+    const columns: ColumnDef[] = [{ name: "v", type: "Variant(Array(Int64), Int64)" }];
+    const encoded = encodeNativeRows(columns, [[new VariantValue(1, 5)]]);
+    const decodedRows = toArrayRows(decodeBatch(encoded));
+    assert.deepStrictEqual(decodedRows[0]![0], new VariantValue(1, 5n));
   });
 });
 

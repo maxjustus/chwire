@@ -8,7 +8,7 @@ import {
 } from "../columns.ts";
 import { isTypedArray } from "../coercion.ts";
 import { Dynamic, JSONFormat, Variant } from "../constants.ts";
-import { DynamicValue, type TypedArray } from "../types.ts";
+import { DynamicValue, type TypedArray, VariantValue } from "../types.ts";
 import { type BufferReader, BufferWriter } from "../io.ts";
 import type { DeserializerState } from "../serialization.ts";
 import {
@@ -167,17 +167,19 @@ export class VariantCodec implements Codec {
         discriminators[i] = Variant.NULL_DISCRIMINATOR;
         continue;
       }
-      const disc = this.primitiveDisc[typeof v];
-      if (disc !== undefined) {
-        discriminators[i] = disc;
-        variantValues[disc]!.push(v);
-      } else if (Array.isArray(v) && v.length === 2 && typeof v[0] === "number") {
-        const d = v[0] as number;
+      if (v instanceof VariantValue) {
+        const d = v.discriminator;
         if (d < 0 || d >= armCount) {
           throw new Error(`Invalid Variant discriminator ${d}, expected 0-${armCount - 1}`);
         }
         discriminators[i] = d;
-        variantValues[d]!.push(v[1]);
+        variantValues[d]!.push(v.value);
+        continue;
+      }
+      const disc = this.primitiveDisc[typeof v];
+      if (disc !== undefined) {
+        discriminators[i] = disc;
+        variantValues[disc]!.push(v);
       } else {
         const idx = this.findVariantIndex(v, this.typeStrings);
         discriminators[i] = idx;
@@ -236,24 +238,25 @@ export class VariantCodec implements Codec {
 
   toLiteral(value: unknown): string | typeof SQL_NULL {
     if (value == null) return SQL_NULL;
+    if (value instanceof VariantValue) {
+      return nullToLiteral(this.codecs[value.discriminator]!.toLiteral(value.value));
+    }
     const idx = this.findVariantIndex(value, this.typeStrings);
     return nullToLiteral(this.codecs[idx]!.toLiteral(value));
   }
 
-  generate(ctx: GenContext): [number, unknown] | null {
+  generate(ctx: GenContext): VariantValue | null {
     // Index N selects the NULL discriminator; 0..N-1 select an arm.
     const disc = ctx.rng.int(0, this.codecs.length);
     if (disc === this.codecs.length) return null;
-    return [disc, this.codecs[disc]!.generate(ctx.descend())];
+    return new VariantValue(disc, this.codecs[disc]!.generate(ctx.descend()));
   }
 
   compare(a: unknown, b: unknown): boolean {
     if (a === null || b === null) return a === b;
-    if (!Array.isArray(a) || !Array.isArray(b)) return false;
-    const [discA, valA] = a as [number, unknown];
-    const [discB, valB] = b as [number, unknown];
-    if (discA !== discB) return false;
-    return this.codecs[discA]!.compare(valA, valB);
+    if (!(a instanceof VariantValue) || !(b instanceof VariantValue)) return false;
+    if (a.discriminator !== b.discriminator) return false;
+    return this.codecs[a.discriminator]!.compare(a.value, b.value);
   }
 }
 

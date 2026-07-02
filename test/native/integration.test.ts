@@ -8,6 +8,7 @@ import { collectBytes, init, insert, query } from "../../client.ts";
 import type { ColumnDef } from "../../native/index.ts";
 import { startClickHouse, stopClickHouse } from "../setup.ts";
 import { consume, decodeBatch, encodeNativeRows, toArrayRows } from "../test_utils.ts";
+import { VariantValue } from "../../native/types.ts";
 
 describe("Native format integration", { timeout: 120000 }, () => {
   let url: string;
@@ -87,7 +88,7 @@ describe("Native format integration", { timeout: 120000 }, () => {
         new Date("2024-01-15T10:30:00.123Z"),
         "550e8400-e29b-41d4-a716-446655440000",
         "active",
-        [0, "hello"],
+        new VariantValue(0, "hello"),
       ],
       [
         2,
@@ -102,7 +103,7 @@ describe("Native format integration", { timeout: 120000 }, () => {
         new Date("2024-01-15T10:30:00.456Z"),
         "f47ac10b-58cc-4372-a567-0e02b2c3d479",
         "inactive",
-        [1, 42n],
+        new VariantValue(1, 42n),
       ],
     ];
 
@@ -142,7 +143,7 @@ describe("Native format integration", { timeout: 120000 }, () => {
     assert.strictEqual(map0.get("b"), 2);
 
     assert.deepStrictEqual(decodedRows[0]![8], [7, "x"]);
-    assert.deepStrictEqual(decodedRows[1]![12], [1, 42n]);
+    assert.deepStrictEqual(decodedRows[1]![12], new VariantValue(1, 42n));
 
     const ts0 = decodedRows[0]![9] as { toDate(): Date };
     assert.strictEqual(ts0.toDate().getTime(), new Date("2024-01-15T10:30:00.123Z").getTime());
