@@ -693,11 +693,17 @@ export class JsonCodec implements Codec {
     for (const tp of this.typedPaths) {
       const value = input[tp.name];
       if (value === undefined) {
-        throw new Error(`Missing typed path '${tp.name}' (declared in ${this.type})`);
+        throw new Error(
+          `Missing typed path '${tp.name}' (declared in ${this.type}); ` +
+            `pass an array of nulls for an all-null path`,
+        );
       }
       if (isArrayLike(value)) {
         pathColumns.set(tp.name, tp.codec.fromValues(value));
       } else {
+        // Exact-spelling match: codecs preserve caller spelling, so there is no
+        // canonical form to compare against, and whitespace-insensitive equality
+        // can false-positive on pathological names (`a UInt8` vs `aU Int8`).
         if (value.type !== tp.type) {
           throw new Error(
             `Type mismatch for typed path '${tp.name}': expected '${tp.type}', got '${value.type}'`,
@@ -712,16 +718,24 @@ export class JsonCodec implements Codec {
     for (const key of keys) {
       if (this.typedPathNames.has(key)) continue;
       const value = input[key]!;
-      if (isTypedArray(value)) {
-        throw new TypeError(
-          `Dynamic path '${key}' cannot be a TypedArray (type information is lost). ` +
-            `Use DynamicValue[] or a plain array instead.`,
-        );
+      // JS callers can pass anything; a non-arraylike is only usable when it is
+      // a genuine Dynamic column (any other shape loses per-value types).
+      const colType = isArrayLike(value) ? undefined : (value as Column).type;
+      if (typeof colType === "string" && colType.startsWith("Dynamic")) {
+        dynamicPathOrder.push(key);
+        pathColumns.set(key, value as Column);
+        continue;
       }
       if (!Array.isArray(value)) {
+        const got = isTypedArray(value)
+          ? "a TypedArray"
+          : typeof colType === "string"
+            ? `a '${colType}' column`
+            : `a ${typeof value}`;
         throw new TypeError(
-          `Dynamic path '${key}' cannot be a pre-built Column. ` +
-            `Use Array.from(column) to pass values.`,
+          `Dynamic path '${key}' must be a plain array or a Dynamic column, got ${got}. ` +
+            `TypedArrays and typed columns lose per-value type information; ` +
+            `use DynamicValue[] to pin types.`,
         );
       }
       dynamicPathOrder.push(key);

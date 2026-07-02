@@ -839,16 +839,36 @@ describe("JsonCodec.fromCols", () => {
     const codec = getCodec("JSON");
     assert.throws(
       () => codec.fromCols({ nums: new Float64Array([1, 2]) }),
-      /Dynamic path 'nums' cannot be a TypedArray/,
+      /Dynamic path 'nums' must be a plain array or a Dynamic column/,
     );
   });
 
-  it("Column on dynamic path throws", () => {
+  it("non-Dynamic Column on dynamic path throws", () => {
     const codec = getCodec("JSON");
     const innerCol = getCodec("String").fromValues(["a", "b"]);
     assert.throws(
       () => codec.fromCols({ name: innerCol }),
-      /Dynamic path 'name' cannot be a pre-built Column/,
+      /Dynamic path 'name' must be a plain array or a Dynamic column, got a 'String' column/,
+    );
+  });
+
+  it("Dynamic Column on dynamic path is accepted without re-shredding", () => {
+    const codec = getCodec("JSON");
+    const dynCol = getCodec("Dynamic").fromValues(["a", 42n, null]);
+    const col = codec.fromCols({ meta: dynCol });
+
+    assert.strictEqual(col.length, 3);
+    assert.strictEqual(col.getPath("meta"), dynCol);
+    const batch = batchFromCols({ data: col });
+    const decoded = decodeBatch(encodeNative(batch));
+    assert.deepStrictEqual(toArrayRows(decoded), toArrayRows(batch));
+  });
+
+  it("non-array value on dynamic path throws", () => {
+    const codec = getCodec("JSON");
+    assert.throws(
+      () => codec.fromCols({ s: "abc" as unknown as unknown[] }),
+      /Dynamic path 's' must be a plain array or a Dynamic column/,
     );
   });
 
