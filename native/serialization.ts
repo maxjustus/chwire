@@ -44,7 +44,7 @@ export const DEFAULT_DENSE_NODE: SerializationNode = { kind: 0, children: [] };
  * State maintained during a block deserialization.
  */
 export interface DeserializerState {
-  serNode: SerializationNode;
+  serializationNode: SerializationNode;
   /**
    * Tracks partial sparse groups across granules/blocks.
    *

@@ -9,7 +9,7 @@ import assert from "node:assert";
 import { describe, it } from "node:test";
 import { getCodec } from "../../native/codecs.ts";
 import { BufferReader, BufferWriter } from "../../native/io.ts";
-import { DEFAULT_DENSE_NODE, type DeserializerState } from "../../native/serialization.ts";
+import { defaultDeserializerState } from "../../native/codecs/base.ts";
 
 function roundTrip(type: string, values: unknown[]): unknown[] {
   const encCodec = getCodec(type);
@@ -21,8 +21,7 @@ function roundTrip(type: string, values: unknown[]): unknown[] {
   const decCodec = getCodec(type);
   const reader = new BufferReader(writer.finish());
   decCodec.readPrefix?.(reader);
-  const state: DeserializerState = { serNode: DEFAULT_DENSE_NODE, sparseRuntime: new Map() };
-  const decoded = decCodec.decode(reader, values.length, state);
+  const decoded = decCodec.decode(reader, values.length, defaultDeserializerState());
   return Array.from(decoded);
 }
 
@@ -61,8 +60,7 @@ describe("codec cache and stateful codecs", () => {
     const decodeBlock = (bytes: Uint8Array, rows: number) => {
       const reader = new BufferReader(bytes);
       codec.readPrefix?.(reader);
-      const state: DeserializerState = { serNode: DEFAULT_DENSE_NODE, sparseRuntime: new Map() };
-      return Array.from(codec.decode(reader, rows, state));
+      return Array.from(codec.decode(reader, rows, defaultDeserializerState()));
     };
     assert.deepStrictEqual(decodeBlock(encodeBlock([{ a: 1n }]), 1), [{ a: 1n }]);
     assert.deepStrictEqual(decodeBlock(encodeBlock([{ b: "x" }]), 1), [{ b: "x" }]);

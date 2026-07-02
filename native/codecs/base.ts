@@ -324,7 +324,7 @@ export function columnFromRows(
 
 export function defaultDeserializerState(): DeserializerState {
   return {
-    serNode: DEFAULT_DENSE_NODE,
+    serializationNode: DEFAULT_DENSE_NODE,
     sparseRuntime: new Map(),
   };
 }
@@ -337,7 +337,7 @@ export function defaultDeserializerState(): DeserializerState {
 export function childState(state: DeserializerState, index: number): DeserializerState {
   return {
     ...state,
-    serNode: state.serNode.children[index] ?? DEFAULT_DENSE_NODE,
+    serializationNode: state.serializationNode.children[index] ?? DEFAULT_DENSE_NODE,
   };
 }
 
@@ -374,7 +374,7 @@ export function readKindsMany(reader: BufferReader, children: readonly Codec[]):
 
 /**
  * Read sparse-encoded column data and materialize to dense array.
- * Only called from BaseCodec.decode() when serNode.kind is Sparse.
+ * Only called from BaseCodec.decode() when serializationNode.kind is Sparse.
  */
 function readSparse(
   codec: BaseCodec,
@@ -382,7 +382,7 @@ function readSparse(
   rows: number,
   state: DeserializerState,
 ): Column {
-  const node = state.serNode;
+  const node = state.serializationNode;
   const [initialTrailing, hasValueAfter] = state.sparseRuntime.get(node) || [0, false];
 
   let trailingDefaultCount = initialTrailing;
@@ -554,7 +554,7 @@ export abstract class BaseCodec implements Codec {
   }
 
   decode(reader: BufferReader, rows: number, state: DeserializerState): Column {
-    if (state.serNode.kind === SerializationKind.Sparse) {
+    if (state.serializationNode.kind === SerializationKind.Sparse) {
       return readSparse(this, reader, rows, state);
     }
     return this.decodeDense(reader, rows, state);
