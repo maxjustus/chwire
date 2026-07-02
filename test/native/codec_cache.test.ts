@@ -46,6 +46,28 @@ describe("codec cache and stateful codecs", () => {
     assert.deepStrictEqual(second, [new Map([["b", "str"]])]);
   });
 
+  it("JSON codec instance drops stale dynamic-path codecs between prefixes", () => {
+    const codec = getCodec("JSON");
+    // First block establishes dynamic path "a"; the second has only "b".
+    // A stale "a" entry in the codec's per-block state must not leak into
+    // the second decode.
+    const encodeBlock = (values: unknown[]) => {
+      const col = codec.fromValues(values);
+      const writer = new BufferWriter(256);
+      codec.writePrefix?.(writer, col);
+      writer.write(codec.encode(col));
+      return writer.finish();
+    };
+    const decodeBlock = (bytes: Uint8Array, rows: number) => {
+      const reader = new BufferReader(bytes);
+      codec.readPrefix?.(reader);
+      const state: DeserializerState = { serNode: DEFAULT_DENSE_NODE, sparseRuntime: new Map() };
+      return Array.from(codec.decode(reader, rows, state));
+    };
+    assert.deepStrictEqual(decodeBlock(encodeBlock([{ a: 1n }]), 1), [{ a: 1n }]);
+    assert.deepStrictEqual(decodeBlock(encodeBlock([{ b: "x" }]), 1), [{ b: "x" }]);
+  });
+
   it("round-trips Array(JSON) with dynamic paths", () => {
     const values = [[{ p: 1n }, { q: "x" }]];
     const decoded = roundTrip("Array(JSON)", values);

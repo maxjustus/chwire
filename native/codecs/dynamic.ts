@@ -491,6 +491,7 @@ export class JsonCodec implements Codec {
 
   writePrefix(writer: BufferWriter, col: Column) {
     const json = col as JsonColumn;
+    this.dynamicCodecs.clear();
     this.dynamicPaths = json.paths.filter((p) => !this.typedPathNames.has(p));
 
     writer.writeU64LE(JSONFormat.VERSION_V3);
@@ -513,6 +514,7 @@ export class JsonCodec implements Codec {
   }
 
   readPrefix(reader: BufferReader) {
+    this.dynamicCodecs.clear();
     const ver = reader.readU64LE();
     if (ver !== JSONFormat.VERSION_V3) throw new Error(`JSON: only V3 supported, got V${ver}`);
 
