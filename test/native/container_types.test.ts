@@ -437,8 +437,11 @@ describe("JSON", () => {
     assert.strictEqual(obj2.age, 40n);
   });
 
-  it("encodes JSON paths that are dense, prefix-only, late, and explicitly null", async () => {
+  it("round-trips keys with every occurrence pattern the sparse path scatter handles", async () => {
     const columns: ColumnDef[] = [{ name: "j", type: "JSON" }];
+    // Key names describe where the key occurs across rows, not JSON features:
+    // dense = every row (identity fast path), prefix = leading rows only,
+    // late = first appears mid-column (gap materialization), nul = explicit null.
     const rows = [
       [{ dense: 1, prefix: "a" }],
       [{ dense: 2, prefix: "b", nul: null }],
