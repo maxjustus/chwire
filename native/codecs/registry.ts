@@ -201,7 +201,10 @@ const CODEC_CACHE_LIMIT = 131072;
 export function getCodec(type: "JSON" | `JSON(${string})`): JsonCodec;
 export function getCodec(type: string): Codec;
 export function getCodec(type: string): Codec {
-  if (type.startsWith("Dynamic") || type === "JSON" || type.startsWith("JSON(")) {
+  // Substring check on purpose: composites containing a stateful codec
+  // anywhere (Array(Dynamic), Tuple(..., JSON), ...) must not be shared either.
+  // A false positive (e.g. an Enum value named "JSON") only skips caching.
+  if (type.includes("Dynamic") || type.includes("JSON")) {
     return createCodec(type);
   }
 
