@@ -153,6 +153,19 @@ describe("Compression", () => {
     });
   });
 
+  describe("readUInt32LE", () => {
+    it("should return unsigned values when the high bit is set", () => {
+      assert.strictEqual(readUInt32LE(new Uint8Array([0xff, 0xff, 0xff, 0xff]), 0), 0xffffffff);
+      assert.strictEqual(readUInt32LE(new Uint8Array([0x00, 0x00, 0x00, 0x80]), 0), 0x80000000);
+    });
+
+    it("should round-trip with writeUInt32LE", () => {
+      const buf = new Uint8Array(4);
+      writeUInt32LE(buf, 0xdeadbeef, 0);
+      assert.strictEqual(readUInt32LE(buf, 0), 0xdeadbeef);
+    });
+  });
+
   describe("Partial block handling", () => {
     it("should handle block split across chunks", async () => {
       const data = encoder.encode("Test data for partial block handling");
