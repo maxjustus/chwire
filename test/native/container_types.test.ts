@@ -241,9 +241,9 @@ describe("Variant", () => {
     assert.deepStrictEqual(decodedRows[2]![0], new VariantValue(1, 123n));
   });
 
-  it("routes bare numbers to the first numeric arm even when it is Int64/UInt64", async () => {
-    // Int64 sorts before UInt8, so 300 must go to Int64 (findVariantIndex
-    // order), not overflow the UInt8 arm.
+  it("round-trips bare numbers that fit only the wider of two numeric arms", async () => {
+    // Arms sort alphabetically, so Int64 precedes UInt8 and takes all bare
+    // numbers; 300 and -5 would throw if matched against UInt8.
     const columns: ColumnDef[] = [{ name: "v", type: "Variant(Int64, UInt8)" }];
     const rows = [[300], [-5], [5]];
     const encoded = encodeNativeRows(columns, rows);
