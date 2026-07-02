@@ -152,20 +152,20 @@ interface AuthConfig {
  * @param params - Query params including ClickHouse settings (max_execution_time, etc.)
  *   See: https://clickhouse.com/docs/en/operations/settings/settings
  */
-function buildReqUrl(base: string, params: Record<string, string>, auth?: AuthConfig): URL {
+function buildReqUrl(base: string, params: Record<string, string>): URL {
   const url = new URL(base);
   Object.entries(params).forEach(([key, value]) => {
     url.searchParams.append(key, value);
   });
-
-  if (auth?.username) {
-    url.searchParams.append("user", auth.username);
-    if (auth.password) {
-      url.searchParams.append("password", auth.password);
-    }
-  }
-
   return url;
+}
+
+/** Credentials go in headers, not the URL, to keep them out of logs and caches. */
+function authHeaders(auth?: AuthConfig): Record<string, string> {
+  if (!auth?.username) return {};
+  const headers: Record<string, string> = { "X-ClickHouse-User": auth.username };
+  if (auth.password) headers["X-ClickHouse-Key"] = auth.password;
+  return headers;
 }
 
 interface ProgressInfo {
@@ -459,7 +459,7 @@ async function insert(
     data instanceof Uint8Array ? [data] : data;
 
   // Streaming path: buffer, compress at threshold, report progress
-  const url = buildReqUrl(baseUrl, params, options.auth);
+  const url = buildReqUrl(baseUrl, params);
 
   let blocksSent = 0;
   let totalCompressed = 0;
@@ -514,6 +514,7 @@ async function insert(
     headers: {
       "Content-Type": "application/octet-stream",
       Connection: "close",
+      ...authHeaders(options.auth),
     },
     body: stream,
     duplex: "half",
@@ -754,10 +755,11 @@ async function* queryImpl(sql: string, options: QueryOptions = {}): AsyncGenerat
     }
   }
 
-  const url = buildReqUrl(baseUrl, params, options.auth);
+  const url = buildReqUrl(baseUrl, params);
 
   const headers: Record<string, string> = {
     Connection: "close",
+    ...authHeaders(options.auth),
     "User-Agent": `chwire/${options.clientVersion || "1.0"}`,
     // The client does its own block compression (compress=1), so HTTP content
     // coding on top only adds CPU - and it breaks against 26.x: with
