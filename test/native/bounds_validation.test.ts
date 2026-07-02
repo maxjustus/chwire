@@ -94,7 +94,6 @@ describe("bounds validation", () => {
         assert.strictEqual(toValidIPv6("::1"), "::1");
         assert.strictEqual(toValidIPv6("::"), "::");
         assert.strictEqual(toValidIPv6("2001:db8::1"), "2001:db8::1");
-        assert.strictEqual(toValidIPv6("fe80::1%eth0"), "fe80::1%eth0");
         assert.strictEqual(
           toValidIPv6("2001:0db8:0000:0000:0000:0000:0000:0001"),
           "2001:0db8:0000:0000:0000:0000:0000:0001",
@@ -110,6 +109,10 @@ describe("bounds validation", () => {
 
       it("throws on empty string", () => {
         assert.throws(() => toValidIPv6(""), /Invalid IPv6 address: empty string/);
+      });
+
+      it("throws on zone IDs (not representable in 16 bytes)", () => {
+        assert.throws(() => toValidIPv6("fe80::1%eth0"), /zone ID/);
       });
 
       it("throws on invalid characters", () => {

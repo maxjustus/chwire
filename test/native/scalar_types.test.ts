@@ -569,6 +569,25 @@ describe("additional scalar types", () => {
     assert.ok(typeof decodedRows[0]![0] === "string");
   });
 
+  it("encodes IPv4-mapped IPv6 addresses", async () => {
+    const columns: ColumnDef[] = [{ name: "ip", type: "IPv6" }];
+    const rows = [["::ffff:192.168.1.1"], ["::192.168.1.1"], ["64:ff9b::1.2.3.4"]];
+    const encoded = encodeNativeRows(columns, rows);
+    const decodedRows = toArrayRows(decodeBatch(encoded));
+
+    // Decode normalizes to plain hex groups; re-encoding must yield the same bytes.
+    assert.strictEqual(decodedRows[0]![0], "0:0:0:0:0:ffff:c0a8:101");
+    assert.strictEqual(decodedRows[1]![0], "0:0:0:0:0:0:c0a8:101");
+    assert.strictEqual(decodedRows[2]![0], "64:ff9b:0:0:0:0:102:304");
+    const reEncoded = encodeNativeRows(columns, toArrayRows(decodeBatch(encoded)));
+    assert.deepStrictEqual(reEncoded, encoded);
+  });
+
+  it("rejects IPv6 zone IDs at encode time", () => {
+    const columns: ColumnDef[] = [{ name: "ip", type: "IPv6" }];
+    assert.throws(() => encodeNativeRows(columns, [["fe80::1%eth0"]]), /zone ID/);
+  });
+
   it("throws on invalid IPv4 address", () => {
     const columns: ColumnDef[] = [{ name: "ip", type: "IPv4" }];
     assert.throws(() => encodeNativeRows(columns, [["not-an-ip"]]), /Invalid IPv4 address/);
