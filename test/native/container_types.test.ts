@@ -459,6 +459,19 @@ describe("JSON", () => {
     assert.strictEqual(obj1.amount, 200n);
   });
 
+  it("keeps a typed path whose name starts with 'skip'", async () => {
+    // Only the SKIP directive itself is dropped, not paths named like it.
+    const columns: ColumnDef[] = [{ name: "j", type: "JSON(skipped UInt32, SKIP a.b)" }];
+    const rows = [[{ skipped: 5 }]];
+    const encoded = encodeNativeRows(columns, rows);
+    const decodedRows = toArrayRows(decodeBatch(encoded));
+
+    const obj0 = decodedRows[0]![0] as Record<string, unknown>;
+    // UInt32 typed path decodes as a number; if the path were wrongly dropped
+    // it would fall through to a Dynamic path and come back as Int64 (bigint).
+    assert.strictEqual(obj0.skipped, 5);
+  });
+
   it("handles JSON with typed paths and dynamic paths together", async () => {
     const columns: ColumnDef[] = [{ name: "j", type: "JSON(currency String, amount Int64)" }];
     const rows = [
