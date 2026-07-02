@@ -929,7 +929,7 @@ describe("additional scalar types", () => {
     assert.throws(() => encodeNativeRows(columns, [[""]]), /Cannot coerce string "" to Bool/);
   });
 
-  it("coerces Int128/UInt128 with toBigInt helper", async () => {
+  it("coerces booleans, null, and numeric strings to Int128/UInt128", async () => {
     const columns: ColumnDef[] = [
       { name: "i128", type: "Int128" },
       { name: "u128", type: "UInt128" },

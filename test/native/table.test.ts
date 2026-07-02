@@ -995,7 +995,7 @@ describe("RecordBatch.isRecordBatch", () => {
     }
   });
 
-  it("recognizes an instance from a separate module copy via the global brand", () => {
+  it("isRecordBatch recognizes an instance from a separate module copy", () => {
     // Simulate a RecordBatch built by a different copy of this module (ESM vs
     // CJS, or source vs bundled dist): a distinct object that carries the same
     // global-registry brand symbol. instanceof would fail; isRecordBatch must not.

@@ -45,7 +45,7 @@ describe("codec cache and stateful codecs", () => {
     assert.deepStrictEqual(second, [new Map([["b", "str"]])]);
   });
 
-  it("JSON codec instance drops stale dynamic-path codecs between prefixes", () => {
+  it("decodes consecutive blocks with different dynamic paths through one JSON codec", () => {
     const codec = getCodec("JSON");
     // First block establishes dynamic path "a"; the second has only "b".
     // A stale "a" entry in the codec's per-block state must not leak into

@@ -109,7 +109,7 @@ describe("findExceptionMarker", () => {
     assert.strictEqual(findExceptionMarker(buf, false), 2);
   });
 
-  it("text mode rejects the same non-line-start marker (inline-payload guard)", () => {
+  it("text mode ignores a marker that does not start a line", () => {
     const buf = encode("\x00\x00__exception__\r\nCode: 5. DB::Exception: boom\r\n");
     assert.strictEqual(findExceptionMarker(buf, true), -1);
   });
