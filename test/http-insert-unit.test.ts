@@ -43,6 +43,17 @@ describe("insert option handling", () => {
     assert.equal(captured.requestBodies[0]!.length, 4);
   });
 
+  it("rejects non-positive bufferSize instead of looping forever", async () => {
+    const captured = mockFetch(() => new Response("", { status: 200 }));
+    for (const bufferSize of [0, -1, 1.5]) {
+      await assert.rejects(
+        insert("INSERT INTO t FORMAT RowBinary", new Uint8Array([1]), { bufferSize }),
+        /bufferSize must be a positive integer/,
+      );
+    }
+    assert.equal(captured.requestBodies.length, 0);
+  });
+
   it("throws on missing query params before sending", async () => {
     const captured = mockFetch(() => new Response("", { status: 200 }));
     await assert.rejects(

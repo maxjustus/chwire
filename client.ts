@@ -435,6 +435,11 @@ async function insert(
   await init();
   const baseUrl = options.url || "http://localhost:8123/";
   const { compression = "lz4", bufferSize = 1024 * 1024, onProgress = null } = options;
+  if (!Number.isInteger(bufferSize) || bufferSize <= 0) {
+    // A zero-capacity buffer can never absorb input, so the flush loop would
+    // spin forever emitting empty blocks.
+    throw new Error(`insert: bufferSize must be a positive integer, got ${bufferSize}`);
+  }
   // A threshold above bufferSize can never trigger a flush, so clamp it.
   const threshold = Math.min(options.threshold ?? bufferSize - 2048, bufferSize);
 
