@@ -42,6 +42,15 @@ describe("insert option handling", () => {
     // 4096 bytes through a 1024-byte buffer = 4 flushed blocks
     assert.equal(captured.requestBodies[0]!.length, 4);
   });
+
+  it("throws on missing query params before sending", async () => {
+    const captured = mockFetch(() => new Response("", { status: 200 }));
+    await assert.rejects(
+      insert("INSERT INTO t SELECT {x: UInt64}", new Uint8Array([1])),
+      /Missing parameter: x/,
+    );
+    assert.equal(captured.requestBodies.length, 0);
+  });
 });
 
 describe("insert post-200 exception detection", () => {

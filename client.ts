@@ -28,7 +28,7 @@ export {
 import { mapAsync, prepend, readChunks, toAsyncIterable } from "./iter.ts";
 import { type ExternalTableData, encodeNative, RecordBatch } from "./native/index.ts";
 import { BlockBuffer } from "./native/io.ts";
-import { extractParamTypes, SQL_NULL, serializeParams } from "./params.ts";
+import { SQL_NULL, serializeParams } from "./params.ts";
 import { type CollectableAsyncGenerator, collectable } from "./util.ts";
 
 export type { QueryParams, QueryParamValue } from "./types.ts";
@@ -130,12 +130,8 @@ function mergeQueryParams(
   query: string,
   source?: QueryParams,
 ): void {
-  const types = extractParamTypes(query);
-  if (types.size > 0 && !source) {
-    throw new Error(`Missing parameters: ${[...types.keys()].join(", ")}`);
-  }
-  if (!source) return;
-  const serialized = serializeParams(query, source);
+  // serializeParams parses the query and throws on missing params.
+  const serialized = serializeParams(query, source ?? {});
   for (const [key, value] of Object.entries(serialized)) {
     // For HTTP params, SQL_NULL symbol becomes \N escape sequence
     target[`param_${key}`] = value === SQL_NULL ? "\\N" : value;
