@@ -103,7 +103,7 @@ describe("encodeNative", () => {
       { type: "UInt32", value: 4294967296, error: /UInt32 out of range/ },
       { type: "Int64", value: 9223372036854775808n, error: /Int64 out of range/ },
       { type: "UInt64", value: -1n, error: /UInt64 out of range/ },
-      { type: "Int64", value: 9007199254740992, error: /cannot safely represent number/ },
+      { type: "Int64", value: 2 ** 53, error: /cannot safely represent number/ },
     ];
 
     for (const { type, value, error } of overflowCases) {
