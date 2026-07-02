@@ -363,5 +363,11 @@ export function decodeBlocks(data: Uint8Array): Uint8Array {
     offset += blockSize;
   }
 
+  // Leftover bytes mean the input isn't a clean block sequence (e.g. a
+  // plain-text error body) - throw so callers can fall back to raw bytes.
+  if (offset !== data.length) {
+    throw new Error(`decodeBlocks: ${data.length - offset} undecodable trailing bytes`);
+  }
+
   return concat(blocks);
 }

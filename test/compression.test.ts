@@ -134,6 +134,23 @@ describe("Compression", () => {
       const expected = decoder.decode(concat([data1, data2, data3]));
       assert.strictEqual(decoder.decode(decompressed), expected);
     });
+
+    it("should throw on plain text input instead of returning empty", () => {
+      const text = encoder.encode(
+        "Code: 60. DB::Exception: Table default.foo doesn't exist. (UNKNOWN_TABLE)",
+      );
+      assert.throws(() => decodeBlocks(text));
+    });
+
+    it("should throw on trailing bytes after a valid block", () => {
+      const block = encodeBlock(encoder.encode("valid block"), "lz4");
+      const withTrailing = concat([block, encoder.encode("garbage tail")]);
+      assert.throws(() => decodeBlocks(withTrailing));
+    });
+
+    it("should decode empty input to empty output", () => {
+      assert.strictEqual(decodeBlocks(new Uint8Array(0)).length, 0);
+    });
   });
 
   describe("Partial block handling", () => {
