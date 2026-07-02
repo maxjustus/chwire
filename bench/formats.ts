@@ -2,6 +2,11 @@
 //
 // Tests encoding/decoding performance for both formats with various data types.
 
+import { spawnSync } from "node:child_process";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { gzipSync } from "node:zlib";
 import { encodeBlock, init } from "../compression.ts";
 import {
@@ -489,79 +494,112 @@ function generateJsonColumnarData(count: number) {
 
 // --- Main ---
 
-async function main() {
+interface ScenarioDef {
+  name: string;
+  description: string;
+  generate: (count: number) => {
+    json: Record<string, unknown>[];
+    rows: unknown[][];
+    columns: ColumnDef[];
+  };
+}
+
+const FORMAT_SCENARIOS: ScenarioDef[] = [
+  {
+    name: "Simple Data",
+    description: "6 columns: int, 2 strings, bool, float, datetime",
+    generate: generateSimpleData,
+  },
+  {
+    name: "Escape Data",
+    description: "strings with quotes, newlines, backslashes",
+    generate: generateEscapeData,
+  },
+  { name: "Complex Data", description: "arrays, nullable", generate: generateComplexData },
+  {
+    name: "Complex Data (Typed)",
+    description: "arrays as TypedArrays",
+    generate: generateComplexTypedData,
+  },
+  {
+    name: "Variant",
+    description: "Variant(String, Int64, Float64)",
+    generate: generateVariantData,
+  },
+  { name: "Dynamic", description: "Dynamic with mixed types", generate: generateDynamicData },
+  {
+    name: "JSON Column",
+    description: "JSON objects with varying keys",
+    generate: generateJsonColumnData,
+  },
+];
+
+const EXTRA_SECTIONS = ["Streaming", "Columnar", "JSON fromCols"] as const;
+
+const ROWS = 1_000_000;
+
+// Each section runs in its own child process: live data from earlier scenarios
+// otherwise pressures the heap and skews the allocation-heavy encode paths of
+// later ones (measured 10x slowdown for Variant encode late in a shared run).
+function runSectionInChild(section: string, resultFile?: string): void {
+  const args = [fileURLToPath(import.meta.url), "--section", section];
+  if (resultFile) args.push("--result-file", resultFile);
+  const res = spawnSync(process.execPath, [...process.execArgv, ...args], { stdio: "inherit" });
+  if (res.status !== 0) {
+    throw new Error(`Section '${section}' failed with exit code ${res.status}`);
+  }
+}
+
+async function runSection(section: string, resultFile?: string) {
   await init();
+  const benchOptions = readBenchOptions();
+
+  const scenario = FORMAT_SCENARIOS.find((s) => s.name === section);
+  if (scenario) {
+    const data = scenario.generate(ROWS);
+    const result = runScenario(
+      {
+        name: scenario.name,
+        description: scenario.description,
+        columns: data.columns,
+        jsonData: data.json,
+        rowsArray: data.rows,
+      },
+      benchOptions,
+    );
+    if (resultFile) writeFileSync(resultFile, JSON.stringify(result));
+    return;
+  }
+
+  if (section === "Streaming") return runStreamingSection(benchOptions);
+  if (section === "Columnar") return runColumnarSection(benchOptions);
+  if (section === "JSON fromCols") return runJsonColsSection(benchOptions);
+  throw new Error(`Unknown bench section: ${section}`);
+}
+
+async function main() {
+  const sectionArg = process.argv.indexOf("--section");
+  if (sectionArg !== -1) {
+    const resultArg = process.argv.indexOf("--result-file");
+    return runSection(
+      process.argv[sectionArg + 1]!,
+      resultArg === -1 ? undefined : process.argv[resultArg + 1],
+    );
+  }
 
   reportEnvironment();
-  const benchOptions = readBenchOptions();
-  const ROWS = 1_000_000;
+  console.log(`Benchmarking with ${ROWS} rows (one process per section)\n`);
 
-  console.log(`Benchmarking with ${ROWS} rows\n`);
-
-  // Generate all test data
-  const simple = generateSimpleData(ROWS);
-  const escapeData = generateEscapeData(ROWS);
-  const complex = generateComplexData(ROWS);
-  const complexTyped = generateComplexTypedData(ROWS);
-  const variant = generateVariantData(ROWS);
-  const dynamic = generateDynamicData(ROWS);
-  const jsonCol = generateJsonColumnData(ROWS);
-
-  const scenarios: Scenario[] = [
-    {
-      name: "Simple Data",
-      description: "6 columns: int, 2 strings, bool, float, datetime",
-      columns: simple.columns,
-      jsonData: simple.json,
-      rowsArray: simple.rows,
-    },
-    {
-      name: "Escape Data",
-      description: "strings with quotes, newlines, backslashes",
-      columns: escapeData.columns,
-      jsonData: escapeData.json,
-      rowsArray: escapeData.rows,
-    },
-    {
-      name: "Complex Data",
-      description: "arrays, nullable",
-      columns: complex.columns,
-      jsonData: complex.json,
-      rowsArray: complex.rows,
-    },
-    {
-      name: "Complex Data (Typed)",
-      description: "arrays as TypedArrays",
-      columns: complexTyped.columns,
-      jsonData: complexTyped.json,
-      rowsArray: complexTyped.rows,
-    },
-    {
-      name: "Variant",
-      description: "Variant(String, Int64, Float64)",
-      columns: variant.columns,
-      jsonData: variant.json,
-      rowsArray: variant.rows,
-    },
-    {
-      name: "Dynamic",
-      description: "Dynamic with mixed types",
-      columns: dynamic.columns,
-      jsonData: dynamic.json,
-      rowsArray: dynamic.rows,
-    },
-    {
-      name: "JSON Column",
-      description: "JSON objects with varying keys",
-      columns: jsonCol.columns,
-      jsonData: jsonCol.json,
-      rowsArray: jsonCol.rows,
-    },
-  ];
-
+  const tmpDir = mkdtempSync(path.join(tmpdir(), "chttp-bench-"));
   const results: ScenarioResult[] = [];
-  for (const scenario of scenarios) {
-    results.push(runScenario(scenario, benchOptions));
+  try {
+    for (const scenario of FORMAT_SCENARIOS) {
+      const resultFile = path.join(tmpDir, `${results.length}.json`);
+      runSectionInChild(scenario.name, resultFile);
+      results.push(JSON.parse(readFileSync(resultFile, "utf8")) as ScenarioResult);
+    }
+  } finally {
+    rmSync(tmpDir, { recursive: true, force: true });
   }
 
   // Summary
@@ -579,6 +617,12 @@ async function main() {
     console.log(`  +gzip:  ${fmtSize(r.compressed.json.gzip, r.compressed.native.gzip)}`);
     console.log("");
   }
+
+  for (const section of EXTRA_SECTIONS) runSectionInChild(section);
+}
+
+async function runStreamingSection(benchOptions: BenchOptions) {
+  const simple = generateSimpleData(ROWS);
 
   // Streaming benchmarks for Native
   console.log("=== Native Streaming vs Sync (Simple Data) ===\n");
@@ -645,8 +689,9 @@ async function main() {
   console.log(
     `  Encode:           ${((streamEnc.meanMs / syncEnc.meanMs - 1) * 100).toFixed(1)}% overhead`,
   );
+}
 
-  // Columnar TypedArray benchmarks
+function runColumnarSection(benchOptions: BenchOptions) {
   console.log("\n=== Native Columnar vs Row-based (numeric data) ===\n");
   const columnar = generateColumnarNumericData(ROWS);
 
@@ -675,8 +720,9 @@ async function main() {
   console.log(
     `\nSpeedup: ${(nativeRowEnc.meanMs / nativeColEnc.meanMs).toFixed(2)}x faster with TypedArray columnar input`,
   );
+}
 
-  // JSON fromCols vs fromValues benchmarks
+function runJsonColsSection(benchOptions: BenchOptions) {
   console.log("\n=== JSON fromCols vs fromValues ===\n");
   const jsonColumnar = generateJsonColumnarData(ROWS);
   const jsonCodec = getCodec("JSON(id UInt32, score Float64)");
@@ -734,4 +780,7 @@ async function main() {
   );
 }
 
-main().catch(console.error);
+main().catch((err) => {
+  console.error(err);
+  process.exitCode = 1;
+});
