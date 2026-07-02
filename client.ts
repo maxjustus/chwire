@@ -513,7 +513,6 @@ async function insert(
     method: "POST",
     headers: {
       "Content-Type": "application/octet-stream",
-      Connection: "close",
       ...authHeaders(options.auth),
     },
     body: stream,
@@ -758,7 +757,6 @@ async function* queryImpl(sql: string, options: QueryOptions = {}): AsyncGenerat
   const url = buildReqUrl(baseUrl, params);
 
   const headers: Record<string, string> = {
-    Connection: "close",
     ...authHeaders(options.auth),
     "User-Agent": `chwire/${options.clientVersion || "1.0"}`,
     // The client does its own block compression (compress=1), so HTTP content
