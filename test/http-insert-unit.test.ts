@@ -5,7 +5,7 @@
 
 import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
-import { insert } from "../client.ts";
+import { ClickHouseException, insert } from "../client.ts";
 
 const realFetch = globalThis.fetch;
 
@@ -41,6 +41,56 @@ describe("insert option handling", () => {
     assert.equal(result.queryId, "");
     // 4096 bytes through a 1024-byte buffer = 4 flushed blocks
     assert.equal(captured.requestBodies[0]!.length, 4);
+  });
+});
+
+describe("insert post-200 exception detection", () => {
+  it("throws when the 200 response body carries a ClickHouse exception", async () => {
+    mockFetch(
+      () =>
+        new Response(
+          "Code: 241. DB::Exception: Memory limit (total) exceeded. (MEMORY_LIMIT_EXCEEDED)",
+          { status: 200 },
+        ),
+    );
+    await assert.rejects(
+      insert("INSERT INTO t FORMAT RowBinary", new Uint8Array([1])),
+      (err: unknown) => {
+        assert.ok(err instanceof ClickHouseException);
+        assert.equal(err.code, 241);
+        assert.match(err.message, /Memory limit/);
+        return true;
+      },
+    );
+  });
+
+  it("throws when the 200 response body carries a framed __exception__ trailer", async () => {
+    mockFetch(
+      () =>
+        new Response("__exception__\nCode: 395. DB::Exception: boom. (QUERY_WAS_CANCELLED)", {
+          status: 200,
+        }),
+    );
+    await assert.rejects(
+      insert("INSERT INTO t FORMAT RowBinary", new Uint8Array([1])),
+      (err: unknown) => {
+        assert.ok(err instanceof ClickHouseException);
+        assert.equal(err.code, 395);
+        return true;
+      },
+    );
+  });
+
+  it("resolves on a 200 response with an empty body", async () => {
+    mockFetch(() => new Response("", { status: 200 }));
+    const result = await insert("INSERT INTO t FORMAT RowBinary", new Uint8Array([1]));
+    assert.equal(result.queryId, "");
+  });
+
+  it("resolves on a 200 response with a non-error body", async () => {
+    mockFetch(() => new Response("\n", { status: 200 }));
+    const result = await insert("INSERT INTO t FORMAT RowBinary", new Uint8Array([1]));
+    assert.equal(result.queryId, "");
   });
 });
 

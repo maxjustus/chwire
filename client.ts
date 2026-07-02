@@ -525,6 +525,17 @@ async function insert(
     throw parseHttpError(response, body);
   }
 
+  // ClickHouse can fail after committing 200 headers and deliver the
+  // exception in the body - drain it and surface any error it carries.
+  const body = new Uint8Array(await response.arrayBuffer());
+  if (body.length > 0) {
+    const tag = response.headers.get("X-ClickHouse-Exception-Tag") ?? undefined;
+    const match = splitStreamException(body, true, tag);
+    if (match) throw match.error;
+    const text = new TextDecoder().decode(body);
+    if (parseErrorText(text).code !== 0) throw exceptionFromText(text);
+  }
+
   return {
     summary: parseSummary(response),
     queryId: response.headers.get("X-ClickHouse-Query-Id") || "",
