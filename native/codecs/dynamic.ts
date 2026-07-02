@@ -6,10 +6,10 @@ import {
   JsonColumn,
   VariantColumn,
 } from "../columns.ts";
-import { isTypedArray } from "../coercion.ts";
+import { isArrayLike, isTypedArray } from "../coercion.ts";
 import { Dynamic, JSONFormat, Variant } from "../constants.ts";
 import { DynamicValue, type TypedArray, VariantValue } from "../types.ts";
-import { type BufferReader, BufferWriter } from "../io.ts";
+import { type BufferReader, BufferWriter, type TypedArrayConstructor } from "../io.ts";
 import type { DeserializerState } from "../serialization.ts";
 import {
   asBytes,
@@ -110,6 +110,7 @@ export class VariantCodec implements Codec {
     this.codecs = order.map((i) => codecs[i]!);
     this.type = `Variant(${this.typeStrings.join(", ")})`;
 
+    // Fast typeof->arm cache; must stay in sync with findVariantIndex's rules.
     this.primitiveDisc = Object.create(null) as Record<string, number>;
     for (let i = 0; i < this.typeStrings.length; i++) {
       const t = this.typeStrings[i]!;
@@ -171,8 +172,7 @@ export class VariantCodec implements Codec {
     const n = values.length;
     const discriminators = new Uint8Array(n);
     const armCount = this.codecs.length;
-    const variantValues: unknown[][] = new Array(armCount);
-    for (let k = 0; k < armCount; k++) variantValues[k] = [];
+    const variantValues: unknown[][] = this.codecs.map(() => []);
 
     for (let i = 0; i < n; i++) {
       const v = values[i];
@@ -344,12 +344,10 @@ export class DynamicCodec implements Codec {
     // values (CH getSmallestIndexesType); shared-variant overflow means the
     // flattened type list is NOT bounded by max_types, so >255 is legal.
     const Ctor = smallestIndexArrayCtor(nullDisc + 1);
-    const discriminators: DiscriminatorArray =
-      Ctor === Uint8Array
-        ? reader.readTypedArray(Uint8Array, rows)
-        : Ctor === Uint16Array
-          ? reader.readTypedArray(Uint16Array, rows)
-          : reader.readTypedArray(Uint32Array, rows);
+    const discriminators: DiscriminatorArray = reader.readTypedArray(
+      Ctor as TypedArrayConstructor<DiscriminatorArray>,
+      rows,
+    );
 
     const { counts, indices } = countAndIndexDiscriminators(discriminators, nullDisc);
     const groups = decodeGroups(reader, this.codecs, counts, state);
@@ -505,20 +503,11 @@ export class DynamicCodec implements Codec {
   }
 }
 
-function isColumn(v: unknown): v is Column {
-  return (
-    typeof v === "object" &&
-    v !== null &&
-    typeof (v as any).get === "function" &&
-    typeof (v as any).type === "string" &&
-    typeof (v as any).length === "number"
-  );
-}
-
 export class JsonCodec implements Codec {
   readonly type: string;
   private typedPaths: { name: string; type: string; codec: Codec }[] = [];
   private typedPathNames: Set<string>;
+  private typedPathNameList: string[];
   private dynamicPaths: string[] = [];
   private dynamicCodecs = new Map<string, DynamicCodec>();
   private resolveCodec: CodecResolver;
@@ -537,7 +526,8 @@ export class JsonCodec implements Codec {
     this.typedPaths = typedPaths
       .map((p) => ({ name: p.name, type: p.type, codec: resolveCodec(p.type) }))
       .sort((a, b) => byteOrder(a.name, b.name));
-    this.typedPathNames = new Set(this.typedPaths.map((tp) => tp.name));
+    this.typedPathNameList = this.typedPaths.map((tp) => tp.name);
+    this.typedPathNames = new Set(this.typedPathNameList);
   }
 
   writePrefix(writer: BufferWriter, col: Column) {
@@ -621,7 +611,7 @@ export class JsonCodec implements Codec {
       );
     }
 
-    const allPaths = [...this.typedPaths.map((tp) => tp.name), ...this.dynamicPaths];
+    const allPaths = [...this.typedPathNameList, ...this.dynamicPaths];
     return new JsonColumn(allPaths, pathColumns, rows, this.type);
   }
 
@@ -657,10 +647,12 @@ export class JsonCodec implements Codec {
           dynamicPathEntries.set(key, entry);
           dynamicPathOrder.push(key);
         }
-        if (entry.rows === null && entry.values.length !== i) {
+        if (entry.rows) {
+          entry.rows.push(i);
+        } else if (entry.values.length !== i) {
           entry.rows = Array.from({ length: entry.values.length }, (_, j) => j);
+          entry.rows.push(i);
         }
-        entry.rows?.push(i);
         entry.values.push(obj[key]);
       }
     }
@@ -685,17 +677,13 @@ export class JsonCodec implements Codec {
   fromCols(input: Record<string, Column | unknown[] | TypedArray>): JsonColumn {
     const keys = Object.keys(input);
 
-    let rowCount = 0;
-    let rowCountSource: string | undefined;
+    const firstKey = keys[0];
+    const rowCount = firstKey === undefined ? 0 : input[firstKey]!.length;
     for (const key of keys) {
-      const v = input[key]!;
-      const len = (v as { length: number }).length;
-      if (rowCountSource === undefined) {
-        rowCount = len;
-        rowCountSource = key;
-      } else if (len !== rowCount) {
+      const len = input[key]!.length;
+      if (len !== rowCount) {
         throw new Error(
-          `Column length mismatch: '${rowCountSource}' has ${rowCount} rows, '${key}' has ${len}`,
+          `Column length mismatch: '${firstKey}' has ${rowCount} rows, '${key}' has ${len}`,
         );
       }
     }
@@ -707,15 +695,15 @@ export class JsonCodec implements Codec {
       if (value === undefined) {
         throw new Error(`Missing typed path '${tp.name}' (declared in ${this.type})`);
       }
-      if (isColumn(value)) {
+      if (isArrayLike(value)) {
+        pathColumns.set(tp.name, tp.codec.fromValues(value));
+      } else {
         if (value.type !== tp.type) {
           throw new Error(
             `Type mismatch for typed path '${tp.name}': expected '${tp.type}', got '${value.type}'`,
           );
         }
         pathColumns.set(tp.name, value);
-      } else {
-        pathColumns.set(tp.name, tp.codec.fromValues(value));
       }
     }
 
@@ -730,7 +718,7 @@ export class JsonCodec implements Codec {
             `Use DynamicValue[] or a plain array instead.`,
         );
       }
-      if (isColumn(value)) {
+      if (!Array.isArray(value)) {
         throw new TypeError(
           `Dynamic path '${key}' cannot be a pre-built Column. ` +
             `Use Array.from(column) to pass values.`,
@@ -749,7 +737,7 @@ export class JsonCodec implements Codec {
     rowCount: number,
   ): JsonColumn {
     dynamicPathOrder.sort(byteOrder);
-    const allPaths = [...this.typedPaths.map((tp) => tp.name), ...dynamicPathOrder];
+    const allPaths = [...this.typedPathNameList, ...dynamicPathOrder];
     return new JsonColumn(allPaths, pathColumns, rowCount, this.type);
   }
 
