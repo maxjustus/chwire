@@ -465,76 +465,49 @@ async function insert(
   let totalCompressed = 0;
   let totalUncompressed = 0;
 
-  const stream = new ReadableStream({
-    async start(controller) {
-      try {
-        const bufferA = new Uint8Array(bufferSize);
-        const bufferB = new Uint8Array(bufferSize);
-        let fillBuffer = bufferA;
-        let fillLen = 0;
-        let flushPromise: Promise<void> | null = null;
+  // Pull-based stream: blocks are compressed on demand as fetch consumes the
+  // body, so a fast producer can't buffer the whole payload ahead of the network.
+  async function* compressedBlocks(): AsyncGenerator<Uint8Array> {
+    const buffer = new Uint8Array(bufferSize);
+    let fillLen = 0;
 
-        const flush = async (buf: Uint8Array, len: number) => {
-          const compressed = encodeBlock(buf.subarray(0, len), compression);
-          controller.enqueue(compressed);
-          blocksSent++;
-          totalCompressed += compressed.length;
-          totalUncompressed += len;
+    const flush = (): Uint8Array => {
+      const compressed = encodeBlock(buffer.subarray(0, fillLen), compression);
+      blocksSent++;
+      totalCompressed += compressed.length;
+      totalUncompressed += fillLen;
+      onProgress?.({
+        blocksSent,
+        bytesCompressed: compressed.length,
+        bytesUncompressed: fillLen,
+      });
+      fillLen = 0;
+      return compressed;
+    };
 
-          if (onProgress) {
-            onProgress({
-              blocksSent,
-              bytesCompressed: compressed.length,
-              bytesUncompressed: len,
-            });
-          }
-        };
+    for await (const chunk of inputData as AsyncIterable<Uint8Array>) {
+      let chunkOffset = 0;
+      while (chunkOffset < chunk.length) {
+        const bytesToCopy = Math.min(buffer.length - fillLen, chunk.length - chunkOffset);
+        buffer.set(chunk.subarray(chunkOffset, chunkOffset + bytesToCopy), fillLen);
+        fillLen += bytesToCopy;
+        chunkOffset += bytesToCopy;
 
-        for await (const chunk of inputData as AsyncIterable<Uint8Array>) {
-          let chunkOffset = 0;
-
-          while (chunkOffset < chunk.length) {
-            const spaceAvailable = fillBuffer.length - fillLen;
-            const bytesToCopy = Math.min(spaceAvailable, chunk.length - chunkOffset);
-
-            fillBuffer.set(chunk.subarray(chunkOffset, chunkOffset + bytesToCopy), fillLen);
-            fillLen += bytesToCopy;
-            chunkOffset += bytesToCopy;
-
-            if (fillLen >= threshold) {
-              if (flushPromise) await flushPromise;
-
-              const flushBuf = fillBuffer;
-              const flushLen = fillLen;
-              fillBuffer = fillBuffer === bufferA ? bufferB : bufferA;
-              fillLen = 0;
-
-              flushPromise = flush(flushBuf, flushLen);
-            }
-          }
-        }
-
-        if (flushPromise) await flushPromise;
-
-        if (fillLen > 0) {
-          await flush(fillBuffer, fillLen);
-        }
-
-        if (onProgress) {
-          onProgress({
-            blocksSent,
-            bytesCompressed: totalCompressed,
-            bytesUncompressed: totalUncompressed,
-            complete: true,
-          });
-        }
-
-        controller.close();
-      } catch (err) {
-        controller.error(err);
+        if (fillLen >= threshold) yield flush();
       }
-    },
-  });
+    }
+
+    if (fillLen > 0) yield flush();
+
+    onProgress?.({
+      blocksSent,
+      bytesCompressed: totalCompressed,
+      bytesUncompressed: totalUncompressed,
+      complete: true,
+    });
+  }
+
+  const stream = ReadableStream.from(compressedBlocks());
 
   const response = await fetch(url.toString(), {
     method: "POST",
