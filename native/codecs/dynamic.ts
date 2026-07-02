@@ -639,8 +639,8 @@ export class JsonCodec implements Codec {
         if (val !== undefined) typedPathArrays[tp]![i] = val;
       }
 
-      for (const key of Object.keys(obj)) {
-        if (this.typedPathNames.has(key)) continue;
+      for (const key in obj) {
+        if (!Object.hasOwn(obj, key) || this.typedPathNames.has(key)) continue;
         let entry = dynamicPathEntries.get(key);
         if (!entry) {
           entry = { rows: null, values: [] };
