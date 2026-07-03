@@ -385,11 +385,13 @@ describe("ClickHouse Integration Tests", { timeout: 60000 }, () => {
         throw new Error("Generator error mid-stream");
       }
 
+      // No sessionId: the server holds a session's lock until it notices the
+      // client disconnect, so an aborted request on the shared session races
+      // the next request (SESSION_IS_LOCKED).
       try {
         await insert("INSERT INTO test_stream_error FORMAT JSONEachRow", errorGenerator(), {
           url,
           auth,
-          sessionId,
           bufferSize: 128,
         });
         assert.fail("Should have thrown an error");
@@ -429,11 +431,12 @@ describe("ClickHouse Integration Tests", { timeout: 60000 }, () => {
         }
       }
 
+      // No sessionId: see "generator that throws mid-stream" — aborted
+      // requests race the session lock.
       try {
         await insert("INSERT INTO test_abort FORMAT JSONEachRow", slowGenerator(), {
           url,
           auth,
-          sessionId,
           signal: controller.signal,
         });
         assert.fail("Should have aborted");
