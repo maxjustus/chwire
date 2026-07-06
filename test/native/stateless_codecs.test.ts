@@ -59,35 +59,31 @@ describe("shared codec instance reuse", () => {
     assert.deepStrictEqual(decodeBlock(encodeBlock("JSON", [{ b: "x" }]), 1), [{ b: "x" }]);
   });
 
-  it(
-    "one Dynamic instance encodes two sibling columns in composite layout",
-    { todo: "red until stateless encode" },
-    () => {
-      // Composite writePrefix runs for every child before any child's encode.
-      const shared = createCodec("Dynamic");
-      const colA = shared.fromValues([1n, 2n]);
-      const colB = shared.fromValues(["x", "y"]);
-      const writer = new BufferWriter(1024);
-      shared.writePrefix?.(writer, colA);
-      shared.writePrefix?.(writer, colB);
-      writer.write(shared.encode(colA));
-      writer.write(shared.encode(colB));
+  it("one Dynamic instance encodes two sibling columns in composite layout", () => {
+    // Composite writePrefix runs for every child before any child's encode.
+    const shared = createCodec("Dynamic");
+    const colA = shared.fromValues([1n, 2n]);
+    const colB = shared.fromValues(["x", "y"]);
+    const writer = new BufferWriter(1024);
+    shared.writePrefix?.(writer, colA);
+    shared.writePrefix?.(writer, colB);
+    writer.write(shared.encode(colA));
+    writer.write(shared.encode(colB));
 
-      const reader = new BufferReader(writer.finish());
-      const decA = createCodec("Dynamic");
-      const decB = createCodec("Dynamic");
-      decA.readPrefix?.(reader);
-      decB.readPrefix?.(reader);
-      assert.deepStrictEqual(Array.from(decA.decode(reader, 2, defaultDeserializerState())), [
-        1n,
-        2n,
-      ]);
-      assert.deepStrictEqual(Array.from(decB.decode(reader, 2, defaultDeserializerState())), [
-        "x",
-        "y",
-      ]);
-    },
-  );
+    const reader = new BufferReader(writer.finish());
+    const decA = createCodec("Dynamic");
+    const decB = createCodec("Dynamic");
+    decA.readPrefix?.(reader);
+    decB.readPrefix?.(reader);
+    assert.deepStrictEqual(Array.from(decA.decode(reader, 2, defaultDeserializerState())), [
+      1n,
+      2n,
+    ]);
+    assert.deepStrictEqual(Array.from(decB.decode(reader, 2, defaultDeserializerState())), [
+      "x",
+      "y",
+    ]);
+  });
 
   it(
     "one Dynamic instance decodes two sibling columns in composite layout",

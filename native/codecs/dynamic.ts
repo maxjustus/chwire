@@ -297,16 +297,15 @@ export class DynamicCodec implements Codec {
 
   writePrefix(writer: BufferWriter, col: Column) {
     const dyn = col as DynamicColumn;
-    this.types = dyn.types;
-    this.codecs = this.types.map((t) => this.resolveCodec(t));
+    const types = dyn.types;
 
     writer.writeU64LE(Dynamic.VERSION_V3);
-    writer.writeVarint(this.types.length);
-    for (const t of this.types) writer.writeString(t);
+    writer.writeVarint(types.length);
+    for (const t of types) writer.writeString(t);
 
-    for (let i = 0; i < this.types.length; i++) {
+    for (let i = 0; i < types.length; i++) {
       const group = dyn.groups.get(i);
-      if (group) this.codecs[i]!.writePrefix?.(writer, group);
+      if (group) this.resolveCodec(types[i]!).writePrefix?.(writer, group);
     }
   }
 
@@ -330,10 +329,10 @@ export class DynamicCodec implements Codec {
 
     writer.write(asBytes(dyn.discriminators));
 
-    for (let i = 0; i < this.codecs.length; i++) {
+    for (let i = 0; i < dyn.types.length; i++) {
       const group = dyn.groups.get(i);
       if (group) {
-        const codec = this.codecs[i]!;
+        const codec = this.resolveCodec(dyn.types[i]!);
         writer.write(codec.encode(group, codec.estimateSize(group.length)));
       }
     }
@@ -448,7 +447,7 @@ export class DynamicCodec implements Codec {
   }
 
   estimateSize(rows: number) {
-    return rows * 2 + this.codecs.reduce((sum, c) => sum + c.estimateSize(Math.ceil(rows / 3)), 0);
+    return rows * 16;
   }
 
   guessType(value: unknown): string {
@@ -542,14 +541,17 @@ export class JsonCodec implements Codec {
     this.typedPathNames = new Set(this.typedPathNameList);
   }
 
+  private dynamicPathsOf(json: JsonColumn): string[] {
+    return json.paths.filter((p) => !this.typedPathNames.has(p));
+  }
+
   writePrefix(writer: BufferWriter, col: Column) {
     const json = col as JsonColumn;
-    this.dynamicCodecs.clear();
-    this.dynamicPaths = json.paths.filter((p) => !this.typedPathNames.has(p));
+    const dynamicPaths = this.dynamicPathsOf(json);
 
     writer.writeU64LE(JSONFormat.VERSION_V3);
-    writer.writeVarint(this.dynamicPaths.length);
-    for (const p of this.dynamicPaths) writer.writeString(p);
+    writer.writeVarint(dynamicPaths.length);
+    for (const p of dynamicPaths) writer.writeString(p);
 
     for (const tp of this.typedPaths) {
       const pathCol = json.pathColumns.get(tp.name);
@@ -558,11 +560,9 @@ export class JsonCodec implements Codec {
       }
     }
 
-    for (const path of this.dynamicPaths) {
-      const codec = new DynamicCodec(this.resolveCodec);
-      const pathCol = json.pathColumns.get(path)!;
-      codec.writePrefix(writer, pathCol);
-      this.dynamicCodecs.set(path, codec);
+    const dynCodec = this.resolveCodec("Dynamic");
+    for (const path of dynamicPaths) {
+      dynCodec.writePrefix?.(writer, json.pathColumns.get(path)!);
     }
   }
 
@@ -599,11 +599,10 @@ export class JsonCodec implements Codec {
       }
     }
 
-    for (const path of this.dynamicPaths) {
+    const dynCodec = this.resolveCodec("Dynamic");
+    for (const path of this.dynamicPathsOf(json)) {
       const pathCol = json.pathColumns.get(path)!;
-      const pathCodec = this.dynamicCodecs.get(path)!;
-      const pathHint = pathCodec.estimateSize(pathCol.length);
-      writer.write(pathCodec.encode(pathCol, pathHint));
+      writer.write(dynCodec.encode(pathCol, dynCodec.estimateSize(pathCol.length)));
     }
     return writer.finish();
   }
