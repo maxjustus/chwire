@@ -369,7 +369,7 @@ export class DynamicCodec implements Codec {
   }
 
   fromValues(values: unknown[]): DynamicColumn {
-    return this.build(values, null, values.length);
+    return this.fromSparse(null, values, values.length);
   }
 
   /**
@@ -382,10 +382,6 @@ export class DynamicCodec implements Codec {
    * materializing a dense rows-length array per path.
    */
   fromSparse(rowIndices: number[] | null, values: unknown[], rows: number): DynamicColumn {
-    return this.build(values, rowIndices, rows);
-  }
-
-  private build(values: unknown[], rowIndices: number[] | null, rows: number): DynamicColumn {
     const NULL_SENTINEL = 0xffffffff;
     const typeIndex = new Map<string, number>();
     const typeOrder: string[] = [];
@@ -693,7 +689,7 @@ export class JsonCodec implements Codec {
       );
     }
 
-    const dynCodec = new DynamicCodec(this.resolveCodec);
+    const dynCodec = this.resolveCodec("Dynamic") as DynamicCodec;
     for (const path of dynamicPathOrder) {
       const entry = dynamicPathEntries.get(path)!;
       pathColumns.set(path, dynCodec.fromSparse(entry.rows, entry.values, n));
@@ -742,14 +738,14 @@ export class JsonCodec implements Codec {
     }
 
     const dynamicPathOrder: string[] = [];
-    const dynCodec = new DynamicCodec(this.resolveCodec);
+    const dynCodec = this.resolveCodec("Dynamic");
     for (const key of keys) {
       if (this.typedPathNames.has(key)) continue;
       const value = input[key]!;
       // JS callers can pass anything; a non-arraylike is only usable when it is
       // a genuine Dynamic column (any other shape loses per-value types).
       const colType = isArrayLike(value) ? undefined : (value as Column).type;
-      if (typeof colType === "string" && colType.startsWith("Dynamic")) {
+      if (colType?.startsWith("Dynamic")) {
         dynamicPathOrder.push(key);
         pathColumns.set(key, value as Column);
         continue;
@@ -757,7 +753,7 @@ export class JsonCodec implements Codec {
       if (!Array.isArray(value)) {
         const got = isTypedArray(value)
           ? "a TypedArray"
-          : typeof colType === "string"
+          : colType !== undefined
             ? `a '${colType}' column`
             : `a ${typeof value}`;
         throw new TypeError(

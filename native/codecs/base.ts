@@ -345,8 +345,8 @@ export function childState(state: DeserializerState, index: number): Deserialize
   return {
     ...state,
     serializationNode: state.serializationNode.children[index] ?? DEFAULT_DENSE_NODE,
-    // Grown lazily so readPrefix (writer) and decode (reader) meet at the
-    // same node when both derive the child from the same parent state.
+    // Grown lazily so readPrefix (populates prefix.data) and decode (consumes
+    // it) land on the same node when both derive it from the same parent.
     prefix: (state.prefix.children[index] ??= { children: [] }),
   };
 }

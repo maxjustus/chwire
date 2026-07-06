@@ -79,4 +79,4 @@ That would reintroduce row shredding — the whole point is to build `pathColumn
 
 - `isColumn` duck-type strengthened: checks `.get` + `.type` + `.length` (not just `.get`), avoiding false positives on `Map`.
 - `NullableCodec.fromValues` signature widening was unnecessary — the `Codec` interface already accepts `unknown[] | TypedArray`, and the call goes through the interface.
-- README example deferred — the API is self-documenting via the `getCodec` overload and test examples.
+- README gained a fromCols usage example and a fromCols-vs-fromValues benchmark section (initially deferred, added later on the branch).

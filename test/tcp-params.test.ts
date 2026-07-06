@@ -118,7 +118,6 @@ describe("TCP Query Parameters", { timeout: 60000 }, () => {
   });
 
   it("handles Variant param with string", async () => {
-    // Variant returns a VariantValue cell
     const result = await queryScalar("SELECT {v: Variant(String, Int64)}", {
       v: "hello",
     });

@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Added
+
+- Added `JsonCodec.fromCols()` for constructing JSON columns path-by-path from columnar data, skipping row-object shredding. `getCodec("JSON(...)")` returns a narrowed type with the method available. Accepts `Dynamic` columns on dynamic paths without re-shredding, and rejects non-arraylike inputs (a bare string would otherwise become one row per character).
+
 ### Changed
 
 - **Breaking**: `Codec.readPrefix` takes the block's `DeserializerState` as a second parameter; Dynamic/JSON wire metadata (type list, dynamic path list) now lives on that per-column, per-block state instead of the codec instance. Custom codecs implementing `readPrefix` must add the parameter. Codecs are now fully stateless, so `getCodec` caches every type — including `Dynamic`, `JSON`, and composites containing them, which previously rebuilt their codec tree per column per block.
@@ -12,12 +16,9 @@
 ### Fixed
 
 - Queries with unbound `{name: Type}` placeholders are now sent as-is instead of throwing `Missing parameter` client-side. Parameterized-view DDL (`CREATE VIEW v AS SELECT ... {x: String}`) and session-level `SET param_x = ...` bindings work; a genuinely unbound parameter fails server-side with `UNKNOWN_QUERY_PARAMETER`. Redeclaring a parameter at a conflicting type also no longer throws — the first declaration determines serialization and the server casts per use site.
-- Composite codecs containing `Dynamic`/`JSON` (e.g. `Array(Dynamic)`) now bypass the codec cache. Cached instances shared stateful codecs across uses, letting one prefix read clobber another's state and silently corrupt decodes.
-- `JsonCodec` clears its dynamic-path codecs at each block prefix; stale per-block `Dynamic` codecs from a previous block previously lingered.
 - `Dynamic` index columns scale UInt8/UInt16/UInt32 with the flattened type count (shared-variant overflow makes the list unbounded by `max_types`); a 300-type Native insert now round-trips.
 - Bare JS numbers into `Variant` route to `Int64`/`UInt64` arms; previously they skipped those arms and hit a narrower one (`Variant(Int64, UInt8)`: 300 threw out-of-range, 5 encoded on the wrong wire arm).
 - JSON type parsing handles ClickHouse's canonical identifier spellings: per-segment backtick-quoted dotted paths (`` JSON(`sp ace`.s0 Int64) ``), backslash-escaped characters in quoted identifiers, a quoted `` `SKIP` `` typed path no longer treated as a SKIP directive, and only exact `SKIP` directives dropped (typed paths named `skipped`/`skip_*` were silently discarded).
-- `JsonCodec.fromCols()` accepts `Dynamic` columns on dynamic paths without re-shredding, and rejects non-arraylike inputs (a bare string previously became one row per character).
 - IPv4-mapped IPv6 addresses (`::ffff:192.168.1.1`) encode instead of throwing; zone IDs (`fe80::1%eth0`) are rejected at validation since 16 wire bytes cannot carry them.
 - Decimal values with trailing zeros beyond the scale (`"1.50"` into `Decimal(9, 1)`) no longer throw a false precision-loss error; real precision loss still throws.
 - `insert()` rejects non-positive `bufferSize` up front and clamps the flush threshold to `bufferSize`; both previously caused infinite flush loops. Server exceptions delivered in the body of a 200 insert response are now detected, and draining the body returns the connection to the pool.
@@ -35,7 +36,6 @@
 
 ### Added
 
-- Added `JsonCodec.fromCols()` for constructing JSON columns path-by-path from columnar data, skipping row-object shredding. `getCodec("JSON(...)")` now returns a narrowed type with the method available.
 - Added configurable ZSTD compression level via `compression: { method: "zstd", level }` (replaces the separate `zstdLevel` option).
 - Added `DynamicValue` for inserting `Dynamic`-column values with an explicit ClickHouse type, bypassing runtime type inference.
 - Added exported `ClickHouseException` support for structured ClickHouse server errors.

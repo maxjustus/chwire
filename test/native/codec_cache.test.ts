@@ -26,7 +26,7 @@ function roundTrip(type: string, values: unknown[]): unknown[] {
   return Array.from(decoded);
 }
 
-describe("codec cache and stateful codecs", () => {
+describe("codec cache", () => {
   it("freezes cached codecs so instance-state regressions throw instead of corrupting sharers", () => {
     const codec = getCodec("Array(Dynamic)") as unknown as Record<string, unknown>;
     assert.ok(Object.isFrozen(codec));
@@ -61,28 +61,6 @@ describe("codec cache and stateful codecs", () => {
     assert.deepStrictEqual(first, [new Map([["a", 1n]])]);
     const second = roundTrip("Map(String, Dynamic)", [new Map([["b", "str"]])]);
     assert.deepStrictEqual(second, [new Map([["b", "str"]])]);
-  });
-
-  it("decodes consecutive blocks with different dynamic paths through one JSON codec", () => {
-    const codec = getCodec("JSON");
-    // First block establishes dynamic path "a"; the second has only "b".
-    // A stale "a" entry in the codec's per-block state must not leak into
-    // the second decode.
-    const encodeBlock = (values: unknown[]) => {
-      const col = codec.fromValues(values);
-      const writer = new BufferWriter(256);
-      codec.writePrefix(writer, col);
-      writer.write(codec.encode(col));
-      return writer.finish();
-    };
-    const decodeBlock = (bytes: Uint8Array, rows: number) => {
-      const reader = new BufferReader(bytes);
-      const state = defaultDeserializerState();
-      codec.readPrefix(reader, state);
-      return Array.from(codec.decode(reader, rows, state));
-    };
-    assert.deepStrictEqual(decodeBlock(encodeBlock([{ a: 1n }]), 1), [{ a: 1n }]);
-    assert.deepStrictEqual(decodeBlock(encodeBlock([{ b: "x" }]), 1), [{ b: "x" }]);
   });
 
   it("round-trips Array(JSON) with dynamic paths", () => {
