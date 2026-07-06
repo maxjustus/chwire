@@ -144,13 +144,12 @@ export function extractParamTypes(query: string): Map<string, string> {
       const parsed = parseParam(query, i + 1);
       if (parsed) {
         const [name, type, end] = parsed;
-        const existing = result.get(name);
-        if (existing !== undefined && existing !== type) {
-          throw new Error(
-            `Parameter '${name}' declared with conflicting types: ${existing} vs ${type}`,
-          );
+        // First declaration wins. Only one raw value is sent per name; the
+        // server casts it at each use site, so redeclarations at other types
+        // are its concern, not ours.
+        if (!result.has(name)) {
+          result.set(name, type);
         }
-        result.set(name, type);
         i = end;
       } else {
         i++;

@@ -46,11 +46,9 @@ describe("extractParamTypes", () => {
     assert.strictEqual(types.get("id"), "UInt64");
   });
 
-  it("throws on conflicting types for same param", () => {
-    assert.throws(
-      () => extractParamTypes("SELECT {id: UInt64}, {id: String}"),
-      /conflicting types/i,
-    );
+  it("keeps the first type when a param is redeclared at another type", () => {
+    const types = extractParamTypes("SELECT {id: UInt64}, {id: String}");
+    assert.strictEqual(types.get("id"), "UInt64");
   });
 
   it("skips single-quoted string literals", () => {
