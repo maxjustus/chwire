@@ -1,8 +1,8 @@
 /**
- * The codec cache must not hand out shared stateful codec instances.
- * Dynamic/JSON codecs accumulate per-block prefix state, so any composite
- * type containing them must bypass the cache — otherwise two elements of
- * the same type string share one instance and clobber each other's state.
+ * Codecs are stateless, so the cache hands out one shared instance per type
+ * string — including Dynamic/JSON and composites containing them. Shared
+ * instances must round-trip cleanly across blocks and across sibling uses
+ * with different per-block type/path sets.
  */
 
 import assert from "node:assert";
@@ -27,6 +27,15 @@ function roundTrip(type: string, values: unknown[]): unknown[] {
 }
 
 describe("codec cache and stateful codecs", () => {
+  it("caches Dynamic/JSON composites as shared instances", () => {
+    assert.strictEqual(getCodec("Array(Dynamic)"), getCodec("Array(Dynamic)"));
+    assert.strictEqual(getCodec("JSON"), getCodec("JSON"));
+    assert.strictEqual(
+      getCodec("Tuple(Array(Dynamic), Array(Dynamic))"),
+      getCodec("Tuple(Array(Dynamic), Array(Dynamic))"),
+    );
+  });
+
   it("round-trips Tuple(Array(Dynamic), Array(Dynamic)) with different inner types", () => {
     const values = [
       [
