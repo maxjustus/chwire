@@ -26,10 +26,7 @@ export let usingNativeZstd = false;
 
 function prependUint32LE(data: Uint8Array, size: number): Uint8Array {
   const out = new Uint8Array(4 + data.length);
-  out[0] = size & 0xff;
-  out[1] = (size >> 8) & 0xff;
-  out[2] = (size >> 16) & 0xff;
-  out[3] = (size >> 24) & 0xff;
+  writeUInt32LE(out, size, 0);
   out.set(data, 4);
   return out;
 }
