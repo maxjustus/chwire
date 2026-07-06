@@ -195,8 +195,13 @@ export function createCodec(type: string): Codec {
 // re-inserting moves a key to the end. Evicting map.keys().next() drops oldest.
 // Codecs are stateless (per-block wire metadata lives on DeserializerState),
 // so one instance per type string is safe to share across columns and blocks.
+// Entries are frozen: a codec that mutates itself post-construction would
+// corrupt every sharer, so make the write throw instead.
 const CODEC_CACHE = new Map<string, Codec>();
-const CODEC_CACHE_LIMIT = 131072;
+// Type strings arrive from the server (Dynamic prefixes name arbitrary types),
+// so the cap bounds memory against unbounded type cardinality, not just schema
+// size. Entries are full codec trees; evicted types just re-parse.
+const CODEC_CACHE_LIMIT = 8192;
 
 export function getCodec(type: "JSON" | `JSON(${string})`): JsonCodec;
 export function getCodec(type: string): Codec;
@@ -208,7 +213,7 @@ export function getCodec(type: string): Codec {
     return cached;
   }
 
-  const codec = createCodec(type);
+  const codec = Object.freeze(createCodec(type));
   CODEC_CACHE.set(type, codec);
 
   if (CODEC_CACHE.size > CODEC_CACHE_LIMIT) {

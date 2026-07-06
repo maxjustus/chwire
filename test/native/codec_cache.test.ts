@@ -27,6 +27,14 @@ function roundTrip(type: string, values: unknown[]): unknown[] {
 }
 
 describe("codec cache and stateful codecs", () => {
+  it("freezes cached codecs so instance-state regressions throw instead of corrupting sharers", () => {
+    const codec = getCodec("Array(Dynamic)") as unknown as Record<string, unknown>;
+    assert.ok(Object.isFrozen(codec));
+    assert.throws(() => {
+      codec.types = ["Int64"];
+    }, TypeError);
+  });
+
   it("caches Dynamic/JSON composites as shared instances", () => {
     assert.strictEqual(getCodec("Array(Dynamic)"), getCodec("Array(Dynamic)"));
     assert.strictEqual(getCodec("JSON"), getCodec("JSON"));
