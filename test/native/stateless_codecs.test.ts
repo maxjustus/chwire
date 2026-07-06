@@ -142,38 +142,30 @@ describe("shared codec instance reuse", () => {
 });
 
 describe("readKinds is independent of prior prefix reads", () => {
-  it(
-    "Dynamic readKinds consumes exactly one byte after a prefix populated two types",
-    { todo: "red until readKinds ignores instance state" },
-    () => {
-      const codec = createCodec("Dynamic");
-      const prefixed = encodeBlock("Dynamic", [1n, "s"]);
-      codec.readPrefix?.(new BufferReader(prefixed));
+  it("Dynamic readKinds consumes exactly one byte after a prefix populated two types", () => {
+    const codec = createCodec("Dynamic");
+    const prefixed = encodeBlock("Dynamic", [1n, "s"]);
+    codec.readPrefix?.(new BufferReader(prefixed));
 
-      // Dynamic children depend on prefix content, so they are not part of
-      // the static kinds tree; the server emits a single kind byte.
-      const reader = new BufferReader(new Uint8Array([0]));
-      codec.readKinds(reader);
-      assert.strictEqual(reader.offset, 1);
-    },
-  );
+    // Dynamic children depend on prefix content, so they are not part of
+    // the static kinds tree; the server emits a single kind byte.
+    const reader = new BufferReader(new Uint8Array([0]));
+    codec.readKinds(reader);
+    assert.strictEqual(reader.offset, 1);
+  });
 
-  it(
-    "JSON readKinds consumes self + typed-path bytes after a prefix populated dynamic paths",
-    { todo: "red until readKinds ignores instance state" },
-    () => {
-      const codec = createCodec("JSON(t UInt32)");
-      const encCodec = createCodec("JSON(t UInt32)");
-      const col = encCodec.fromValues([{ t: 1, a: 1n, b: "x" }]);
-      const writer = new BufferWriter(1024);
-      encCodec.writePrefix?.(writer, col);
-      codec.readPrefix?.(new BufferReader(writer.finish()));
+  it("JSON readKinds consumes self + typed-path bytes after a prefix populated dynamic paths", () => {
+    const codec = createCodec("JSON(t UInt32)");
+    const encCodec = createCodec("JSON(t UInt32)");
+    const col = encCodec.fromValues([{ t: 1, a: 1n, b: "x" }]);
+    const writer = new BufferWriter(1024);
+    encCodec.writePrefix?.(writer, col);
+    codec.readPrefix?.(new BufferReader(writer.finish()));
 
-      // Kinds tree covers self + typed paths only; dynamic paths depend on
-      // prefix content the kinds pass has not seen yet.
-      const reader = new BufferReader(new Uint8Array([0, 0]));
-      codec.readKinds(reader);
-      assert.strictEqual(reader.offset, 2);
-    },
-  );
+    // Kinds tree covers self + typed paths only; dynamic paths depend on
+    // prefix content the kinds pass has not seen yet.
+    const reader = new BufferReader(new Uint8Array([0, 0]));
+    codec.readKinds(reader);
+    assert.strictEqual(reader.offset, 2);
+  });
 });

@@ -473,7 +473,9 @@ export class DynamicCodec implements Codec {
   }
 
   readKinds(reader: BufferReader) {
-    return readKindsMany(reader, this.codecs);
+    // Dynamic children depend on prefix content the kinds pass has not read
+    // yet, so the server's static kinds tree carries only the self byte.
+    return { kind: reader.readU8(), children: [] };
   }
 
   toLiteral(value: unknown): string | typeof SQL_NULL {
@@ -774,8 +776,12 @@ export class JsonCodec implements Codec {
   }
 
   readKinds(reader: BufferReader) {
-    const allCodecs = [...this.typedPaths.map((tp) => tp.codec), ...this.dynamicCodecs.values()];
-    return readKindsMany(reader, allCodecs);
+    // Dynamic paths depend on prefix content the kinds pass has not read yet;
+    // the static kinds tree carries self + typed paths only.
+    return readKindsMany(
+      reader,
+      this.typedPaths.map((tp) => tp.codec),
+    );
   }
 
   toLiteral(value: unknown): string | typeof SQL_NULL {
