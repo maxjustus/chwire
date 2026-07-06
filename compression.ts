@@ -1,3 +1,4 @@
+import { Compression as CompressionFrame } from "./native/constants.ts";
 import { cityhash_102_128 } from "./vendor/cityhash/cityhash.js";
 
 // Build-time constant set by esbuild --define
@@ -150,8 +151,7 @@ function equals(a: Uint8Array, b: Uint8Array): boolean {
   return true;
 }
 
-const CHECKSUM_SIZE = 16;
-const HEADER_SIZE = 9;
+const { CHECKSUM_SIZE, HEADER_SIZE } = CompressionFrame;
 const MAGIC_OFFSET = 0;
 const COMPRESSED_SIZE_OFFSET = 1;
 const UNCOMPRESSED_SIZE_OFFSET = 5;
