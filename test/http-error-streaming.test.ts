@@ -17,6 +17,8 @@ import {
   _parseStreamException as parseStreamException,
   query,
 } from "../client.ts";
+import { createServer } from "node:http";
+import { encodeBlock } from "../compression.ts";
 import { startClickHouse, stopClickHouse } from "./setup.ts";
 import { generateSessionId } from "./test_utils.ts";
 
@@ -370,6 +372,89 @@ describe("HTTP error handling (integration)", { timeout: 60000 }, () => {
           );
         }
       });
+    }
+  });
+});
+
+describe("compressed stream ending in a partial block", () => {
+  it("throws ClickHouseException when the truncated block claims more bytes than remain", async () => {
+    // Header of block two arrives intact but claims a compressedSize larger
+    // than everything left in the stream, so the block never "completes" and
+    // the trailer sits in the leftover past offset 0 at stream end.
+    await init();
+    const goodBlock = encodeBlock(encode("hello world, block one"), "lz4");
+    // Incompressible payload so the claimed compressedSize (~500 bytes) far
+    // exceeds the 25 header bytes + 97 trailer bytes that actually arrive.
+    const noise = new Uint8Array(500);
+    let seed = 42;
+    for (let i = 0; i < noise.length; i++) {
+      seed = (seed * 1103515245 + 12345) & 0x7fffffff;
+      noise[i] = seed & 0xff;
+    }
+    const bigBlock = encodeBlock(noise, "lz4");
+    const truncated = bigBlock.subarray(0, 25);
+    const trailer = encode(
+      "\n__exception__\nCode: 241. DB::Exception: Memory limit (total) exceeded. (MEMORY_LIMIT_EXCEEDED)",
+    );
+    const body = new Uint8Array([...goodBlock, ...truncated, ...trailer]);
+
+    const server = createServer((_req, res) => {
+      res.writeHead(200, { "Content-Type": "application/octet-stream" });
+      res.end(body);
+    });
+    await new Promise<void>((resolve) => server.listen(0, resolve));
+    const port = (server.address() as { port: number }).port;
+
+    try {
+      await assert.rejects(
+        collectText(query("SELECT 1", { url: `http://localhost:${port}/`, compression: "lz4" })),
+        (err: unknown) => {
+          assert.ok(
+            err instanceof ClickHouseException,
+            `Expected ClickHouseException, got: ${(err as Error).message}`,
+          );
+          assert.strictEqual(err.code, 241);
+          return true;
+        },
+      );
+    } finally {
+      server.close();
+    }
+  });
+
+  it("throws ClickHouseException when the trailer follows a truncated block", async () => {
+    // A query dying mid-stream can flush a partial compressed block before the
+    // server appends the (uncompressed) __exception__ trailer. The trailer is
+    // then NOT at offset 0 of the leftover bytes — it must be found by scanning.
+    await init();
+    const goodBlock = encodeBlock(encode("hello world, block one"), "lz4");
+    const truncated = encodeBlock(encode("block two, never finishes"), "lz4").subarray(0, 30);
+    const trailer = encode(
+      "\n__exception__\nCode: 241. DB::Exception: Memory limit (total) exceeded. (MEMORY_LIMIT_EXCEEDED)",
+    );
+    const body = new Uint8Array([...goodBlock, ...truncated, ...trailer]);
+
+    const server = createServer((_req, res) => {
+      res.writeHead(200, { "Content-Type": "application/octet-stream" });
+      res.end(body);
+    });
+    await new Promise<void>((resolve) => server.listen(0, resolve));
+    const port = (server.address() as { port: number }).port;
+
+    try {
+      await assert.rejects(
+        collectText(query("SELECT 1", { url: `http://localhost:${port}/`, compression: "lz4" })),
+        (err: unknown) => {
+          assert.ok(
+            err instanceof ClickHouseException,
+            `Expected ClickHouseException, got: ${(err as Error).message}`,
+          );
+          assert.strictEqual(err.code, 241);
+          return true;
+        },
+      );
+    } finally {
+      server.close();
     }
   });
 });

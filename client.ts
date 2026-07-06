@@ -916,11 +916,12 @@ async function* queryImpl(sql: string, options: QueryOptions = {}): AsyncGenerat
               yield decompressed;
             } catch (err: unknown) {
               if (err instanceof ClickHouseException) throw err;
-              // A failed decode at the buffer start is usually the exception
-              // trailer being mistaken for a block — surface it as the real error.
-              if (isFramedExceptionAt(streamBuffer.view, 0, exceptionTagBytes)) {
-                throw parseStreamException(streamBuffer.view, exceptionTag);
-              }
+              // A failed decode usually means the exception trailer got mixed
+              // into the block bytes: the server can flush a partial block
+              // before appending the (uncompressed) trailer, so scan the whole
+              // buffer — the trailer is not necessarily at the block boundary.
+              const trailer = splitStreamException(streamBuffer.view, false, exceptionTag);
+              if (trailer) throw trailer.error;
               const message = err instanceof Error ? err.message : String(err);
               throw new Error(`Block decompression failed: ${message}`);
             }
@@ -930,10 +931,11 @@ async function* queryImpl(sql: string, options: QueryOptions = {}): AsyncGenerat
         // after stream ends: any remaining bytes mean an incomplete compressed
         // block, or the exception trailer left after the last complete block.
         if (streamBuffer.available > 0) {
-          if (isFramedExceptionAt(streamBuffer.view, 0, exceptionTagBytes)) {
-            throw parseStreamException(streamBuffer.view, exceptionTag);
-          }
-          throw new Error("Incomplete block");
+          const trailer = splitStreamException(streamBuffer.view, false, exceptionTag);
+          if (trailer) throw trailer.error;
+          throw new Error(
+            `Incomplete block: stream ended with ${streamBuffer.available} unparsed bytes and no exception trailer`,
+          );
         }
       }
     } finally {
