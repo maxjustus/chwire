@@ -221,7 +221,7 @@ export interface Codec {
   zeroValue(): unknown;
   estimateSize(rows: number): number;
   writePrefix?(writer: BufferWriter, col: Column): void;
-  readPrefix?(reader: BufferReader): void;
+  readPrefix?(reader: BufferReader, state: DeserializerState): void;
   readKinds(reader: BufferReader): SerializationNode;
   /**
    * Serialize a single value to ClickHouse literal string syntax.
@@ -326,6 +326,7 @@ export function defaultDeserializerState(): DeserializerState {
   return {
     serializationNode: DEFAULT_DENSE_NODE,
     sparseRuntime: new Map(),
+    prefix: { children: [] },
   };
 }
 
@@ -338,6 +339,9 @@ export function childState(state: DeserializerState, index: number): Deserialize
   return {
     ...state,
     serializationNode: state.serializationNode.children[index] ?? DEFAULT_DENSE_NODE,
+    // Grown lazily so readPrefix (writer) and decode (reader) meet at the
+    // same node when both derive the child from the same parent state.
+    prefix: (state.prefix.children[index] ??= { children: [] }),
   };
 }
 

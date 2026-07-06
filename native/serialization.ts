@@ -41,6 +41,18 @@ export interface SerializationNode {
 export const DEFAULT_DENSE_NODE: SerializationNode = { kind: 0, children: [] };
 
 /**
+ * Wire metadata written by `readPrefix` and consumed by `decode` at the same
+ * position in the type tree, keyed like `SerializationNode` children. Keeps
+ * codecs stateless: a Dynamic/JSON prefix (type list, path list) lives on the
+ * per-column, per-block state instead of the shared codec instance.
+ */
+export interface PrefixNode {
+  /** Codec-defined payload; leaf codecs leave it undefined. */
+  data?: unknown;
+  children: PrefixNode[];
+}
+
+/**
  * State maintained during a block deserialization.
  */
 export interface DeserializerState {
@@ -53,4 +65,5 @@ export interface DeserializerState {
    * - `has_value_after_defaults`: whether a non-default follows those defaults
    */
   sparseRuntime: Map<SerializationNode, [number, boolean]>;
+  prefix: PrefixNode;
 }

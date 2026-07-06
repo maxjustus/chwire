@@ -140,9 +140,11 @@ export class VariantCodec implements Codec {
     }
   }
 
-  readPrefix(reader: BufferReader) {
+  readPrefix(reader: BufferReader, state: DeserializerState) {
     reader.offset += 8;
-    for (const codec of this.codecs) codec.readPrefix?.(reader);
+    for (let i = 0; i < this.codecs.length; i++) {
+      this.codecs[i]!.readPrefix?.(reader, childState(state, i));
+    }
   }
 
   encode(col: Column, sizeHint?: number): Uint8Array {
@@ -285,10 +287,13 @@ export class VariantCodec implements Codec {
  *
  * Children (type groups) may be sparse-encoded individually.
  */
+interface DynamicPrefix {
+  types: string[];
+  codecs: Codec[];
+}
+
 export class DynamicCodec implements Codec {
   readonly type = "Dynamic";
-  private types: string[] = [];
-  private codecs: Codec[] = [];
   private resolveCodec: CodecResolver;
 
   constructor(resolveCodec: CodecResolver) {
@@ -309,17 +314,20 @@ export class DynamicCodec implements Codec {
     }
   }
 
-  readPrefix(reader: BufferReader) {
+  readPrefix(reader: BufferReader, state: DeserializerState) {
     const version = reader.readU64LE();
     if (version !== Dynamic.VERSION_V3)
       throw new Error(`Dynamic: only V3 supported, got V${version}`);
 
     const count = reader.readVarint();
-    this.types = [];
-    for (let i = 0; i < count; i++) this.types.push(reader.readString());
-    this.codecs = this.types.map((t) => this.resolveCodec(t));
+    const types: string[] = [];
+    for (let i = 0; i < count; i++) types.push(reader.readString());
+    const codecs = types.map((t) => this.resolveCodec(t));
+    state.prefix.data = { types, codecs } satisfies DynamicPrefix;
 
-    for (const c of this.codecs) c.readPrefix?.(reader);
+    for (let i = 0; i < codecs.length; i++) {
+      codecs[i]!.readPrefix?.(reader, childState(state, i));
+    }
   }
 
   encode(col: Column, sizeHint?: number): Uint8Array {
@@ -340,7 +348,12 @@ export class DynamicCodec implements Codec {
   }
 
   decode(reader: BufferReader, rows: number, state: DeserializerState): DynamicColumn {
-    const nullDisc = this.types.length;
+    const prefix = state.prefix.data as DynamicPrefix | undefined;
+    if (!prefix) {
+      throw new Error("Dynamic decode requires readPrefix on the same DeserializerState");
+    }
+    const { types, codecs } = prefix;
+    const nullDisc = types.length;
     // V3 flattened indexes use the smallest width that fits nullDisc + 1
     // values (CH getSmallestIndexesType); shared-variant overflow means the
     // flattened type list is NOT bounded by max_types, so >255 is legal.
@@ -351,8 +364,8 @@ export class DynamicCodec implements Codec {
     );
 
     const { counts, indices } = countAndIndexDiscriminators(discriminators, nullDisc);
-    const groups = decodeGroups(reader, this.codecs, counts, state);
-    return new DynamicColumn(this.types, discriminators, groups, indices);
+    const groups = decodeGroups(reader, codecs, counts, state);
+    return new DynamicColumn(types, discriminators, groups, indices);
   }
 
   fromValues(values: unknown[]): DynamicColumn {
@@ -514,13 +527,15 @@ export class DynamicCodec implements Codec {
   }
 }
 
+interface JsonPrefix {
+  dynamicPaths: string[];
+}
+
 export class JsonCodec implements Codec {
   readonly type: string;
   private typedPaths: { name: string; type: string; codec: Codec }[] = [];
   private typedPathNames: Set<string>;
   private typedPathNameList: string[];
-  private dynamicPaths: string[] = [];
-  private dynamicCodecs = new Map<string, DynamicCodec>();
   private resolveCodec: CodecResolver;
 
   constructor(
@@ -566,8 +581,7 @@ export class JsonCodec implements Codec {
     }
   }
 
-  readPrefix(reader: BufferReader) {
-    this.dynamicCodecs.clear();
+  readPrefix(reader: BufferReader, state: DeserializerState) {
     const ver = reader.readU64LE();
     if (ver !== JSONFormat.VERSION_V3) throw new Error(`JSON: only V3 supported, got V${ver}`);
 
@@ -575,14 +589,21 @@ export class JsonCodec implements Codec {
     const allPathNames: string[] = [];
     for (let i = 0; i < count; i++) allPathNames.push(reader.readString());
 
-    this.dynamicPaths = allPathNames.filter((p) => !this.typedPathNames.has(p));
+    const dynamicPaths = allPathNames.filter((p) => !this.typedPathNames.has(p));
+    state.prefix.data = { dynamicPaths } satisfies JsonPrefix;
 
-    for (const tp of this.typedPaths) tp.codec.readPrefix?.(reader);
+    // Children are keyed typed paths first, then dynamic paths, matching
+    // decode's traversal order. idx must advance for every path (an optional
+    // call would skip its argument evaluation for prefix-less codecs).
+    let idx = 0;
+    for (const tp of this.typedPaths) {
+      const child = childState(state, idx++);
+      tp.codec.readPrefix?.(reader, child);
+    }
 
-    for (const path of this.dynamicPaths) {
-      const codec = new DynamicCodec(this.resolveCodec);
-      codec.readPrefix(reader);
-      this.dynamicCodecs.set(path, codec);
+    const dynCodec = this.resolveCodec("Dynamic");
+    for (let i = 0; i < dynamicPaths.length; i++) {
+      dynCodec.readPrefix?.(reader, childState(state, idx++));
     }
   }
 
@@ -608,6 +629,11 @@ export class JsonCodec implements Codec {
   }
 
   decode(reader: BufferReader, rows: number, state: DeserializerState): JsonColumn {
+    const prefix = state.prefix.data as JsonPrefix | undefined;
+    if (!prefix) {
+      throw new Error("JSON decode requires readPrefix on the same DeserializerState");
+    }
+    const { dynamicPaths } = prefix;
     const pathColumns = new Map<string, Column>();
     let idx = 0;
 
@@ -615,14 +641,12 @@ export class JsonCodec implements Codec {
       pathColumns.set(tp.name, tp.codec.decode(reader, rows, childState(state, idx++)));
     }
 
-    for (const path of this.dynamicPaths) {
-      pathColumns.set(
-        path,
-        this.dynamicCodecs.get(path)!.decode(reader, rows, childState(state, idx++)),
-      );
+    const dynCodec = this.resolveCodec("Dynamic");
+    for (const path of dynamicPaths) {
+      pathColumns.set(path, dynCodec.decode(reader, rows, childState(state, idx++)));
     }
 
-    const allPaths = [...this.typedPathNameList, ...this.dynamicPaths];
+    const allPaths = [...this.typedPathNameList, ...dynamicPaths];
     return new JsonColumn(allPaths, pathColumns, rows, this.type);
   }
 

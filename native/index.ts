@@ -173,10 +173,14 @@ export function decodeNativeBlockWithReader(
         }
       }
 
-      const state: DeserializerState = { serializationNode, sparseRuntime: new Map() };
+      const state: DeserializerState = {
+        serializationNode,
+        sparseRuntime: new Map(),
+        prefix: { children: [] },
+      };
       // Only read prefix and decode when there are rows - empty blocks are schema-only
       if (numRows > 0) {
-        codec.readPrefix?.(reader);
+        codec.readPrefix?.(reader, state);
         columnData.push(codec.decode(reader, numRows, state));
       } else {
         // Schema-only block: no prefix or data, create empty column
