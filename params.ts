@@ -123,6 +123,35 @@ function parseParam(query: string, i: number): [string, string, number] | null {
   return [name, type, i + 1];
 }
 
+function skipLeadingTrivia(query: string): number {
+  let i = 0;
+  while (i < query.length) {
+    if (isWhitespace(query[i]!)) {
+      i++;
+    } else if (query[i] === "-" && query[i + 1] === "-") {
+      i = skipLineComment(query, i + 2);
+    } else if (query[i] === "/" && query[i + 1] === "*") {
+      i = skipBlockComment(query, i + 2);
+    } else {
+      break;
+    }
+  }
+  return i;
+}
+
+/**
+ * Parameterized views store {name: Type} placeholders in their DDL and bind
+ * them at query time (SELECT * FROM view(name=...)), so view DDL legally
+ * contains unbound placeholders.
+ */
+function isViewDdl(query: string): boolean {
+  const start = skipLeadingTrivia(query);
+  const head = query.slice(start, start + 64);
+  return /^(create\s+(or\s+replace\s+)?(materialized\s+)?view|attach\s+(materialized\s+)?view)\b/i.test(
+    head,
+  );
+}
+
 /**
  * Extract parameter types from a query string.
  * Matches {name: Type} patterns, skipping strings and comments.
@@ -197,10 +226,11 @@ export function serializeParams(
     result[name] = codec.toLiteral(value);
   }
 
-  // Check for missing required params
-  for (const [name, type] of types) {
-    if (!(name in result)) {
-      throw new Error(`Missing parameter: ${name} (type: ${type})`);
+  if (!isViewDdl(query)) {
+    for (const [name, type] of types) {
+      if (!(name in result)) {
+        throw new Error(`Missing parameter: ${name} (type: ${type})`);
+      }
     }
   }
 

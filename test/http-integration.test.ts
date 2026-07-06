@@ -579,6 +579,32 @@ describe("ClickHouse Integration Tests", { timeout: 60000 }, () => {
       assert.strictEqual(result.trim(), "7");
     });
 
+    it("creates a parameterized view with unbound placeholders and queries it with arguments", async () => {
+      await consume(
+        query(
+          `CREATE OR REPLACE VIEW param_view AS
+             SELECT number FROM system.numbers
+             WHERE number >= {min_n: UInt64} AND number < {max_n: UInt64}`,
+          { url, auth, sessionId },
+        ),
+      );
+
+      const result = await collectText(
+        query("SELECT number FROM param_view(min_n=3, max_n=6) ORDER BY number FORMAT JSON", {
+          url,
+          auth,
+          sessionId,
+        }),
+      );
+      const parsed = JSON.parse(result);
+      assert.deepStrictEqual(
+        parsed.data.map((r: { number: string | number }) => Number(r.number)),
+        [3, 4, 5],
+      );
+
+      await consume(query("DROP VIEW param_view", { url, auth, sessionId }));
+    });
+
     it("should use query parameters with UInt64", async () => {
       const result = await collectText(
         query("SELECT {value:UInt64} as v FORMAT JSON", {
