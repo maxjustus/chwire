@@ -16,6 +16,7 @@ import { describe, it } from "node:test";
 import { insert } from "../client.ts";
 import { type Compression, decodeBlock } from "../compression.ts";
 import type { Rng } from "../native/codecs/base.ts";
+import { toAsync } from "../test/test_utils.ts";
 import { config, getIterationIndex, logConfig } from "./config.ts";
 import { makeRng } from "./rng.ts";
 
@@ -96,10 +97,6 @@ function randomOptions(rng: Rng): {
   return threshold === undefined
     ? { bufferSize, compression }
     : { bufferSize, threshold, compression };
-}
-
-async function* toAsync(chunks: Uint8Array[]): AsyncIterable<Uint8Array> {
-  for (const chunk of chunks) yield chunk;
 }
 
 describe("Insert Option Fuzz Tests", { timeout: 120000 }, () => {

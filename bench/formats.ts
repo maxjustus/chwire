@@ -27,10 +27,7 @@ import {
   readBenchOptions,
   reportEnvironment,
 } from "./harness.ts";
-
-function encodeNativeRows(columns: ColumnDef[], rows: unknown[][]): Uint8Array {
-  return encodeNative(batchFromRows(columns, rows));
-}
+import { encodeNativeRows } from "../test/test_utils.ts";
 
 async function collectByteChunks(chunks: AsyncIterable<Uint8Array>): Promise<Uint8Array> {
   const parts: Uint8Array[] = [];

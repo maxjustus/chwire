@@ -9,17 +9,13 @@
 import { parseArgs } from "node:util";
 import {
   batchFromCols,
-  batchFromRows,
   type ColumnDef,
   encodeNative,
   getCodec,
   RecordBatch,
   streamDecodeNative,
 } from "../native/index.ts";
-
-function encodeNativeRows(columns: ColumnDef[], rows: unknown[][]): Uint8Array {
-  return encodeNative(batchFromRows(columns, rows));
-}
+import { encodeNativeRows, toAsync } from "../test/test_utils.ts";
 
 function buildColumnar(columns: ColumnDef[], columnarData: unknown[][]): RecordBatch {
   const cols: Record<string, ReturnType<ReturnType<typeof getCodec>["fromValues"]>> = {};
@@ -27,10 +23,6 @@ function buildColumnar(columns: ColumnDef[], columnarData: unknown[][]): RecordB
     cols[columns[i]!.name] = getCodec(columns[i]!.type).fromValues(columnarData[i]! as unknown[]);
   }
   return batchFromCols(cols);
-}
-
-async function* toAsync<T>(iter: Iterable<T>): AsyncIterable<T> {
-  for (const item of iter) yield item;
 }
 
 const DATA_TYPES = [

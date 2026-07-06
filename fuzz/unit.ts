@@ -20,7 +20,7 @@ import {
   streamDecodeNative,
 } from "../native/index.ts";
 import type { Rng } from "../native/codecs/base.ts";
-import { decodeBatch, toArrayRows } from "../test/test_utils.ts";
+import { decodeBatch, toArrayRows, toAsync } from "../test/test_utils.ts";
 import { config, logConfig, getIterationIndex } from "./config.ts";
 import { makeRng } from "./rng.ts";
 import { randomString } from "./util.ts";
@@ -68,10 +68,6 @@ describe("Native Unit Fuzz Tests", { timeout: 60000 }, () => {
       const blocks: Uint8Array[] = [];
       for (let i = 0; i < rows.length; i += blockSize) {
         blocks.push(encodeRows(types, rows.slice(i, i + blockSize)));
-      }
-
-      async function* toAsync(arr: Uint8Array[]): AsyncIterable<Uint8Array> {
-        for (const item of arr) yield item;
       }
 
       const decodedRows: unknown[][] = [];

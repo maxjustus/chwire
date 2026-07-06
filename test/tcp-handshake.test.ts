@@ -3,6 +3,7 @@ import { describe, it } from "node:test";
 import { TcpClient } from "../tcp_client/client.ts";
 import { DBMS_TCP_PROTOCOL_VERSION } from "../tcp_client/types.ts";
 import { startClickHouse, stopClickHouse } from "./setup.ts";
+import { queryScalar } from "./test_utils.ts";
 
 function parseVersions(): string[] {
   const raw = process.env.CLICKHOUSE_VERSIONS;
@@ -13,16 +14,6 @@ function parseVersions(): string[] {
       .filter(Boolean);
   }
   return ["25.8", "24.8", "23.8"];
-}
-
-async function queryScalar(client: TcpClient, sql: string): Promise<unknown> {
-  const stream = client.query(sql);
-  for await (const packet of stream) {
-    if (packet.type === "Data" && packet.batch.rowCount > 0) {
-      return packet.batch.getAt(0, 0);
-    }
-  }
-  throw new Error(`No rows returned for: ${sql}`);
 }
 
 describe("TCP handshake revision gating", { timeout: 300000, concurrency: 1 }, () => {
