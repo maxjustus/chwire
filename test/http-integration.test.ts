@@ -365,6 +365,51 @@ describe("ClickHouse Integration Tests", { timeout: 60000 }, () => {
         }),
       );
     });
+
+    it("surfaces an insert failure the server delivers after committing 200", async () => {
+      await consume(
+        query("CREATE TABLE IF NOT EXISTS post200_sink (id UInt64) ENGINE = Memory", {
+          url,
+          auth,
+          sessionId,
+        }),
+      );
+
+      // Progress headers force the server to commit the response early, so
+      // a failure deep in the source stream arrives as a body exception
+      // after a 200 instead of an HTTP error status.
+      const realFetch = globalThis.fetch;
+      let status: number | null = null;
+      globalThis.fetch = (async (...args: Parameters<typeof fetch>) => {
+        const res = await realFetch(...args);
+        status = res.status;
+        return res;
+      }) as typeof fetch;
+      try {
+        await assert.rejects(
+          insert(
+            "INSERT INTO post200_sink SELECT throwIf(number = 9999999, 'late boom') + number FROM system.numbers LIMIT 10000000",
+            new Uint8Array(0),
+            {
+              url,
+              auth,
+              sessionId,
+              settings: {
+                wait_end_of_query: false,
+                send_progress_in_http_headers: true,
+                http_headers_progress_interval_ms: 1n,
+              },
+            },
+          ),
+          /late boom/,
+        );
+      } finally {
+        globalThis.fetch = realFetch;
+      }
+      assert.strictEqual(status, 200);
+
+      await consume(query("DROP TABLE post200_sink", { url, auth, sessionId }));
+    });
   });
 
   describe("Streaming error scenarios", () => {
