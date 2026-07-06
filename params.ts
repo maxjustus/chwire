@@ -6,6 +6,7 @@
  */
 
 import { getCodec, SQL_NULL } from "./native/codecs.ts";
+import { isAsciiWhitespace } from "./native/types.ts";
 
 export { SQL_NULL };
 
@@ -44,10 +45,6 @@ function skipBlockComment(query: string, i: number): number {
   return query.length;
 }
 
-function isWhitespace(ch: string): boolean {
-  return ch === " " || ch === "\t" || ch === "\n" || ch === "\r";
-}
-
 function isWordChar(ch: string): boolean {
   return (
     (ch >= "a" && ch <= "z") || (ch >= "A" && ch <= "Z") || (ch >= "0" && ch <= "9") || ch === "_"
@@ -55,7 +52,7 @@ function isWordChar(ch: string): boolean {
 }
 
 function skipWhitespace(query: string, i: number): number {
-  while (i < query.length && isWhitespace(query[i]!)) {
+  while (i < query.length && isAsciiWhitespace(query.charCodeAt(i))) {
     i++;
   }
   return i;
