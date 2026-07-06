@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.1.1
+
+### Fixed
+
+- 1.1.0 bundles were unusable: the main bundle imported `isAsciiWhitespace` from the `/native` subpath, which does not export it. The ESM bundle failed at import; the CJS bundle threw on every `query()`/`insert()`. The helper is local to `params.ts` again.
+
+### Package
+
+- `npm publish` now runs the dist smoke test (`test:dist`) via `prepublishOnly` instead of only building, so a bundle that cannot be imported cannot be published.
+
 ## 1.1.0
 
 ### Added
