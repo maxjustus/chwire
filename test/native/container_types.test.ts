@@ -1,7 +1,11 @@
 import assert from "node:assert";
 import { describe, it } from "node:test";
 import type { ColumnDef } from "../../native/index.ts";
+import type { DynamicColumn } from "../../native/columns.ts";
+import { getCodec } from "../../native/codecs.ts";
+import { DynamicValue } from "../../native/types.ts";
 import { decodeBatch, encodeNativeRows, toArrayRows } from "../test_utils.ts";
+import { VariantValue } from "../../native/types.ts";
 
 describe("LowCardinality", () => {
   it("encodes LowCardinality(String)", async () => {
@@ -205,48 +209,61 @@ describe("Geo types", () => {
 describe("Variant", () => {
   it("encodes simple Variant(String, UInt64)", async () => {
     const columns: ColumnDef[] = [{ name: "v", type: "Variant(String, UInt64)" }];
-    // Values are [discriminator, value] tuples
+    // Values are VariantValue(discriminator, value) cells
     const rows = [
-      [[0, "hello"]], // String (disc 0)
-      [[1, 42n]], // UInt64 (disc 1)
-      [[0, "world"]], // String (disc 0)
+      [new VariantValue(0, "hello")], // String (disc 0)
+      [new VariantValue(1, 42n)], // UInt64 (disc 1)
+      [new VariantValue(0, "world")], // String (disc 0)
     ];
     const encoded = encodeNativeRows(columns, rows);
     const decoded = decodeBatch(encoded);
     const decodedRows = toArrayRows(decoded);
 
     assert.deepStrictEqual(decoded.columns, columns);
-    assert.deepStrictEqual(decodedRows[0]![0], [0, "hello"]);
-    assert.deepStrictEqual(decodedRows[1]![0], [1, 42n]);
-    assert.deepStrictEqual(decodedRows[2]![0], [0, "world"]);
+    assert.deepStrictEqual(decodedRows[0]![0], new VariantValue(0, "hello"));
+    assert.deepStrictEqual(decodedRows[1]![0], new VariantValue(1, 42n));
+    assert.deepStrictEqual(decodedRows[2]![0], new VariantValue(0, "world"));
   });
 
   it("encodes Variant with nulls", async () => {
     const columns: ColumnDef[] = [{ name: "v", type: "Variant(String, UInt64)" }];
     const rows = [
-      [[0, "test"]],
+      [new VariantValue(0, "test")],
       [null], // null discriminator (0xFF)
-      [[1, 123n]],
+      [new VariantValue(1, 123n)],
     ];
     const encoded = encodeNativeRows(columns, rows);
     const decoded = decodeBatch(encoded);
     const decodedRows = toArrayRows(decoded);
 
-    assert.deepStrictEqual(decodedRows[0]![0], [0, "test"]);
+    assert.deepStrictEqual(decodedRows[0]![0], new VariantValue(0, "test"));
     assert.strictEqual(decodedRows[1]![0], null);
-    assert.deepStrictEqual(decodedRows[2]![0], [1, 123n]);
+    assert.deepStrictEqual(decodedRows[2]![0], new VariantValue(1, 123n));
+  });
+
+  it("round-trips bare numbers like 300 and -5 in Variant(Int64, UInt8)", async () => {
+    // Arms sort alphabetically, so Int64 precedes UInt8 and takes all bare
+    // numbers; 300 and -5 would throw if matched against UInt8.
+    const columns: ColumnDef[] = [{ name: "v", type: "Variant(Int64, UInt8)" }];
+    const rows = [[300], [-5], [5]];
+    const encoded = encodeNativeRows(columns, rows);
+    const decodedRows = toArrayRows(decodeBatch(encoded));
+
+    assert.deepStrictEqual(decodedRows[0]![0], new VariantValue(0, 300n));
+    assert.deepStrictEqual(decodedRows[1]![0], new VariantValue(0, -5n));
+    assert.deepStrictEqual(decodedRows[2]![0], new VariantValue(0, 5n));
   });
 
   it("treats Variant undefined as null", async () => {
     const columns: ColumnDef[] = [{ name: "v", type: "Variant(String, UInt64)" }];
-    const rows = [[[0, "test"]], [undefined], [[1, 123n]]];
+    const rows = [[new VariantValue(0, "test")], [undefined], [new VariantValue(1, 123n)]];
     const encoded = encodeNativeRows(columns, rows);
     const decoded = decodeBatch(encoded);
     const decodedRows = toArrayRows(decoded);
 
-    assert.deepStrictEqual(decodedRows[0]![0], [0, "test"]);
+    assert.deepStrictEqual(decodedRows[0]![0], new VariantValue(0, "test"));
     assert.strictEqual(decodedRows[1]![0], null);
-    assert.deepStrictEqual(decodedRows[2]![0], [1, 123n]);
+    assert.deepStrictEqual(decodedRows[2]![0], new VariantValue(1, 123n));
   });
 
   it("encodes Variant with all nulls", async () => {
@@ -265,18 +282,18 @@ describe("Variant", () => {
   it("encodes Variant with complex nested types", async () => {
     const columns: ColumnDef[] = [{ name: "v", type: "Variant(Array(Int32), String)" }];
     const rows = [
-      [[0, [1, 2, 3]]], // Array(Int32)
-      [[1, "test"]], // String
-      [[0, []]], // Empty array
+      [new VariantValue(0, [1, 2, 3])], // Array(Int32)
+      [new VariantValue(1, "test")], // String
+      [new VariantValue(0, [])], // Empty array
     ];
     const encoded = encodeNativeRows(columns, rows);
     const decoded = decodeBatch(encoded);
     const decodedRows = toArrayRows(decoded);
 
     // Arrays return plain arrays of values
-    assert.deepStrictEqual(decodedRows[0]![0], [0, [1, 2, 3]]);
-    assert.deepStrictEqual(decodedRows[1]![0], [1, "test"]);
-    assert.deepStrictEqual(decodedRows[2]![0], [0, []]);
+    assert.deepStrictEqual(decodedRows[0]![0], new VariantValue(0, [1, 2, 3]));
+    assert.deepStrictEqual(decodedRows[1]![0], new VariantValue(1, "test"));
+    assert.deepStrictEqual(decodedRows[2]![0], new VariantValue(0, []));
   });
 
   it("throws on unmatched Variant value type", () => {
@@ -291,6 +308,21 @@ describe("Variant", () => {
       () => encodeNativeRows(columns, [[() => {}]]),
       /Cannot match value of type function to any variant/,
     );
+  });
+
+  it("infers a plain [1, 5] as the Array arm, not a discriminator pair", async () => {
+    // Arms sort to [Array(Int64)=0, Int64=1]
+    const columns: ColumnDef[] = [{ name: "v", type: "Variant(Array(Int64), Int64)" }];
+    const encoded = encodeNativeRows(columns, [[[1, 5]]]);
+    const decodedRows = toArrayRows(decodeBatch(encoded));
+    assert.deepStrictEqual(decodedRows[0]![0], new VariantValue(0, [1n, 5n]));
+  });
+
+  it("VariantValue forces a specific arm", async () => {
+    const columns: ColumnDef[] = [{ name: "v", type: "Variant(Array(Int64), Int64)" }];
+    const encoded = encodeNativeRows(columns, [[new VariantValue(1, 5)]]);
+    const decodedRows = toArrayRows(decodeBatch(encoded));
+    assert.deepStrictEqual(decodedRows[0]![0], new VariantValue(1, 5n));
   });
 });
 
@@ -323,6 +355,20 @@ describe("Dynamic", () => {
     assert.strictEqual(decodedRows[0]![0], "test");
     assert.strictEqual(decodedRows[1]![0], null);
     assert.strictEqual(decodedRows[2]![0], 123n); // Int64 decoded as bigint
+  });
+
+  it("widens Dynamic discriminators beyond 255 distinct types", () => {
+    // V3 flattened indexes scale with the type count (CH getSmallestIndexesType):
+    // 255 types + null still fits UInt8; 256 types needs UInt16.
+    const values = Array.from(
+      { length: 256 },
+      (_, i) => new DynamicValue(`FixedString(${i + 1})`, "x".repeat(i + 1)),
+    );
+    const at255 = getCodec("Dynamic").fromValues(values.slice(0, 255)) as DynamicColumn;
+    assert.ok(at255.discriminators instanceof Uint8Array);
+    const at256 = getCodec("Dynamic").fromValues(values) as DynamicColumn;
+    assert.ok(at256.discriminators instanceof Uint16Array);
+    assert.deepStrictEqual(at256.get(255), new TextEncoder().encode("x".repeat(256)));
   });
 
   it("treats Dynamic undefined as null", async () => {
@@ -404,6 +450,38 @@ describe("JSON", () => {
     assert.strictEqual(obj2.age, 40n);
   });
 
+  it("round-trips keys present in all, some, leading, or trailing rows", async () => {
+    const columns: ColumnDef[] = [{ name: "j", type: "JSON" }];
+    // Key names describe which rows contain the key: dense = every row,
+    // prefix = leading rows only, late = trailing rows only, nul = explicit null.
+    const rows = [
+      [{ dense: 1, prefix: "a" }],
+      [{ dense: 2, prefix: "b", nul: null }],
+      [{ dense: 3, late: "y" }],
+      [{ dense: 4, late: "z", nul: "x" }],
+    ];
+    const encoded = encodeNativeRows(columns, rows);
+    const decodedRows = toArrayRows(decodeBatch(encoded));
+    const objs = decodedRows.map((r) => r![0] as Record<string, unknown>);
+
+    assert.deepStrictEqual(
+      objs.map((o) => o.dense),
+      [1n, 2n, 3n, 4n],
+    );
+    assert.deepStrictEqual(
+      objs.map((o) => o.prefix),
+      ["a", "b", undefined, undefined],
+    );
+    assert.deepStrictEqual(
+      objs.map((o) => o.late),
+      [undefined, undefined, "y", "z"],
+    );
+    assert.deepStrictEqual(
+      objs.map((o) => o.nul),
+      [undefined, undefined, undefined, "x"],
+    );
+  });
+
   it("encodes empty JSON objects", async () => {
     const columns: ColumnDef[] = [{ name: "j", type: "JSON" }];
     const rows = [[{}], [{}]];
@@ -441,6 +519,48 @@ describe("JSON", () => {
     assert.strictEqual(obj0.amount, 100n);
     assert.strictEqual(obj1.currency, "EUR");
     assert.strictEqual(obj1.amount, 200n);
+  });
+
+  it("keeps a typed path whose name starts with 'skip'", async () => {
+    // Only the SKIP directive itself is dropped, not paths named like it.
+    const columns: ColumnDef[] = [{ name: "j", type: "JSON(skipped UInt32, SKIP a.b)" }];
+    const rows = [[{ skipped: 5 }]];
+    const encoded = encodeNativeRows(columns, rows);
+    const decodedRows = toArrayRows(decodeBatch(encoded));
+
+    const obj0 = decodedRows[0]![0] as Record<string, unknown>;
+    // UInt32 typed path decodes as a number; if the path were wrongly dropped
+    // it would fall through to a Dynamic path and come back as Int64 (bigint).
+    assert.strictEqual(obj0.skipped, 5);
+  });
+
+  it("parses dotted JSON paths with quoted segments", async () => {
+    // ClickHouse accepts per-segment quoting (JSON(`sp ace`.s0 Int64)) and
+    // canonicalizes it to a whole-quoted path (JSON(`sp ace.s0` Int64)); both
+    // spellings must parse to the same dotted path.
+    for (const type of ["JSON(`sp ace`.s0 UInt32)", "JSON(`sp ace.s0` UInt32)"]) {
+      const columns: ColumnDef[] = [{ name: "j", type }];
+      const rows = [[{ "sp ace.s0": 9 }]];
+      const encoded = encodeNativeRows(columns, rows);
+      const decodedRows = toArrayRows(decodeBatch(encoded));
+      const obj0 = decodedRows[0]![0] as Record<string, unknown>;
+      assert.strictEqual(obj0["sp ace.s0"], 9, `for ${type}`);
+    }
+  });
+
+  it("keeps a typed path literally named SKIP when backtick-quoted", async () => {
+    // ClickHouse distinguishes the quoted path `SKIP` from the SKIP directive
+    // (CREATE TABLE (v JSON(`SKIP` Int64, SKIP b)) canonicalizes to exactly
+    // that); only the unquoted keyword form is a directive.
+    const columns: ColumnDef[] = [{ name: "j", type: "JSON(`SKIP` UInt32, SKIP a.b)" }];
+    const rows = [[{ SKIP: 7 }]];
+    const encoded = encodeNativeRows(columns, rows);
+    const decodedRows = toArrayRows(decodeBatch(encoded));
+
+    const obj0 = decodedRows[0]![0] as Record<string, unknown>;
+    // If `SKIP` were wrongly treated as a directive the typed path would be
+    // dropped and the value would fall through to a Dynamic path (bigint).
+    assert.strictEqual(obj0.SKIP, 7);
   });
 
   it("handles JSON with typed paths and dynamic paths together", async () => {
@@ -861,6 +981,23 @@ describe("named Tuple field detection", () => {
     assert.strictEqual(row.IntValue, 42);
     assert.strictEqual(row.BoolFlag, 1); // Bool decodes as UInt8 (0/1)
     assert.strictEqual(row.StringId, "hello");
+  });
+
+  // Regression: ClickHouse renders a literal backtick/backslash in a quoted
+  // identifier backslash-escaped (Tuple(`a\`b` Int8)). The parser only understood
+  // doubled backticks, so a SELECT header containing such a type failed to decode
+  // ("Unknown type: ...").
+  it("parses backslash-escaped backticks and backslashes in quoted field names", async () => {
+    const type = "Tuple(`back\\`tick` Int8, `back\\\\slash` Int8, `new\\nline` Int8)";
+    const columns: ColumnDef[] = [{ name: "t", type }];
+    const rows = [[{ "back`tick": 1, "back\\slash": 2, "new\nline": 3 }]];
+    const encoded = encodeNativeRows(columns, rows);
+    const decoded = decodeBatch(encoded);
+
+    const row = decoded.get(0).t as Record<string, unknown>;
+    assert.strictEqual(row["back`tick"], 1);
+    assert.strictEqual(row["back\\slash"], 2);
+    assert.strictEqual(row["new\nline"], 3);
   });
 
   it("treats a field named exactly as a type keyword as a named field", async () => {

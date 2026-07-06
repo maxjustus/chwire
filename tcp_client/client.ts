@@ -585,7 +585,7 @@ export class TcpClient {
           const codec = codecs[i]!;
           const col = codec.fromValues(columns[i]!);
           const writer = new BufferWriter();
-          codec.writePrefix?.(writer, col);
+          codec.writePrefix(writer, col);
           writer.write(codec.encode(col));
           const schemaCol = serverSchema[i]!;
           encodedColumns.push({
@@ -1356,7 +1356,7 @@ export class TcpClient {
       const colData = batch.columnData[i]!;
       const codec = getCodec(colDef.type);
       const writer = new BufferWriter();
-      codec.writePrefix?.(writer, colData);
+      codec.writePrefix(writer, colData);
       writer.write(codec.encode(colData));
       encodedColumns.push({ name: colDef.name, type: colDef.type, data: writer.finish() });
     }

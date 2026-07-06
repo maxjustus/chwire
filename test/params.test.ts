@@ -46,11 +46,9 @@ describe("extractParamTypes", () => {
     assert.strictEqual(types.get("id"), "UInt64");
   });
 
-  it("throws on conflicting types for same param", () => {
-    assert.throws(
-      () => extractParamTypes("SELECT {id: UInt64}, {id: String}"),
-      /conflicting types/i,
-    );
+  it("keeps the first type when a param is redeclared at another type", () => {
+    const types = extractParamTypes("SELECT {id: UInt64}, {id: String}");
+    assert.strictEqual(types.get("id"), "UInt64");
   });
 
   it("skips single-quoted string literals", () => {
@@ -206,8 +204,28 @@ describe("serializeParams", () => {
     assert.deepStrictEqual(Object.keys(result), ["id"]);
   });
 
-  it("throws on missing required param", () => {
-    assert.throws(() => serializeParams("SELECT {id: UInt64}", {}), /Missing parameter: id/);
+  it("leaves unbound placeholders for the server to resolve", () => {
+    // Unbound placeholders can be legal (parameterized views, SET param_x);
+    // when they're not, the server reports UNKNOWN_QUERY_PARAMETER.
+    const result = serializeParams("SELECT {id: UInt64}", {});
+    assert.deepStrictEqual(result, {});
+  });
+
+  it("serializes only supplied params in view DDL with an ON CLUSTER macro", () => {
+    const result = serializeParams(
+      `CREATE OR REPLACE VIEW generate_schema_sync_queries ON CLUSTER '{cluster}' AS
+         SELECT * FROM system.columns
+         WHERE table = {source_table: String} AND database = {source_database: String}`,
+      {},
+    );
+    assert.deepStrictEqual(result, {});
+  });
+
+  it("serializes supplied params and skips unbound ones in the same query", () => {
+    const result = serializeParams("CREATE VIEW v AS SELECT {bound: UInt64}, {unbound: String}", {
+      bound: 7,
+    });
+    assert.deepStrictEqual(result, { bound: "7" });
   });
 
   it("serializes complex nested structures", () => {

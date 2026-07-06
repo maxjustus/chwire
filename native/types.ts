@@ -33,8 +33,7 @@ export interface EnumMapping {
   valueToName: Map<number, string>;
 }
 
-function isAsciiWhitespace(code: number): boolean {
-  // "good enough" for type strings emitted by ClickHouse (space/newlines/tabs).
+export function isAsciiWhitespace(code: number): boolean {
   return code === 9 || code === 10 || code === 13 || code === 32;
 }
 
@@ -297,6 +296,22 @@ export class DynamicValue {
 
   constructor(type: string, value: unknown) {
     this.type = type;
+    this.value = value;
+  }
+}
+
+/**
+ * A Variant cell tagged with its arm discriminator (in the ClickHouse-sorted
+ * arm order), e.g. `new VariantValue(1, 42n)`. `VariantColumn.get` returns
+ * these on decode; on encode, wrap a value to force a specific arm instead of
+ * relying on runtime-type inference.
+ */
+export class VariantValue {
+  readonly discriminator: number;
+  readonly value: unknown;
+
+  constructor(discriminator: number, value: unknown) {
+    this.discriminator = discriminator;
     this.value = value;
   }
 }

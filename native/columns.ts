@@ -1,5 +1,5 @@
 import { Variant } from "./constants.ts";
-import type { TypedArray } from "./types.ts";
+import { type TypedArray, VariantValue } from "./types.ts";
 
 export type DiscriminatorArray = Uint8Array | Uint16Array | Uint32Array;
 
@@ -228,10 +228,10 @@ export class VariantColumn extends AbstractColumn {
     return this.discriminators.length;
   }
 
-  get(index: number): [number, unknown] | null {
+  get(index: number): VariantValue | null {
     const d = this.discriminators[index]!;
     if (d === Variant.NULL_DISCRIMINATOR) return null;
-    return [d, this.groups.get(d)?.get(this.groupIndices[index]!)];
+    return new VariantValue(d, this.groups.get(d)?.get(this.groupIndices[index]!));
   }
 }
 
@@ -270,13 +270,14 @@ export class DynamicColumn extends AbstractColumn {
 }
 
 export class JsonColumn extends AbstractColumn {
-  readonly type: string = "JSON";
+  readonly type: string;
   readonly paths: string[];
   readonly pathColumns: Map<string, Column>; // Polymorphic: typed paths use their codecs
   private _length: number;
 
-  constructor(paths: string[], pathColumns: Map<string, Column>, length: number) {
+  constructor(paths: string[], pathColumns: Map<string, Column>, length: number, type = "JSON") {
     super();
+    this.type = type;
     this.paths = paths;
     this.pathColumns = pathColumns;
     this._length = length;

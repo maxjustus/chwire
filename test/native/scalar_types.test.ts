@@ -103,7 +103,7 @@ describe("encodeNative", () => {
       { type: "UInt32", value: 4294967296, error: /UInt32 out of range/ },
       { type: "Int64", value: 9223372036854775808n, error: /Int64 out of range/ },
       { type: "UInt64", value: -1n, error: /UInt64 out of range/ },
-      { type: "Int64", value: 9007199254740992, error: /cannot safely represent number/ },
+      { type: "Int64", value: 2 ** 53, error: /cannot safely represent number/ },
     ];
 
     for (const { type, value, error } of overflowCases) {
@@ -569,6 +569,25 @@ describe("additional scalar types", () => {
     assert.ok(typeof decodedRows[0]![0] === "string");
   });
 
+  it("encodes IPv4-mapped IPv6 addresses", async () => {
+    const columns: ColumnDef[] = [{ name: "ip", type: "IPv6" }];
+    const rows = [["::ffff:192.168.1.1"], ["::192.168.1.1"], ["64:ff9b::1.2.3.4"]];
+    const encoded = encodeNativeRows(columns, rows);
+    const decodedRows = toArrayRows(decodeBatch(encoded));
+
+    // Decode normalizes to plain hex groups; re-encoding must yield the same bytes.
+    assert.strictEqual(decodedRows[0]![0], "0:0:0:0:0:ffff:c0a8:101");
+    assert.strictEqual(decodedRows[1]![0], "0:0:0:0:0:0:c0a8:101");
+    assert.strictEqual(decodedRows[2]![0], "64:ff9b:0:0:0:0:102:304");
+    const reEncoded = encodeNativeRows(columns, toArrayRows(decodeBatch(encoded)));
+    assert.deepStrictEqual(reEncoded, encoded);
+  });
+
+  it("rejects IPv6 zone IDs at encode time", () => {
+    const columns: ColumnDef[] = [{ name: "ip", type: "IPv6" }];
+    assert.throws(() => encodeNativeRows(columns, [["fe80::1%eth0"]]), /zone ID/);
+  });
+
   it("throws on invalid IPv4 address", () => {
     const columns: ColumnDef[] = [{ name: "ip", type: "IPv4" }];
     assert.throws(() => encodeNativeRows(columns, [["not-an-ip"]]), /Invalid IPv4 address/);
@@ -601,6 +620,15 @@ describe("additional scalar types", () => {
     // Previously silently truncated "1.123456" to "1.12" for Decimal64(2)
     const columns: ColumnDef[] = [{ name: "d", type: "Decimal64(2)" }];
     assert.throws(() => encodeNativeRows(columns, [["1.123"]]), /precision/i);
+  });
+
+  it("accepts Decimal values with exact trailing zeros beyond scale", async () => {
+    const columns: ColumnDef[] = [{ name: "d", type: "Decimal32(1)" }];
+    const encoded = encodeNativeRows(columns, [["1.50"], ["-2.000"], ["3"]]);
+    const decoded = toArrayRows(decodeBatch(encoded));
+    assert.deepStrictEqual(decoded, [["1.5"], ["-2.0"], ["3.0"]]);
+    // Non-zero digits beyond scale still throw.
+    assert.throws(() => encodeNativeRows(columns, [["1.51"]]), /precision/i);
   });
 
   it("encodes Enum8 and supports both decode modes", async () => {
@@ -901,7 +929,7 @@ describe("additional scalar types", () => {
     assert.throws(() => encodeNativeRows(columns, [[""]]), /Cannot coerce string "" to Bool/);
   });
 
-  it("coerces Int128/UInt128 with toBigInt helper", async () => {
+  it("coerces booleans, null, and numeric strings to Int128/UInt128", async () => {
     const columns: ColumnDef[] = [
       { name: "i128", type: "Int128" },
       { name: "u128", type: "UInt128" },

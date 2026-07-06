@@ -365,6 +365,51 @@ describe("ClickHouse Integration Tests", { timeout: 60000 }, () => {
         }),
       );
     });
+
+    it("surfaces an insert failure the server delivers after committing 200", async () => {
+      await consume(
+        query("CREATE TABLE IF NOT EXISTS post200_sink (id UInt64) ENGINE = Memory", {
+          url,
+          auth,
+          sessionId,
+        }),
+      );
+
+      // Progress headers force the server to commit the response early, so
+      // a failure deep in the source stream arrives as a body exception
+      // after a 200 instead of an HTTP error status.
+      const realFetch = globalThis.fetch;
+      let status: number | null = null;
+      globalThis.fetch = (async (...args: Parameters<typeof fetch>) => {
+        const res = await realFetch(...args);
+        status = res.status;
+        return res;
+      }) as typeof fetch;
+      try {
+        await assert.rejects(
+          insert(
+            "INSERT INTO post200_sink SELECT throwIf(number = 9999999, 'late boom') + number FROM system.numbers LIMIT 10000000",
+            new Uint8Array(0),
+            {
+              url,
+              auth,
+              sessionId,
+              settings: {
+                wait_end_of_query: false,
+                send_progress_in_http_headers: true,
+                http_headers_progress_interval_ms: 1n,
+              },
+            },
+          ),
+          /late boom/,
+        );
+      } finally {
+        globalThis.fetch = realFetch;
+      }
+      assert.strictEqual(status, 200);
+
+      await consume(query("DROP TABLE post200_sink", { url, auth, sessionId }));
+    });
   });
 
   describe("Streaming error scenarios", () => {
@@ -385,11 +430,13 @@ describe("ClickHouse Integration Tests", { timeout: 60000 }, () => {
         throw new Error("Generator error mid-stream");
       }
 
+      // No sessionId: the server holds a session's lock until it notices the
+      // client disconnect, so an aborted request on the shared session races
+      // the next request (SESSION_IS_LOCKED).
       try {
         await insert("INSERT INTO test_stream_error FORMAT JSONEachRow", errorGenerator(), {
           url,
           auth,
-          sessionId,
           bufferSize: 128,
         });
         assert.fail("Should have thrown an error");
@@ -429,11 +476,12 @@ describe("ClickHouse Integration Tests", { timeout: 60000 }, () => {
         }
       }
 
+      // No sessionId: see "generator that throws mid-stream" — aborted
+      // requests race the session lock.
       try {
         await insert("INSERT INTO test_abort FORMAT JSONEachRow", slowGenerator(), {
           url,
           auth,
-          sessionId,
           signal: controller.signal,
         });
         assert.fail("Should have aborted");
@@ -574,6 +622,48 @@ describe("ClickHouse Integration Tests", { timeout: 60000 }, () => {
       );
 
       assert.strictEqual(result.trim(), "7");
+    });
+
+    it("creates a parameterized view with unbound placeholders and queries it with arguments", async () => {
+      await consume(
+        query(
+          `CREATE OR REPLACE VIEW param_view AS
+             SELECT number FROM system.numbers
+             WHERE number >= {min_n: UInt64} AND number < {max_n: UInt64}`,
+          { url, auth, sessionId },
+        ),
+      );
+
+      const result = await collectText(
+        query("SELECT number FROM param_view(min_n=3, max_n=6) ORDER BY number FORMAT JSON", {
+          url,
+          auth,
+          sessionId,
+        }),
+      );
+      const parsed = JSON.parse(result);
+      assert.deepStrictEqual(
+        parsed.data.map((r: { number: string | number }) => Number(r.number)),
+        [3, 4, 5],
+      );
+
+      await consume(query("DROP VIEW param_view", { url, auth, sessionId }));
+    });
+
+    it("binds placeholders from SET param_x in the same session", async () => {
+      await consume(query("SET param_greeting = 'hello'", { url, auth, sessionId }));
+
+      const result = await collectText(
+        query("SELECT {greeting: String} AS g FORMAT JSON", { url, auth, sessionId }),
+      );
+      assert.strictEqual(JSON.parse(result).data[0].g, "hello");
+    });
+
+    it("surfaces the server error for a truly unbound placeholder", async () => {
+      await assert.rejects(
+        collectText(query("SELECT {nope: String}", { url, auth, sessionId })),
+        /UNKNOWN_QUERY_PARAMETER|Substitution.*is not set/,
+      );
     });
 
     it("should use query parameters with UInt64", async () => {

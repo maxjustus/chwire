@@ -15,7 +15,8 @@
 import { describe, it } from "node:test";
 import type { ColumnDef } from "../native/index.ts";
 import { type Compression, config, getIterationIndex, logConfig, logFuzzError } from "./config.ts";
-import { randomInt, sqlQuote, uniqueSuffix, unTsvEscape } from "./util.ts";
+import { makeRng } from "./rng.ts";
+import { sqlQuote, uniqueSuffix, unTsvEscape } from "./util.ts";
 
 /**
  * If FUZZ_STRUCTURE is set, returns that structure string for replay.
@@ -159,7 +160,7 @@ async function jsonPathsIteration(transport: FuzzTransport, ctx: IterationContex
   let jsonType = "";
 
   try {
-    const numPaths = randomInt(1, 3);
+    const numPaths = makeRng(iter).int(1, 3);
     const typedPathDefs: string[] = [];
     const pathTypes: string[] = [];
     for (let p = 0; p < numPaths; p++) {

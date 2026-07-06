@@ -35,6 +35,7 @@ export {
   type ColumnDef,
   type DecodeOptions,
   DynamicValue,
+  VariantValue,
   TEXT_DECODER,
 } from "./types.ts";
 
@@ -164,18 +165,22 @@ export function decodeNativeBlockWithReader(
 
       const codec = getCodec(type);
 
-      let serNode: SerializationNode = DEFAULT_DENSE_NODE;
+      let serializationNode: SerializationNode = DEFAULT_DENSE_NODE;
       if (clientVersion >= 54454) {
         const hasCustomSerialization = reader.readU8() !== 0;
         if (hasCustomSerialization) {
-          serNode = codec.readKinds(reader);
+          serializationNode = codec.readKinds(reader);
         }
       }
 
-      const state: DeserializerState = { serNode, sparseRuntime: new Map() };
+      const state: DeserializerState = {
+        serializationNode,
+        sparseRuntime: new Map(),
+        prefix: { children: [] },
+      };
       // Only read prefix and decode when there are rows - empty blocks are schema-only
       if (numRows > 0) {
-        codec.readPrefix?.(reader);
+        codec.readPrefix(reader, state);
         columnData.push(codec.decode(reader, numRows, state));
       } else {
         // Schema-only block: no prefix or data, create empty column
@@ -255,7 +260,7 @@ export function encodeNative(batch: RecordBatch): Uint8Array {
     writer.writeString(colDef.type);
     // Only write prefix and data when there are rows (matches decode behavior)
     if (rowCount > 0) {
-      codec.writePrefix?.(writer, col);
+      codec.writePrefix(writer, col);
       writer.write(codec.encode(col, codec.estimateSize(col.length)));
     }
   }

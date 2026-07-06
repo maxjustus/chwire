@@ -8,3 +8,5 @@ settings-versions.json
 .tmp/
 reference-clickhouse-arrow-rs/
 test/_browser_entry.ts
+plans/
+bench_out/

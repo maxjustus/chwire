@@ -134,6 +134,36 @@ describe("Compression", () => {
       const expected = decoder.decode(concat([data1, data2, data3]));
       assert.strictEqual(decoder.decode(decompressed), expected);
     });
+
+    it("should throw on plain text input instead of returning empty", () => {
+      const text = encoder.encode(
+        "Code: 60. DB::Exception: Table default.foo doesn't exist. (UNKNOWN_TABLE)",
+      );
+      assert.throws(() => decodeBlocks(text));
+    });
+
+    it("should throw on trailing bytes after a valid block", () => {
+      const block = encodeBlock(encoder.encode("valid block"), "lz4");
+      const withTrailing = concat([block, encoder.encode("garbage tail")]);
+      assert.throws(() => decodeBlocks(withTrailing));
+    });
+
+    it("should decode empty input to empty output", () => {
+      assert.strictEqual(decodeBlocks(new Uint8Array(0)).length, 0);
+    });
+  });
+
+  describe("readUInt32LE", () => {
+    it("should return unsigned values when the high bit is set", () => {
+      assert.strictEqual(readUInt32LE(new Uint8Array([0xff, 0xff, 0xff, 0xff]), 0), 0xffffffff);
+      assert.strictEqual(readUInt32LE(new Uint8Array([0x00, 0x00, 0x00, 0x80]), 0), 0x80000000);
+    });
+
+    it("should round-trip with writeUInt32LE", () => {
+      const buf = new Uint8Array(4);
+      writeUInt32LE(buf, 0xdeadbeef, 0);
+      assert.strictEqual(readUInt32LE(buf, 0), 0xdeadbeef);
+    });
   });
 
   describe("Partial block handling", () => {

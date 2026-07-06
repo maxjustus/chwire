@@ -1,19 +1,20 @@
+import { isArrayLike, isTypedArray } from "../coercion.ts";
 import {
-  countAndIndexDiscriminators,
   type Column,
+  countAndIndexDiscriminators,
   type DiscriminatorArray,
   DynamicColumn,
   JsonColumn,
   VariantColumn,
 } from "../columns.ts";
 import { Dynamic, JSONFormat, Variant } from "../constants.ts";
-import { DynamicValue } from "../types.ts";
-import { type BufferReader, BufferWriter } from "../io.ts";
+import { type BufferReader, BufferWriter, type TypedArrayConstructor } from "../io.ts";
 import type { DeserializerState } from "../serialization.ts";
+import { DynamicValue, type TypedArray, VariantValue } from "../types.ts";
 import {
   asBytes,
-  childState,
   type Codec,
+  childState,
   deepCompare,
   escapeString,
   type GenContext,
@@ -31,6 +32,19 @@ export type CodecResolver = (type: string) => Codec;
  * order must match the server's sort exactly or the streams desync on decode.
  */
 const byteOrder = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
+
+/**
+ * Smallest typed array whose element width can address `numIndexes` distinct
+ * values; mirrors ClickHouse's getSmallestIndexesType, which sizes the V3
+ * flattened Dynamic index column as num_types + 1 (for the null index).
+ */
+function smallestIndexArrayCtor(
+  numIndexes: number,
+): Uint8ArrayConstructor | Uint16ArrayConstructor | Uint32ArrayConstructor {
+  if (numIndexes <= 256) return Uint8Array;
+  if (numIndexes <= 65536) return Uint16Array;
+  return Uint32Array;
+}
 
 /**
  * Compare one Dynamic cell: `a` may be a generated `DynamicValue` carrying an
@@ -82,6 +96,7 @@ export class VariantCodec implements Codec {
   readonly type: string;
   private typeStrings: string[];
   private codecs: Codec[];
+  private primitiveDisc: Record<string, number>;
 
   constructor(typeStrings: string[], codecs: Codec[]) {
     // ClickHouse canonicalizes a Variant by sorting its arms by type name and
@@ -94,6 +109,19 @@ export class VariantCodec implements Codec {
     this.typeStrings = order.map((i) => typeStrings[i]!);
     this.codecs = order.map((i) => codecs[i]!);
     this.type = `Variant(${this.typeStrings.join(", ")})`;
+
+    // Fast typeof->arm cache; must stay in sync with findVariantIndex's
+    // rules. Independent ifs: an Int64/UInt64 arm serves both bigint and
+    // number, exactly as findVariantIndex would match it.
+    this.primitiveDisc = Object.create(null) as Record<string, number>;
+    for (let i = 0; i < this.typeStrings.length; i++) {
+      const t = this.typeStrings[i]!;
+      if (t === "String") this.primitiveDisc.string ??= i;
+      if (t === "Bool") this.primitiveDisc.boolean ??= i;
+      if (t === "Int64" || t === "UInt64") this.primitiveDisc.bigint ??= i;
+      if (t.startsWith("Int") || t.startsWith("UInt") || t.startsWith("Float"))
+        this.primitiveDisc.number ??= i;
+    }
   }
 
   writePrefix(writer: BufferWriter, col: Column) {
@@ -108,13 +136,15 @@ export class VariantCodec implements Codec {
     for (let i = 0; i < this.codecs.length; i++) {
       const codec = this.codecs[i]!;
       const group = variant.groups.get(i) ?? codec.fromValues([]);
-      codec.writePrefix?.(writer, group);
+      codec.writePrefix(writer, group);
     }
   }
 
-  readPrefix(reader: BufferReader) {
+  readPrefix(reader: BufferReader, state: DeserializerState) {
     reader.offset += 8;
-    for (const codec of this.codecs) codec.readPrefix?.(reader);
+    for (let i = 0; i < this.codecs.length; i++) {
+      this.codecs[i]!.readPrefix(reader, childState(state, i));
+    }
   }
 
   encode(col: Column, sizeHint?: number): Uint8Array {
@@ -143,31 +173,39 @@ export class VariantCodec implements Codec {
   }
 
   fromValues(values: unknown[]): VariantColumn {
-    const discriminators = new Uint8Array(values.length);
+    const n = values.length;
+    const discriminators = new Uint8Array(n);
+    const armCount = this.codecs.length;
     const variantValues: unknown[][] = this.codecs.map(() => []);
 
-    for (let i = 0; i < values.length; i++) {
+    for (let i = 0; i < n; i++) {
       const v = values[i];
       if (v == null) {
         discriminators[i] = Variant.NULL_DISCRIMINATOR;
-      } else if (Array.isArray(v) && v.length === 2 && typeof v[0] === "number") {
-        const disc = v[0] as number;
-        if (disc < 0 || disc >= this.codecs.length) {
-          throw new Error(
-            `Invalid Variant discriminator ${disc}, expected 0-${this.codecs.length - 1}`,
-          );
+        continue;
+      }
+      if (v instanceof VariantValue) {
+        const d = v.discriminator;
+        if (d < 0 || d >= armCount) {
+          throw new Error(`Invalid Variant discriminator ${d}, expected 0-${armCount - 1}`);
         }
+        discriminators[i] = d;
+        variantValues[d]!.push(v.value);
+        continue;
+      }
+      const disc = this.primitiveDisc[typeof v];
+      if (disc !== undefined) {
         discriminators[i] = disc;
-        variantValues[disc]!.push(v[1]);
+        variantValues[disc]!.push(v);
       } else {
-        const variantIdx = this.findVariantIndex(v, this.typeStrings);
-        discriminators[i] = variantIdx;
-        variantValues[variantIdx]!.push(v);
+        const idx = this.findVariantIndex(v, this.typeStrings);
+        discriminators[i] = idx;
+        variantValues[idx]!.push(v);
       }
     }
 
     const groups = new Map<number, Column>();
-    for (let vi = 0; vi < this.codecs.length; vi++) {
+    for (let vi = 0; vi < armCount; vi++) {
       const vals = variantValues[vi]!;
       if (vals.length > 0) {
         groups.set(vi, this.codecs[vi]!.fromValues(vals));
@@ -217,24 +255,25 @@ export class VariantCodec implements Codec {
 
   toLiteral(value: unknown): string | typeof SQL_NULL {
     if (value == null) return SQL_NULL;
+    if (value instanceof VariantValue) {
+      return nullToLiteral(this.codecs[value.discriminator]!.toLiteral(value.value));
+    }
     const idx = this.findVariantIndex(value, this.typeStrings);
     return nullToLiteral(this.codecs[idx]!.toLiteral(value));
   }
 
-  generate(ctx: GenContext): [number, unknown] | null {
+  generate(ctx: GenContext): VariantValue | null {
     // Index N selects the NULL discriminator; 0..N-1 select an arm.
     const disc = ctx.rng.int(0, this.codecs.length);
     if (disc === this.codecs.length) return null;
-    return [disc, this.codecs[disc]!.generate(ctx.descend())];
+    return new VariantValue(disc, this.codecs[disc]!.generate(ctx.descend()));
   }
 
   compare(a: unknown, b: unknown): boolean {
     if (a === null || b === null) return a === b;
-    if (!Array.isArray(a) || !Array.isArray(b)) return false;
-    const [discA, valA] = a as [number, unknown];
-    const [discB, valB] = b as [number, unknown];
-    if (discA !== discB) return false;
-    return this.codecs[discA]!.compare(valA, valB);
+    if (!(a instanceof VariantValue) || !(b instanceof VariantValue)) return false;
+    if (a.discriminator !== b.discriminator) return false;
+    return this.codecs[a.discriminator]!.compare(a.value, b.value);
   }
 }
 
@@ -248,10 +287,13 @@ export class VariantCodec implements Codec {
  *
  * Children (type groups) may be sparse-encoded individually.
  */
+interface DynamicPrefix {
+  types: string[];
+  codecs: Codec[];
+}
+
 export class DynamicCodec implements Codec {
   readonly type = "Dynamic";
-  private types: string[] = [];
-  private codecs: Codec[] = [];
   private resolveCodec: CodecResolver;
 
   constructor(resolveCodec: CodecResolver) {
@@ -260,30 +302,32 @@ export class DynamicCodec implements Codec {
 
   writePrefix(writer: BufferWriter, col: Column) {
     const dyn = col as DynamicColumn;
-    this.types = dyn.types;
-    this.codecs = this.types.map((t) => this.resolveCodec(t));
+    const types = dyn.types;
 
     writer.writeU64LE(Dynamic.VERSION_V3);
-    writer.writeVarint(this.types.length);
-    for (const t of this.types) writer.writeString(t);
+    writer.writeVarint(types.length);
+    for (const t of types) writer.writeString(t);
 
-    for (let i = 0; i < this.types.length; i++) {
+    for (let i = 0; i < types.length; i++) {
       const group = dyn.groups.get(i);
-      if (group) this.codecs[i]!.writePrefix?.(writer, group);
+      if (group) this.resolveCodec(types[i]!).writePrefix(writer, group);
     }
   }
 
-  readPrefix(reader: BufferReader) {
+  readPrefix(reader: BufferReader, state: DeserializerState) {
     const version = reader.readU64LE();
     if (version !== Dynamic.VERSION_V3)
       throw new Error(`Dynamic: only V3 supported, got V${version}`);
 
     const count = reader.readVarint();
-    this.types = [];
-    for (let i = 0; i < count; i++) this.types.push(reader.readString());
-    this.codecs = this.types.map((t) => this.resolveCodec(t));
+    const types: string[] = [];
+    for (let i = 0; i < count; i++) types.push(reader.readString());
+    const codecs = types.map((t) => this.resolveCodec(t));
+    state.prefix.data = { types, codecs } satisfies DynamicPrefix;
 
-    for (const c of this.codecs) c.readPrefix?.(reader);
+    for (let i = 0; i < codecs.length; i++) {
+      codecs[i]!.readPrefix(reader, childState(state, i));
+    }
   }
 
   encode(col: Column, sizeHint?: number): Uint8Array {
@@ -293,10 +337,10 @@ export class DynamicCodec implements Codec {
 
     writer.write(asBytes(dyn.discriminators));
 
-    for (let i = 0; i < this.codecs.length; i++) {
+    for (let i = 0; i < dyn.types.length; i++) {
       const group = dyn.groups.get(i);
       if (group) {
-        const codec = this.codecs[i]!;
+        const codec = this.resolveCodec(dyn.types[i]!);
         writer.write(codec.encode(group, codec.estimateSize(group.length)));
       }
     }
@@ -304,32 +348,57 @@ export class DynamicCodec implements Codec {
   }
 
   decode(reader: BufferReader, rows: number, state: DeserializerState): DynamicColumn {
-    const nullDisc = this.types.length;
-    const discLimit = nullDisc + 1;
-
-    let discriminators: DiscriminatorArray;
-    if (discLimit <= 256) discriminators = reader.readTypedArray(Uint8Array, rows);
-    else if (discLimit <= 65536) discriminators = reader.readTypedArray(Uint16Array, rows);
-    else discriminators = reader.readTypedArray(Uint32Array, rows);
+    const prefix = state.prefix.data as DynamicPrefix | undefined;
+    if (!prefix) {
+      throw new Error("Dynamic decode requires readPrefix on the same DeserializerState");
+    }
+    const { types, codecs } = prefix;
+    const nullDisc = types.length;
+    // V3 flattened indexes use the smallest width that fits nullDisc + 1
+    // values (CH getSmallestIndexesType); shared-variant overflow means the
+    // flattened type list is NOT bounded by max_types, so >255 is legal.
+    const Ctor = smallestIndexArrayCtor(nullDisc + 1);
+    const discriminators: DiscriminatorArray = reader.readTypedArray(
+      Ctor as TypedArrayConstructor<DiscriminatorArray>,
+      rows,
+    );
 
     const { counts, indices } = countAndIndexDiscriminators(discriminators, nullDisc);
-    const groups = decodeGroups(reader, this.codecs, counts, state);
-    return new DynamicColumn(this.types, discriminators, groups, indices);
+    const groups = decodeGroups(reader, codecs, counts, state);
+    return new DynamicColumn(types, discriminators, groups, indices);
   }
 
   fromValues(values: unknown[]): DynamicColumn {
+    return this.fromSparse(null, values, values.length);
+  }
+
+  /**
+   * Build a column from sparse data: `values[j]` belongs to row
+   * `rowIndices[j]`; every other row is null. `rowIndices` must be strictly
+   * ascending — group values are stored in scan order, so out-of-order or
+   * duplicate indices pair rows with the wrong values. `rowIndices === null`
+   * means identity (`values[j]` is row `j`), with rows past `values.length`
+   * null. Lets JsonCodec scatter only the keys a row actually has instead of
+   * materializing a dense rows-length array per path.
+   */
+  fromSparse(rowIndices: number[] | null, values: unknown[], rows: number): DynamicColumn {
+    const NULL_SENTINEL = 0xffffffff;
     const typeIndex = new Map<string, number>();
     const typeOrder: string[] = [];
     const typeValues: unknown[][] = [];
-    const n = values.length;
-    const discriminators = new Uint8Array(n);
-    // nullDisc is set after the loop once we know typeOrder.length;
-    // track null positions to back-fill in one scan.
+    const k = values.length;
+    // The discriminator width depends on the type count, which is only known
+    // after the scan; collect wide and narrow at the end. In the dense case
+    // (k === rows) discriminators are written in place; sparse input scans
+    // into a scratch array and scatters to final row positions afterwards.
+    const wide = new Uint32Array(rows);
+    const discs = rowIndices ? new Uint32Array(k) : wide;
     let hasNulls = false;
 
-    for (let i = 0; i < n; i++) {
-      const v = values[i];
+    for (let j = 0; j < k; j++) {
+      const v = values[j];
       if (v == null) {
+        discs[j] = NULL_SENTINEL;
         hasNulls = true;
         continue;
       }
@@ -343,19 +412,39 @@ export class DynamicCodec implements Codec {
         typeOrder.push(vType);
         typeValues.push([]);
       }
-      discriminators[i] = idx;
+      discs[j] = idx;
       typeValues[idx]!.push(actual);
     }
 
-    if (hasNulls) {
-      const nullDisc = typeOrder.length;
-      for (let i = 0; i < n; i++) {
-        if (values[i] == null) discriminators[i] = nullDisc;
+    const nullDisc = typeOrder.length;
+    if (rowIndices) {
+      if (nullDisc !== 0) wide.fill(nullDisc);
+      let prevRow = -1;
+      for (let j = 0; j < k; j++) {
+        const row = rowIndices[j]!;
+        if (row <= prevRow) {
+          throw new Error(`fromSparse: rowIndices must be strictly ascending (index ${j})`);
+        }
+        prevRow = row;
+        const d = discs[j]!;
+        wide[row] = d === NULL_SENTINEL ? nullDisc : d;
       }
+    } else {
+      if (hasNulls) {
+        for (let i = 0; i < k; i++) {
+          if (wide[i] === NULL_SENTINEL) wide[i] = nullDisc;
+        }
+      }
+      if (k < rows && nullDisc !== 0) wide.fill(nullDisc, k);
     }
 
+    // Server-side, types beyond max_types overflow into the shared variant on
+    // unflatten, so any count the index width can address is legal.
+    const Ctor = smallestIndexArrayCtor(nullDisc + 1);
+    const discriminators = Ctor === Uint32Array ? wide : new Ctor(wide);
+
     const groups = new Map<number, Column>();
-    for (let ti = 0; ti < typeOrder.length; ti++) {
+    for (let ti = 0; ti < nullDisc; ti++) {
       groups.set(ti, this.resolveCodec(typeOrder[ti]!).fromValues(typeValues[ti]!));
     }
 
@@ -367,24 +456,34 @@ export class DynamicCodec implements Codec {
   }
 
   estimateSize(rows: number) {
-    return rows * 2 + this.codecs.reduce((sum, c) => sum + c.estimateSize(Math.ceil(rows / 3)), 0);
+    return rows * 16;
   }
 
   guessType(value: unknown): string {
-    if (value === null) return "String";
-    if (typeof value === "string") return "String";
-    if (typeof value === "number") return Number.isInteger(value) ? "Int64" : "Float64";
-    if (typeof value === "bigint") return "Int64";
-    if (typeof value === "boolean") return "Bool";
-    if (value instanceof Date) return "DateTime64(3)";
-    if (Array.isArray(value))
-      return value.length ? `Array(${this.guessType(value[0])})` : "Array(String)";
-    if (typeof value === "object") return "Map(String,String)";
-    return "String";
+    switch (typeof value) {
+      case "string":
+        return "String";
+      case "number":
+        return Number.isInteger(value) ? "Int64" : "Float64";
+      case "bigint":
+        return "Int64";
+      case "boolean":
+        return "Bool";
+      case "object":
+        if (value === null) return "String";
+        if (value instanceof Date) return "DateTime64(3)";
+        if (Array.isArray(value))
+          return value.length ? `Array(${this.guessType(value[0])})` : "Array(String)";
+        return "Map(String,String)";
+      default:
+        return "String";
+    }
   }
 
   readKinds(reader: BufferReader) {
-    return readKindsMany(reader, this.codecs);
+    // Dynamic children depend on prefix content the kinds pass has not read
+    // yet, so the server's static kinds tree carries only the self byte.
+    return { kind: reader.readU8(), children: [] };
   }
 
   toLiteral(value: unknown): string | typeof SQL_NULL {
@@ -425,14 +524,18 @@ export class DynamicCodec implements Codec {
 }
 
 export class JsonCodec implements Codec {
-  readonly type = "JSON";
+  readonly type: string;
   private typedPaths: { name: string; type: string; codec: Codec }[] = [];
   private typedPathNames: Set<string>;
-  private dynamicPaths: string[] = [];
-  private dynamicCodecs = new Map<string, DynamicCodec>();
+  private typedPathNameList: string[];
   private resolveCodec: CodecResolver;
 
-  constructor(resolveCodec: CodecResolver, typedPaths: { name: string; type: string }[] = []) {
+  constructor(
+    resolveCodec: CodecResolver,
+    typedPaths: { name: string; type: string }[] = [],
+    type = "JSON",
+  ) {
+    this.type = type;
     this.resolveCodec = resolveCodec;
     // ClickHouse canonicalizes JSON typed paths into lexicographic order. The
     // sub-columns are serialized positionally (no per-path name on the wire), so
@@ -441,33 +544,36 @@ export class JsonCodec implements Codec {
     this.typedPaths = typedPaths
       .map((p) => ({ name: p.name, type: p.type, codec: resolveCodec(p.type) }))
       .sort((a, b) => byteOrder(a.name, b.name));
-    this.typedPathNames = new Set(this.typedPaths.map((tp) => tp.name));
+    this.typedPathNameList = this.typedPaths.map((tp) => tp.name);
+    this.typedPathNames = new Set(this.typedPathNameList);
+  }
+
+  private dynamicPathsOf(json: JsonColumn): string[] {
+    return json.paths.filter((p) => !this.typedPathNames.has(p));
   }
 
   writePrefix(writer: BufferWriter, col: Column) {
     const json = col as JsonColumn;
-    this.dynamicPaths = json.paths.filter((p) => !this.typedPathNames.has(p));
+    const dynamicPaths = this.dynamicPathsOf(json);
 
     writer.writeU64LE(JSONFormat.VERSION_V3);
-    writer.writeVarint(this.dynamicPaths.length);
-    for (const p of this.dynamicPaths) writer.writeString(p);
+    writer.writeVarint(dynamicPaths.length);
+    for (const p of dynamicPaths) writer.writeString(p);
 
     for (const tp of this.typedPaths) {
       const pathCol = json.pathColumns.get(tp.name);
       if (pathCol) {
-        tp.codec.writePrefix?.(writer, pathCol);
+        tp.codec.writePrefix(writer, pathCol);
       }
     }
 
-    for (const path of this.dynamicPaths) {
-      const codec = new DynamicCodec(this.resolveCodec);
-      const pathCol = json.pathColumns.get(path)!;
-      codec.writePrefix(writer, pathCol);
-      this.dynamicCodecs.set(path, codec);
+    const dynCodec = this.resolveCodec("Dynamic");
+    for (const path of dynamicPaths) {
+      dynCodec.writePrefix(writer, json.pathColumns.get(path)!);
     }
   }
 
-  readPrefix(reader: BufferReader) {
+  readPrefix(reader: BufferReader, state: DeserializerState) {
     const ver = reader.readU64LE();
     if (ver !== JSONFormat.VERSION_V3) throw new Error(`JSON: only V3 supported, got V${ver}`);
 
@@ -475,14 +581,19 @@ export class JsonCodec implements Codec {
     const allPathNames: string[] = [];
     for (let i = 0; i < count; i++) allPathNames.push(reader.readString());
 
-    this.dynamicPaths = allPathNames.filter((p) => !this.typedPathNames.has(p));
+    const dynamicPaths = allPathNames.filter((p) => !this.typedPathNames.has(p));
+    state.prefix.data = dynamicPaths;
 
-    for (const tp of this.typedPaths) tp.codec.readPrefix?.(reader);
+    // Children are keyed typed paths first, then dynamic paths, matching
+    // decode's traversal order.
+    let idx = 0;
+    for (const tp of this.typedPaths) {
+      tp.codec.readPrefix(reader, childState(state, idx++));
+    }
 
-    for (const path of this.dynamicPaths) {
-      const codec = new DynamicCodec(this.resolveCodec);
-      codec.readPrefix(reader);
-      this.dynamicCodecs.set(path, codec);
+    const dynCodec = this.resolveCodec("Dynamic");
+    for (let i = 0; i < dynamicPaths.length; i++) {
+      dynCodec.readPrefix(reader, childState(state, idx++));
     }
   }
 
@@ -499,16 +610,19 @@ export class JsonCodec implements Codec {
       }
     }
 
-    for (const path of this.dynamicPaths) {
+    const dynCodec = this.resolveCodec("Dynamic");
+    for (const path of this.dynamicPathsOf(json)) {
       const pathCol = json.pathColumns.get(path)!;
-      const pathCodec = this.dynamicCodecs.get(path)!;
-      const pathHint = pathCodec.estimateSize(pathCol.length);
-      writer.write(pathCodec.encode(pathCol, pathHint));
+      writer.write(dynCodec.encode(pathCol, dynCodec.estimateSize(pathCol.length)));
     }
     return writer.finish();
   }
 
   decode(reader: BufferReader, rows: number, state: DeserializerState): JsonColumn {
+    const dynamicPaths = state.prefix.data as string[] | undefined;
+    if (!dynamicPaths) {
+      throw new Error("JSON decode requires readPrefix on the same DeserializerState");
+    }
     const pathColumns = new Map<string, Column>();
     let idx = 0;
 
@@ -516,21 +630,22 @@ export class JsonCodec implements Codec {
       pathColumns.set(tp.name, tp.codec.decode(reader, rows, childState(state, idx++)));
     }
 
-    for (const path of this.dynamicPaths) {
-      pathColumns.set(
-        path,
-        this.dynamicCodecs.get(path)!.decode(reader, rows, childState(state, idx++)),
-      );
+    const dynCodec = this.resolveCodec("Dynamic");
+    for (const path of dynamicPaths) {
+      pathColumns.set(path, dynCodec.decode(reader, rows, childState(state, idx++)));
     }
 
-    const allPaths = [...this.typedPaths.map((tp) => tp.name), ...this.dynamicPaths];
-    return new JsonColumn(allPaths, pathColumns, rows);
+    const allPaths = [...this.typedPathNameList, ...dynamicPaths];
+    return new JsonColumn(allPaths, pathColumns, rows, this.type);
   }
 
   fromValues(values: unknown[]): JsonColumn {
     const n = values.length;
     const typedPathArrays = this.typedPaths.map(() => new Array<unknown>(n).fill(null));
-    const dynamicPathArrays = new Map<string, unknown[]>();
+    // rows === null means the path has appeared in every row so far (identity
+    // indices); it is materialized only when a gap shows up, so fully-dense
+    // paths never allocate an index array.
+    const dynamicPathEntries = new Map<string, { rows: number[] | null; values: unknown[] }>();
     const dynamicPathOrder: string[] = [];
 
     for (let i = 0; i < n; i++) {
@@ -548,15 +663,21 @@ export class JsonCodec implements Codec {
         if (val !== undefined) typedPathArrays[tp]![i] = val;
       }
 
-      for (const key of Object.keys(obj)) {
-        if (this.typedPathNames.has(key)) continue;
-        let arr = dynamicPathArrays.get(key);
-        if (!arr) {
-          arr = new Array<unknown>(n).fill(null);
-          dynamicPathArrays.set(key, arr);
+      for (const key in obj) {
+        if (!Object.hasOwn(obj, key) || this.typedPathNames.has(key)) continue;
+        let entry = dynamicPathEntries.get(key);
+        if (!entry) {
+          entry = { rows: null, values: [] };
+          dynamicPathEntries.set(key, entry);
           dynamicPathOrder.push(key);
         }
-        arr[i] = obj[key];
+        if (entry.rows) {
+          entry.rows.push(i);
+        } else if (entry.values.length !== i) {
+          entry.rows = Array.from({ length: entry.values.length }, (_, j) => j);
+          entry.rows.push(i);
+        }
+        entry.values.push(obj[key]);
       }
     }
 
@@ -568,13 +689,94 @@ export class JsonCodec implements Codec {
       );
     }
 
-    dynamicPathOrder.sort(byteOrder);
-    const dynCodec = new DynamicCodec(this.resolveCodec);
+    const dynCodec = this.resolveCodec("Dynamic") as DynamicCodec;
     for (const path of dynamicPathOrder) {
-      pathColumns.set(path, dynCodec.fromValues(dynamicPathArrays.get(path)!));
+      const entry = dynamicPathEntries.get(path)!;
+      pathColumns.set(path, dynCodec.fromSparse(entry.rows, entry.values, n));
     }
 
-    return new JsonColumn([...this.typedPathNames, ...dynamicPathOrder], pathColumns, n);
+    return this.assembleColumn(pathColumns, dynamicPathOrder, n);
+  }
+
+  fromCols(input: Record<string, Column | unknown[] | TypedArray>): JsonColumn {
+    const keys = Object.keys(input);
+
+    const firstKey = keys[0];
+    const rowCount = firstKey === undefined ? 0 : input[firstKey]!.length;
+    for (const key of keys) {
+      const len = input[key]!.length;
+      if (len !== rowCount) {
+        throw new Error(
+          `Column length mismatch: '${firstKey}' has ${rowCount} rows, '${key}' has ${len}`,
+        );
+      }
+    }
+
+    const pathColumns = new Map<string, Column>();
+
+    for (const tp of this.typedPaths) {
+      const value = input[tp.name];
+      if (value === undefined) {
+        throw new Error(
+          `Missing typed path '${tp.name}' (declared in ${this.type}); ` +
+            `pass an array of nulls for an all-null path`,
+        );
+      }
+      if (isArrayLike(value)) {
+        pathColumns.set(tp.name, tp.codec.fromValues(value));
+      } else {
+        // Exact-spelling match: codecs preserve caller spelling, so there is no
+        // canonical form to compare against, and whitespace-insensitive equality
+        // can false-positive on pathological names (`a UInt8` vs `aU Int8`).
+        if (value.type !== tp.type) {
+          throw new Error(
+            `Type mismatch for typed path '${tp.name}': expected '${tp.type}', got '${value.type}'`,
+          );
+        }
+        pathColumns.set(tp.name, value);
+      }
+    }
+
+    const dynamicPathOrder: string[] = [];
+    const dynCodec = this.resolveCodec("Dynamic");
+    for (const key of keys) {
+      if (this.typedPathNames.has(key)) continue;
+      const value = input[key]!;
+      // JS callers can pass anything; a non-arraylike is only usable when it is
+      // a genuine Dynamic column (any other shape loses per-value types).
+      const colType = isArrayLike(value) ? undefined : (value as Column).type;
+      if (colType?.startsWith("Dynamic")) {
+        dynamicPathOrder.push(key);
+        pathColumns.set(key, value as Column);
+        continue;
+      }
+      if (!Array.isArray(value)) {
+        const got = isTypedArray(value)
+          ? "a TypedArray"
+          : colType !== undefined
+            ? `a '${colType}' column`
+            : `a ${typeof value}`;
+        throw new TypeError(
+          `Dynamic path '${key}' must be a plain array or a Dynamic column, got ${got}. ` +
+            `TypedArrays and typed columns lose per-value type information; ` +
+            `use DynamicValue[] to pin types.`,
+        );
+      }
+      dynamicPathOrder.push(key);
+      pathColumns.set(key, dynCodec.fromValues(value));
+    }
+
+    return this.assembleColumn(pathColumns, dynamicPathOrder, rowCount);
+  }
+
+  private assembleColumn(
+    pathColumns: Map<string, Column>,
+    dynamicPathOrder: string[],
+    rowCount: number,
+  ): JsonColumn {
+    dynamicPathOrder.sort(byteOrder);
+    const allPaths = [...this.typedPathNameList, ...dynamicPathOrder];
+    return new JsonColumn(allPaths, pathColumns, rowCount, this.type);
   }
 
   zeroValue() {
@@ -586,8 +788,12 @@ export class JsonCodec implements Codec {
   }
 
   readKinds(reader: BufferReader) {
-    const allCodecs = [...this.typedPaths.map((tp) => tp.codec), ...this.dynamicCodecs.values()];
-    return readKindsMany(reader, allCodecs);
+    // Dynamic paths depend on prefix content the kinds pass has not read yet;
+    // the static kinds tree carries self + typed paths only.
+    return readKindsMany(
+      reader,
+      this.typedPaths.map((tp) => tp.codec),
+    );
   }
 
   toLiteral(value: unknown): string | typeof SQL_NULL {

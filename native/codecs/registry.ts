@@ -50,11 +50,13 @@ function parseJsonTypedPaths(type: string): { name: string; type: string }[] {
   return elements
     .filter(
       // Config params (e.g. max_dynamic_paths=16) have no space, so
-      // parseTupleElements leaves them name=null; SKIP directives are dropped by
-      // name. An Enum typed path's type legitimately contains '=', so it must NOT
-      // be filtered on '='.
-      (el): el is { name: string; type: string } =>
-        el.name !== null && !el.name.toUpperCase().startsWith("SKIP"),
+      // parseTupleElements leaves them name=null; SKIP directives parse as an
+      // UNQUOTED name="SKIP" (exact — a typed path legitimately named "skipped"
+      // must be kept, and a backtick-quoted `SKIP` is a literal path name, not a
+      // directive). An Enum typed path's type legitimately contains '=', so it
+      // must NOT be filtered on '='.
+      (el): el is { name: string; type: string; quoted: boolean } =>
+        el.name !== null && (el.name !== "SKIP" || el.quoted),
     )
     .map((el) => ({ name: el.name, type: el.type }));
 }
@@ -109,7 +111,7 @@ export function createCodec(type: string): Codec {
   if (type === "Dynamic" || type.startsWith("Dynamic(")) return new DynamicCodec(getCodec);
   if (type === "JSON" || type.startsWith("JSON")) {
     const typedPaths = parseJsonTypedPaths(type);
-    return new JsonCodec(getCodec, typedPaths);
+    return new JsonCodec(getCodec, typedPaths, type);
   }
 
   if (type.startsWith("FixedString"))
@@ -191,18 +193,19 @@ export function createCodec(type: string): Codec {
 
 // LRU codec cache. JS Maps iterate in insertion order, so deleting and
 // re-inserting moves a key to the end. Evicting map.keys().next() drops oldest.
-// IMPORTANT: Only stateless codecs may be cached. Codecs that accumulate state
-// during readPrefix/writePrefix (e.g. Dynamic, JSON) must bypass the cache —
-// otherwise block 1's state corrupts block 2 when the server sends multiple
-// MergeTree parts with different column metadata.
+// Codecs are stateless (per-block wire metadata lives on DeserializerState),
+// so one instance per type string is safe to share across columns and blocks.
+// Entries are frozen: a codec that mutates itself post-construction would
+// corrupt every sharer, so make the write throw instead.
 const CODEC_CACHE = new Map<string, Codec>();
-const CODEC_CACHE_LIMIT = 131072;
+// Type strings arrive from the server (Dynamic prefixes name arbitrary types),
+// so the cap bounds memory against unbounded type cardinality, not just schema
+// size. Entries are full codec trees; evicted types just re-parse.
+const CODEC_CACHE_LIMIT = 8192;
 
+export function getCodec(type: "JSON" | `JSON(${string})`): JsonCodec;
+export function getCodec(type: string): Codec;
 export function getCodec(type: string): Codec {
-  if (type.startsWith("Dynamic") || type === "JSON" || type.startsWith("JSON(")) {
-    return createCodec(type);
-  }
-
   const cached = CODEC_CACHE.get(type);
   if (cached !== undefined) {
     CODEC_CACHE.delete(type);
@@ -210,7 +213,7 @@ export function getCodec(type: string): Codec {
     return cached;
   }
 
-  const codec = createCodec(type);
+  const codec = Object.freeze(createCodec(type));
   CODEC_CACHE.set(type, codec);
 
   if (CODEC_CACHE.size > CODEC_CACHE_LIMIT) {

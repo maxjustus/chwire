@@ -7,6 +7,7 @@ import {
   batchFromCols,
   batchFromRows,
   type ColumnDef,
+  DynamicValue,
   encodeNative,
   getCodec,
   RecordBatch,
@@ -14,6 +15,7 @@ import {
   streamEncodeNative,
 } from "../../native/index.ts";
 import { writeUtf8Buffer, writeUtf8Encoder } from "../../native/io.ts";
+import { VariantValue } from "../../native/types.ts";
 import { collect, decodeBatch, encodeNativeRows, toArrayRows, toAsync } from "../test_utils.ts";
 
 function encodeInvalidNativeBlock(type = "NotAType"): Uint8Array {
@@ -524,10 +526,10 @@ describe("Complex types via fromCols", () => {
       val: getCodec("Variant(String, Int64, Bool)").fromValues(["hello", 42n, true, null]),
     });
     // Arms canonicalize to ClickHouse's sorted order: Bool=0, Int64=1, String=2
-    assert.deepStrictEqual(table.getColumn("val")?.get(0), [2, "hello"]);
-    assert.deepStrictEqual(table.getColumn("val")?.get(1), [1, 42n]);
+    assert.deepStrictEqual(table.getColumn("val")?.get(0), new VariantValue(2, "hello"));
+    assert.deepStrictEqual(table.getColumn("val")?.get(1), new VariantValue(1, 42n));
     // Bool stores as 1/0
-    assert.deepStrictEqual(table.getColumn("val")?.get(2), [0, 1]);
+    assert.deepStrictEqual(table.getColumn("val")?.get(2), new VariantValue(0, 1));
     assert.strictEqual(table.getColumn("val")?.get(3), null);
 
     const decoded = decodeBatch(encodeNative(table));
@@ -537,15 +539,15 @@ describe("Complex types via fromCols", () => {
   it("Variant(String, Int64, Bool) - explicit discriminators", async () => {
     const table = batchFromCols({
       val: getCodec("Variant(String, Int64, Bool)").fromValues([
-        [2, "hello"],
-        [1, 42n],
-        [0, true],
+        new VariantValue(2, "hello"),
+        new VariantValue(1, 42n),
+        new VariantValue(0, true),
         null,
       ]),
     });
-    assert.deepStrictEqual(table.getColumn("val")?.get(0), [2, "hello"]);
-    assert.deepStrictEqual(table.getColumn("val")?.get(1), [1, 42n]);
-    assert.deepStrictEqual(table.getColumn("val")?.get(2), [0, 1]);
+    assert.deepStrictEqual(table.getColumn("val")?.get(0), new VariantValue(2, "hello"));
+    assert.deepStrictEqual(table.getColumn("val")?.get(1), new VariantValue(1, 42n));
+    assert.deepStrictEqual(table.getColumn("val")?.get(2), new VariantValue(0, 1));
     assert.strictEqual(table.getColumn("val")?.get(3), null);
 
     const decoded = decodeBatch(encodeNative(table));
@@ -665,9 +667,9 @@ describe("Complex types via getCodec().fromValues()", () => {
   it("Variant(String, Int64, Bool) - type inferred", async () => {
     const col = getCodec("Variant(String, Int64, Bool)").fromValues(["hello", 42n, true, null]);
     assert.strictEqual(col.type, "Variant(Bool, Int64, String)");
-    assert.deepStrictEqual(col.get(0), [2, "hello"]);
-    assert.deepStrictEqual(col.get(1), [1, 42n]);
-    assert.deepStrictEqual(col.get(2), [0, 1]); // bool becomes 1/0
+    assert.deepStrictEqual(col.get(0), new VariantValue(2, "hello"));
+    assert.deepStrictEqual(col.get(1), new VariantValue(1, 42n));
+    assert.deepStrictEqual(col.get(2), new VariantValue(0, 1)); // bool becomes 1/0
     assert.strictEqual(col.get(3), null);
 
     const table = batchFromCols({ val: col });
@@ -677,14 +679,14 @@ describe("Complex types via getCodec().fromValues()", () => {
 
   it("Variant(String, Int64, Bool) - explicit discriminators", async () => {
     const col = getCodec("Variant(String, Int64, Bool)").fromValues([
-      [2, "hello"],
-      [1, 42n],
-      [0, true],
+      new VariantValue(2, "hello"),
+      new VariantValue(1, 42n),
+      new VariantValue(0, true),
       null,
     ]);
     assert.strictEqual(col.type, "Variant(Bool, Int64, String)");
-    assert.deepStrictEqual(col.get(0), [2, "hello"]);
-    assert.deepStrictEqual(col.get(1), [1, 42n]);
+    assert.deepStrictEqual(col.get(0), new VariantValue(2, "hello"));
+    assert.deepStrictEqual(col.get(1), new VariantValue(1, 42n));
     assert.strictEqual(col.get(3), null);
 
     const table = batchFromCols({ val: col });
@@ -757,6 +759,153 @@ describe("Complex types via getCodec().fromValues()", () => {
     const table = batchFromCols({ nested: col });
     const decoded = decodeBatch(encodeNative(table));
     assert.deepStrictEqual(toArrayRows(decoded), toArrayRows(table));
+  });
+});
+
+describe("JsonCodec.fromCols", () => {
+  it("typed path from raw values", () => {
+    const codec = getCodec("JSON(id UInt32, name String)");
+    const col = codec.fromCols({
+      id: [1, 2, 3],
+      name: ["a", "b", "c"],
+    });
+
+    assert.strictEqual(col.type, "JSON(id UInt32, name String)");
+    assert.strictEqual(col.length, 3);
+    const row0 = col.get(0) as Record<string, unknown>;
+    assert.strictEqual(row0.id, 1);
+    assert.strictEqual(row0.name, "a");
+  });
+
+  it("typed path from TypedArray", () => {
+    const codec = getCodec("JSON(id UInt32)");
+    const col = codec.fromCols({ id: new Uint32Array([10, 20]) });
+
+    assert.strictEqual(col.length, 2);
+    assert.strictEqual((col.get(0) as Record<string, unknown>).id, 10);
+    assert.strictEqual((col.get(1) as Record<string, unknown>).id, 20);
+  });
+
+  it("typed path from pre-built Column", () => {
+    const innerCol = getCodec("UInt32").fromValues([7, 8, 9]);
+    const codec = getCodec("JSON(id UInt32)");
+    const col = codec.fromCols({ id: innerCol });
+
+    assert.strictEqual(col.length, 3);
+    assert.strictEqual((col.get(2) as Record<string, unknown>).id, 9);
+  });
+
+  it("batchFromCols infers declared type from fromCols column", () => {
+    const codec = getCodec("JSON(id UInt32)");
+    const col = codec.fromCols({ id: [1] });
+    const batch = batchFromCols({ payload: col });
+
+    assert.strictEqual(batch.schema[0]!.type, "JSON(id UInt32)");
+  });
+
+  it("missing typed path throws", () => {
+    const codec = getCodec("JSON(id UInt32, name String)");
+    assert.throws(() => codec.fromCols({ id: [1] }), /Missing typed path 'name'/);
+  });
+
+  it("path length mismatch throws", () => {
+    const codec = getCodec("JSON(id UInt32, name String)");
+    assert.throws(() => codec.fromCols({ id: [1, 2], name: ["a"] }), /Column length mismatch/);
+  });
+
+  it("typed path type mismatch throws", () => {
+    const innerCol = getCodec("Int32").fromValues([1, 2]);
+    const codec = getCodec("JSON(id UInt32)");
+    assert.throws(
+      () => codec.fromCols({ id: innerCol }),
+      /Type mismatch for typed path 'id': expected 'UInt32', got 'Int32'/,
+    );
+  });
+
+  it("dynamic path from heterogeneous array", () => {
+    const codec = getCodec("JSON");
+    const col = codec.fromCols({
+      meta: ["hello", new DynamicValue("UInt64", 42n), null],
+    });
+
+    assert.strictEqual(col.length, 3);
+    const row0 = col.get(0) as Record<string, unknown>;
+    assert.strictEqual(row0.meta, "hello");
+    const row2 = col.get(2) as Record<string, unknown>;
+    assert.ok(!("meta" in row2));
+  });
+
+  it("TypedArray on dynamic path throws", () => {
+    const codec = getCodec("JSON");
+    assert.throws(
+      () => codec.fromCols({ nums: new Float64Array([1, 2]) }),
+      /Dynamic path 'nums' must be a plain array or a Dynamic column/,
+    );
+  });
+
+  it("non-Dynamic Column on dynamic path throws", () => {
+    const codec = getCodec("JSON");
+    const innerCol = getCodec("String").fromValues(["a", "b"]);
+    assert.throws(
+      () => codec.fromCols({ name: innerCol }),
+      /Dynamic path 'name' must be a plain array or a Dynamic column, got a 'String' column/,
+    );
+  });
+
+  it("Dynamic Column on dynamic path is accepted without re-shredding", () => {
+    const codec = getCodec("JSON");
+    const dynCol = getCodec("Dynamic").fromValues(["a", 42n, null]);
+    const col = codec.fromCols({ meta: dynCol });
+
+    assert.strictEqual(col.length, 3);
+    assert.strictEqual(col.getPath("meta"), dynCol);
+    const batch = batchFromCols({ data: col });
+    const decoded = decodeBatch(encodeNative(batch));
+    assert.deepStrictEqual(toArrayRows(decoded), toArrayRows(batch));
+  });
+
+  it("non-array value on dynamic path throws", () => {
+    const codec = getCodec("JSON");
+    assert.throws(
+      () => codec.fromCols({ s: "abc" as unknown as unknown[] }),
+      /Dynamic path 's' must be a plain array or a Dynamic column/,
+    );
+  });
+
+  it("dynamic path wire order: byte-order sort", () => {
+    const codec = getCodec("JSON");
+    const col = codec.fromCols({
+      tp_2: ["a", "b"],
+      tp_10: ["c", "d"],
+    });
+    // tp_10 sorts before tp_2 in byte order
+    assert.deepStrictEqual(col.paths, ["tp_10", "tp_2"]);
+  });
+
+  it("mixed typed + dynamic paths round-trip", () => {
+    const codec = getCodec("JSON(id UInt32)");
+    const col = codec.fromCols({
+      id: new Uint32Array([1, 2, 3]),
+      tag: ["x", "y", null],
+    });
+
+    const batch = batchFromCols({ data: col });
+    const decoded = decodeBatch(encodeNative(batch));
+    assert.deepStrictEqual(toArrayRows(decoded), toArrayRows(batch));
+  });
+
+  it("empty input produces zero-length column", () => {
+    const codec = getCodec("JSON");
+    const col = codec.fromCols({});
+    assert.strictEqual(col.length, 0);
+    assert.strictEqual(col.type, "JSON");
+  });
+
+  it("typed path with Nullable accepts null values", () => {
+    const codec = getCodec("JSON(name Nullable(String))");
+    const col = codec.fromCols({ name: ["hello", null, "world"] });
+    const row1 = col.get(1) as Record<string, unknown>;
+    assert.ok(!("name" in row1));
   });
 });
 
@@ -846,7 +995,7 @@ describe("RecordBatch.isRecordBatch", () => {
     }
   });
 
-  it("recognizes an instance from a separate module copy via the global brand", () => {
+  it("isRecordBatch recognizes an instance from a separate module copy", () => {
     // Simulate a RecordBatch built by a different copy of this module (ESM vs
     // CJS, or source vs bundled dist): a distinct object that carries the same
     // global-registry brand symbol. instanceof would fail; isRecordBatch must not.

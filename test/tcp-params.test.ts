@@ -1,23 +1,12 @@
 import assert from "node:assert";
 import { describe, it, before, after } from "node:test";
-import { TcpClient, type QueryParamValue } from "../tcp_client/client.ts";
+import { TcpClient } from "../tcp_client/client.ts";
+import { VariantValue } from "../native/types.ts";
 import { startClickHouse, stopClickHouse } from "./setup.ts";
+import { queryScalar } from "./test_utils.ts";
 
 let ch: Awaited<ReturnType<typeof startClickHouse>>;
 let client: TcpClient;
-
-async function queryScalar(
-  sql: string,
-  params?: Record<string, QueryParamValue>,
-): Promise<unknown> {
-  const stream = client.query(sql, params !== undefined ? { params } : {});
-  for await (const packet of stream) {
-    if (packet.type === "Data" && packet.batch.rowCount > 0) {
-      return packet.batch.getAt(0, 0);
-    }
-  }
-  throw new Error(`No rows returned for: ${sql}`);
-}
 
 describe("TCP Query Parameters", { timeout: 60000 }, () => {
   before(async () => {
@@ -40,12 +29,13 @@ describe("TCP Query Parameters", { timeout: 60000 }, () => {
 
   it("handles String param with special chars", async () => {
     const testString = "it's 5 o'clock\nnewline\ttab\\backslash";
-    const result = await queryScalar("SELECT {s: String}", { s: testString });
+    const result = await queryScalar(client, "SELECT {s: String}", { s: testString });
     assert.strictEqual(result, testString);
   });
 
   it("handles nested Array(Tuple(Int32, Int32)) param", async () => {
     const result = await queryScalar(
+      client,
       "SELECT arraySum(arrayMap(t -> tupleElement(t, 1) + tupleElement(t, 2), {points: Array(Tuple(Int32, Int32))}))",
       {
         points: [
@@ -59,7 +49,7 @@ describe("TCP Query Parameters", { timeout: 60000 }, () => {
   });
 
   it("verifies NULL via isNull for Nullable(String)", async () => {
-    const result = await queryScalar("SELECT ifNull({s: Nullable(String)}, 'was_null')", {
+    const result = await queryScalar(client, "SELECT ifNull({s: Nullable(String)}, 'was_null')", {
       s: null,
     });
     assert.strictEqual(result, "was_null");
@@ -67,22 +57,26 @@ describe("TCP Query Parameters", { timeout: 60000 }, () => {
 
   it("handles Array(String) param with quoted strings", async () => {
     // This tests the quoted=true path for nested string literals
-    const result = await queryScalar("SELECT arrayStringConcat({arr: Array(String)}, ',')", {
-      arr: ["hello", "world", "test"],
-    });
+    const result = await queryScalar(
+      client,
+      "SELECT arrayStringConcat({arr: Array(String)}, ',')",
+      {
+        arr: ["hello", "world", "test"],
+      },
+    );
     assert.strictEqual(result, "hello,world,test");
   });
 
   it("handles Array(String) param with special chars (quoted=true path)", async () => {
     // Nested strings must be properly escaped and quoted
     const strings = ["it's", "line\nbreak", "tab\there", "back\\slash"];
-    const result = await queryScalar("SELECT {arr: Array(String)}", { arr: strings });
+    const result = await queryScalar(client, "SELECT {arr: Array(String)}", { arr: strings });
     assert.deepStrictEqual(result, strings);
   });
 
   it("handles Map(String, String) param with special chars in keys and values", async () => {
     // Use simpler key without quote to avoid SQL escaping complexity
-    const result = await queryScalar("SELECT {m: Map(String, String)}['tab_key']", {
+    const result = await queryScalar(client, "SELECT {m: Map(String, String)}['tab_key']", {
       m: { tab_key: "value\twith\ttabs" },
     });
     assert.strictEqual(result, "value\twith\ttabs");
@@ -90,7 +84,7 @@ describe("TCP Query Parameters", { timeout: 60000 }, () => {
 
   it("handles DateTime('UTC') param", async () => {
     const testDate = new Date("2024-06-15T10:30:45Z");
-    const result = await queryScalar("SELECT toUnixTimestamp({ts: DateTime('UTC')})", {
+    const result = await queryScalar(client, "SELECT toUnixTimestamp({ts: DateTime('UTC')})", {
       ts: testDate,
     });
     assert.strictEqual(Number(result), Math.floor(testDate.getTime() / 1000));
@@ -99,7 +93,7 @@ describe("TCP Query Parameters", { timeout: 60000 }, () => {
   // --- TCP-only types ---
 
   it("handles FixedString param", async () => {
-    const result = await queryScalar("SELECT {s: FixedString(10)}", { s: "hello" });
+    const result = await queryScalar(client, "SELECT {s: FixedString(10)}", { s: "hello" });
     // FixedString returns Uint8Array - decode and trim null padding
     const str =
       result instanceof Uint8Array
@@ -109,7 +103,7 @@ describe("TCP Query Parameters", { timeout: 60000 }, () => {
   });
 
   it("handles FixedString param with special chars", async () => {
-    const result = await queryScalar("SELECT {s: FixedString(20)}", {
+    const result = await queryScalar(client, "SELECT {s: FixedString(20)}", {
       s: "tab\there",
     });
     const str = result instanceof Uint8Array ? new TextDecoder().decode(result) : String(result);
@@ -117,22 +111,19 @@ describe("TCP Query Parameters", { timeout: 60000 }, () => {
   });
 
   it("handles Variant param with string", async () => {
-    // Variant returns [discriminator, value] tuple
-    const result = await queryScalar("SELECT {v: Variant(String, Int64)}", {
+    const result = await queryScalar(client, "SELECT {v: Variant(String, Int64)}", {
       v: "hello",
     });
-    // Result is [discriminator, value] tuple
-    assert.ok(Array.isArray(result));
-    assert.strictEqual((result as unknown[])[1], "hello");
+    assert.ok(result instanceof VariantValue);
+    assert.strictEqual(result.value, "hello");
   });
 
   it("handles Variant param with small integer as Int8", async () => {
-    const result = await queryScalar("SELECT {v: Variant(Int8, String)}", { v: 42 });
-    assert.ok(Array.isArray(result));
-    const arr = result as unknown[];
+    const result = await queryScalar(client, "SELECT {v: Variant(Int8, String)}", { v: 42 });
+    assert.ok(result instanceof VariantValue);
     // Int8 is discriminator 0 (first in type list)
-    assert.strictEqual(arr[0], 0);
-    assert.strictEqual(Number(arr[1]), 42);
+    assert.strictEqual(result.discriminator, 0);
+    assert.strictEqual(Number(result.value), 42);
   });
 
   // Dynamic type requires V3 serialization format - enabled via setting
@@ -165,7 +156,7 @@ describe("TCP Query Parameters", { timeout: 60000 }, () => {
   });
 
   it("handles LowCardinality(String) param", async () => {
-    const result = await queryScalar("SELECT {s: LowCardinality(String)}", {
+    const result = await queryScalar(client, "SELECT {s: LowCardinality(String)}", {
       s: "low_card_value",
     });
     assert.strictEqual(result, "low_card_value");
@@ -173,21 +164,23 @@ describe("TCP Query Parameters", { timeout: 60000 }, () => {
 
   it("handles LowCardinality(String) param with special chars", async () => {
     const testString = "it's\na\ttest\\value";
-    const result = await queryScalar("SELECT {s: LowCardinality(String)}", {
+    const result = await queryScalar(client, "SELECT {s: LowCardinality(String)}", {
       s: testString,
     });
     assert.strictEqual(result, testString);
   });
 
   it("handles LowCardinality(Nullable(String)) param with value", async () => {
-    const result = await queryScalar("SELECT {s: LowCardinality(Nullable(String))}", {
+    const result = await queryScalar(client, "SELECT {s: LowCardinality(Nullable(String))}", {
       s: "not_null",
     });
     assert.strictEqual(result, "not_null");
   });
 
   it("handles LowCardinality(Nullable(String)) param with null", async () => {
-    const result = await queryScalar("SELECT {s: LowCardinality(Nullable(String))}", { s: null });
+    const result = await queryScalar(client, "SELECT {s: LowCardinality(Nullable(String))}", {
+      s: null,
+    });
     assert.strictEqual(result, null);
   });
 

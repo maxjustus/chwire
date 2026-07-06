@@ -20,18 +20,30 @@
 import { describe, it } from "node:test";
 import { collectText, init, query } from "../client.ts";
 import {
+  type Codec,
   extractTypeArgs,
   type GenContext,
+  parseTupleElements,
   parseTypeList,
   type Rng,
 } from "../native/codecs/base.ts";
 import type { JsonCodec } from "../native/codecs/dynamic.ts";
-import { DynamicValue, getCodec } from "../native/index.ts";
+import {
+  type ColumnDef,
+  decodeNativeBlock,
+  DynamicValue,
+  encodeNative,
+  getCodec,
+  VariantValue,
+} from "../native/index.ts";
+import { batchFromRows } from "../native/table.ts";
 import { startClickHouse, stopClickHouse } from "../test/setup.ts";
 import { type Compression, config, getIterationIndex, logConfig, logFuzzError } from "./config.ts";
 import { genType } from "./gen-type.ts";
+import { maybePoisonName, renderJsonPath } from "./identifiers.ts";
+import { rerenderCells } from "./rerender.ts";
 import { makeRng } from "./rng.ts";
-import { COMPLEX_TYPE_SETTINGS, type Conn, roundTripCells } from "./round-trip.ts";
+import { COMPLEX_TYPE_SETTINGS, type Conn, roundTripCells, stringify } from "./round-trip.ts";
 import { consume, unTsvEscape, uniqueSuffix } from "./util.ts";
 
 logConfig("generated");
@@ -117,6 +129,10 @@ const SUBSTREAM_SALT = {
   "source-choice": 0x7f4a7c15,
   "type-roll": 0x5bd1e995,
   "dynamic-pool": 0x2545f491,
+  "dup-column": 0x1b873593,
+  rerender: 0x85ebca6b,
+  "column-name": 0xc2b2ae35,
+  "pool-size": 0x27d4eb2f,
 } as const;
 
 /** A deterministic RNG substream derived from an iteration seed for one purpose. */
@@ -273,12 +289,16 @@ function dynamicArmAllowed(type: string): boolean {
  * allows as a Dynamic arm. Bounded by DYNAMIC_POOL_SIZE. The pool gets its own
  * seeded rng so it stays deterministic for replay without perturbing per-row gen.
  */
-async function buildDynamicTypePool(rng: Rng, source: TypeSource): Promise<string[]> {
+async function buildDynamicTypePool(
+  rng: Rng,
+  source: TypeSource,
+  size = DYNAMIC_POOL_SIZE,
+): Promise<string[]> {
   const pool: string[] = [];
   const seen = new Set<string>();
   for (
     let attempt = 0;
-    attempt < DYNAMIC_POOL_SIZE * 4 && pool.length < DYNAMIC_POOL_SIZE;
+    attempt < DYNAMIC_POOL_SIZE * 4 && pool.length < Math.min(size, DYNAMIC_POOL_SIZE);
     attempt++
   ) {
     const type = await source(rng);
@@ -291,7 +311,20 @@ async function buildDynamicTypePool(rng: Rng, source: TypeSource): Promise<strin
       pool.push(type);
     }
   }
-  return pool.length > 0 ? pool : PROBE_DYNAMIC_TYPES;
+  if (pool.length === 0) pool.push(...PROBE_DYNAMIC_TYPES);
+  // A big-pool iteration (see the "pool-size" roll) asks for ~250-300 distinct
+  // types to straddle the 255-distinct-type cap on a Dynamic column. Drawing
+  // that many from the type source would cost hundreds of probe/CH round-trips,
+  // so the tail is padded with cheap deterministic distinct types. Default-size
+  // pools are never padded: falling short there keeps the original behavior.
+  for (let k = 1; size > DYNAMIC_POOL_SIZE && pool.length < size; k++) {
+    const filler = k % 2 === 0 ? `FixedString(${k})` : `Array(FixedString(${k}))`;
+    if (!seen.has(filler)) {
+      seen.add(filler);
+      pool.push(filler);
+    }
+  }
+  return pool;
 }
 
 /** Roll a random column type matching one of the requested kinds. */
@@ -514,14 +547,20 @@ function rollPathCount(rng: Rng): number {
 }
 
 /**
- * A JSON path name with a unique root (so no two paths prefix-collide) and 0-2
- * nested segments, e.g. `tp_3`, `tp_3.s0`, `tp_3.s0.s1`. CH stores dotted paths
- * as flat positional sub-columns, which JsonColumn round-trips as dotted keys.
+ * A JSON path name with a non-conflicting root (no two paths may be equal or
+ * dotted prefixes of one another) and 0-2 nested segments, e.g. `tp_3`,
+ * `tp_3.s0`, `tp_3.s0.s1`. The root sometimes comes from the poison pool
+ * (keywords like SKIP, quotes, unicode) to exercise the path filter and
+ * identifier escaping. CH stores dotted paths as flat positional sub-columns,
+ * which JsonColumn round-trips as dotted keys. The chosen full name is appended
+ * to `used`, which the caller seeds with names that must not be collided with.
  */
-function jsonPathName(prefix: string, index: number, rng: Rng): string {
-  const segs = [`${prefix}_${index}`];
+function jsonPathName(prefix: string, index: number, rng: Rng, used: string[]): string {
+  const segs = [maybePoisonName(rng, `${prefix}_${index}`, used)];
   for (let d = 0, depth = rng.int(0, 2); d < depth; d++) segs.push(`s${d}`);
-  return segs.join(".");
+  const name = segs.join(".");
+  used.push(name);
+  return name;
 }
 
 /**
@@ -556,11 +595,12 @@ function hasNonStringMapKey(type: string): boolean {
 async function rollJsonType(rng: Rng, source: TypeSource): Promise<string> {
   const numTypedPaths = rollPathCount(rng);
   const defs: string[] = [];
+  const usedNames: string[] = [];
   for (let p = 0; defs.length < numTypedPaths && p < numTypedPaths * 4 + 4; p++) {
     const type = await source(rng);
     if (type === null || !isGeneratable(type, rng) || hasNonStringMapKey(type)) continue;
     const declared = isComposite(type) ? type : `Nullable(${type})`;
-    defs.push(`${jsonPathName("tp", defs.length, rng)} ${declared}`);
+    defs.push(`${renderJsonPath(jsonPathName("tp", defs.length, rng, usedNames))} ${declared}`);
   }
   // Occasionally cap dynamic paths low so cells with more of them overflow into
   // CH's shared-data storage; FLATTENED serialization flattens that back into
@@ -652,13 +692,16 @@ function generateCells(
 
   // Top-level Variant routes through the shape scheduler; a Variant nested in a
   // composite (Array(Variant) etc.) falls through to the generic recursive
-  // generate below, where VariantCodec.generate emits each [disc, value] cell.
+  // generate below, where VariantCodec.generate emits each VariantValue cell.
   if (kind === "variant" && canonicalType.startsWith("Variant")) {
     const armCodecs = parseTypeList(extractTypeArgs(canonicalType)).map((t) => getCodec(t));
-    return shapedCells(shape, rowCount, armCodecs.length, rng, (sel) => [
-      sel,
-      armCodecs[sel].generate(ctx()),
-    ]);
+    return shapedCells(
+      shape,
+      rowCount,
+      armCodecs.length,
+      rng,
+      (sel) => new VariantValue(sel, armCodecs[sel].generate(ctx())),
+    );
   }
 
   // Top-level Dynamic (bare or capped) routes through the shape scheduler; a
@@ -755,7 +798,17 @@ function generateJsonCells(
   const pathCount = rollPathCount(rng);
   const shape = JSON_SHAPES[rng.int(0, JSON_SHAPES.length - 1)];
   const masks = dynamicPathMasks(shape, pathCount, rowCount, rng);
-  const pathNames = Array.from({ length: pathCount }, (_, p) => jsonPathName("dp", p, rng));
+  // Dynamic path names must not equal or prefix-collide with the typed paths
+  // (a value under both a typed and a dynamic path would conflict at INSERT),
+  // so the used-set is seeded with the typed path names from the column type.
+  const usedNames: string[] = canonicalType.includes("(")
+    ? parseTupleElements(extractTypeArgs(canonicalType))
+        .map((e) => e.name)
+        .filter((n): n is string => n !== null)
+    : [];
+  const pathNames = Array.from({ length: pathCount }, (_, p) =>
+    jsonPathName("dp", p, rng, usedNames),
+  );
 
   const cells = new Array<Record<string, unknown>>(rowCount);
   for (let r = 0; r < rowCount; r++) {
@@ -768,6 +821,39 @@ function generateJsonCells(
     cells[r] = obj;
   }
   return cells;
+}
+
+/**
+ * In-process re-render oracle: rewrite the canonical cells into alternate
+ * accepted input forms (fuzz/rerender.ts), feed them through fromValues via
+ * encodeNative, decode, and assert the result still compares equal to the
+ * CANONICAL cells. A coercion branch that silently corrupts an alternate form
+ * shows up here as a compare mismatch before any server round-trip.
+ */
+function assertRerenderRoundTrip(
+  codec: Codec,
+  declaredType: string,
+  cells: unknown[],
+  rng: Rng,
+  replayHint: string,
+): void {
+  const altCells = rerenderCells(declaredType, cells, rng);
+  const schema: ColumnDef[] = [{ name: "v", type: declaredType }];
+  const encoded = encodeNative(
+    batchFromRows(
+      schema,
+      altCells.map((c) => [c]),
+    ),
+  );
+  const decoded = [...decodeNativeBlock(encoded, 0, { mapAsArray: true }).columnData[0]!];
+  for (let r = 0; r < cells.length; r++) {
+    if (!codec.compare(cells[r], decoded[r])) {
+      throw new Error(
+        `re-render mismatch for ${declaredType} (${replayHint}):\n` +
+          `  row ${r}: canonical ${stringify(cells[r])}, rewritten ${stringify(altCells[r])}, decoded ${stringify(decoded[r])}`,
+      );
+    }
+  }
 }
 
 /**
@@ -809,10 +895,42 @@ async function runColumn(opts: {
   const rng = makeRng(seed);
   const cells = generateCells(kind, canonicalType, rng, rowCount, opts.dynamicTypePool);
 
+  // 1-in-4: give the table a second column with the IDENTICAL type string and
+  // independently generated cells (the per-row rng continues, so the draw stays
+  // replay-deterministic). Two columns sharing one type string exercise
+  // shared-codec-instance state across sibling columns of a block. Pre-created
+  // Variant tables already hold a single canonical column, so they are exempt.
+  const duplicateCells =
+    !opts.preCreated && subStream(seed, "dup-column").int(0, 3) === 0
+      ? generateCells(kind, canonicalType, rng, rowCount, opts.dynamicTypePool)
+      : undefined;
+
+  // Variant cells need arm-aware rewriting and JSON objects carry untyped
+  // dynamic paths, so the re-render oracle covers the other kinds (Dynamic cells
+  // carry their concrete type on the DynamicValue, so they are rewritable).
+  if (kind === "scalar" || kind === "composite" || kind === "dynamic") {
+    assertRerenderRoundTrip(
+      codec,
+      canonicalType,
+      cells,
+      subStream(seed, "rerender"),
+      `requested ${columnType}, seed=${seed}`,
+    );
+  }
+
+  // The fuzz table's column name is sometimes poisoned too (keywords, quotes,
+  // spaces) so CREATE/SELECT identifier quoting and the Native block's
+  // name-matched INSERT are exercised. Pre-created Variant tables fixed `v`.
+  const columnName = opts.preCreated
+    ? "v"
+    : maybePoisonName(subStream(seed, "column-name"), "v", []);
+
   await roundTripCells({
     declaredType: canonicalType,
     codec,
     cells,
+    duplicateCells,
+    columnName,
     compression: opts.compression,
     conn: { url: opts.url, auth: opts.auth },
     sessionId: opts.sessionId,
@@ -865,19 +983,29 @@ describe("Native client-generated Fuzz Tests", { timeout: 600000 }, () => {
             console.log(`[generated fuzz ${i + 1}/${N}] no generatable type rolled, skipping`);
             continue;
           }
-          const { kind, type: columnType } = rolled;
+          const { kind, type: rolledType } = rolled;
           // Variant rolls bring a pre-created, CH-canonicalized table; reuse it.
           const table = rolled.table ?? `generated_fuzz_${suffix}`;
 
+          // 1-in-8 Dynamic iterations roll a ~250-300 type pool to straddle the
+          // UInt8/UInt16 flattened-index width seam (256 indexes = 255 types +
+          // null): both sides must round-trip through CH, which spills types
+          // beyond max_types into the shared variant on unflatten. The column
+          // is forced to bare Dynamic so the seam sits on the column itself.
+          const poolSizeRng = subStream(seed, "pool-size");
+          const bigPool = kind === "dynamic" && poolSizeRng.int(0, 7) === 0;
+          const poolSize = bigPool ? poolSizeRng.int(250, 300) : DYNAMIC_POOL_SIZE;
+          const columnType = bigPool ? "Dynamic" : rolledType;
+
           console.log(
-            `[generated fuzz ${i + 1}/${N} compression=${compression}] ${sourceName} ${kind} ${columnType} seed=${seed}`,
+            `[generated fuzz ${i + 1}/${N} compression=${compression}] ${sourceName} ${kind} ${columnType} seed=${seed}${bigPool ? ` pool=${poolSize}` : ""}`,
           );
 
           // Only Dynamic-bearing kinds sample the pool; building it for the rest
           // would spend round-trips no cell ever reads.
           const dynamicTypePool =
             kind === "dynamic" || kind === "json"
-              ? await buildDynamicTypePool(subStream(seed, "dynamic-pool"), source)
+              ? await buildDynamicTypePool(subStream(seed, "dynamic-pool"), source, poolSize)
               : PROBE_DYNAMIC_TYPES;
 
           try {

@@ -1,5 +1,35 @@
 # Changelog
 
+## 1.1.0
+
+### Added
+
+- Added `JsonCodec.fromCols()` for constructing JSON columns path-by-path from columnar data, skipping row-object shredding. `getCodec("JSON(...)")` returns a narrowed type with the method available. Accepts `Dynamic` columns on dynamic paths without re-shredding, and rejects non-arraylike inputs (a bare string would otherwise become one row per character).
+
+### Changed
+
+- **Breaking**: `Codec.readPrefix` takes the block's `DeserializerState` as a second parameter; Dynamic/JSON wire metadata (type list, dynamic path list) now lives on that per-column, per-block state instead of the codec instance. Custom codecs implementing `readPrefix` must add the parameter. Codecs are now fully stateless, so `getCodec` caches every type — including `Dynamic`, `JSON`, and composites containing them, which previously rebuilt their codec tree per column per block.
+- **Breaking**: Explicit Variant arm selection now uses the exported `VariantValue` class instead of `[discriminator, value]` arrays. Any `[number, x]` array was previously treated as an explicit discriminator pair, so `[1, 5]` into `Variant(Array(Int64), Int64)` silently encoded as `Int64 5` instead of an array. Plain arrays now always encode as values; `VariantColumn.get` returns `VariantValue` symmetrically.
+- Credentials are sent via `X-ClickHouse-User`/`X-ClickHouse-Key` headers instead of URL parameters, keeping them out of server logs, proxies, and URL caches.
+- `insert()` streams its body with pull-based backpressure, so a fast producer no longer buffers the entire payload in memory.
+
+### Fixed
+
+- Queries with unbound `{name: Type}` placeholders are now sent as-is instead of throwing `Missing parameter` client-side. Parameterized-view DDL (`CREATE VIEW v AS SELECT ... {x: String}`) and session-level `SET param_x = ...` bindings work; a genuinely unbound parameter fails server-side with `UNKNOWN_QUERY_PARAMETER`. Redeclaring a parameter at a conflicting type also no longer throws — the first declaration determines serialization and the server casts per use site.
+- `Dynamic` index columns scale UInt8/UInt16/UInt32 with the flattened type count (shared-variant overflow makes the list unbounded by `max_types`); a 300-type Native insert now round-trips.
+- Bare JS numbers into `Variant` route to `Int64`/`UInt64` arms; previously they skipped those arms and hit a narrower one (`Variant(Int64, UInt8)`: 300 threw out-of-range, 5 encoded on the wrong wire arm).
+- JSON type parsing handles ClickHouse's canonical identifier spellings: per-segment backtick-quoted dotted paths (`` JSON(`sp ace`.s0 Int64) ``), backslash-escaped characters in quoted identifiers, a quoted `` `SKIP` `` typed path no longer treated as a SKIP directive, and only exact `SKIP` directives dropped (typed paths named `skipped`/`skip_*` were silently discarded).
+- IPv4-mapped IPv6 addresses (`::ffff:192.168.1.1`) encode instead of throwing; zone IDs (`fe80::1%eth0`) are rejected at validation since 16 wire bytes cannot carry them.
+- Decimal values with trailing zeros beyond the scale (`"1.50"` into `Decimal(9, 1)`) no longer throw a false precision-loss error; real precision loss still throws.
+- `insert()` rejects non-positive `bufferSize` up front and clamps the flush threshold to `bufferSize`; both previously caused infinite flush loops. Server exceptions delivered in the body of a 200 insert response are now detected, and draining the body returns the connection to the pool.
+- `decodeBlocks` throws on undecodable trailing bytes instead of silently dropping them; plain-text error bodies previously decoded to an empty string and surfaced as `ClickHouseException(0, "Unknown", "")`.
+- Varint reads/writes guard against overflow and negative lengths (a negative string length previously moved the read cursor backward), and `readUInt32LE` stays unsigned when the high bit is set.
+
+### Performance
+
+- `Variant` `fromValues` shredding is 2.3x faster and `Dynamic` 1.17x (precomputed `typeof`-to-discriminator dispatch instead of a linear arm scan); JSON typed-path `fromValues` gains 1.38x indirectly.
+- JSON `fromValues` no longer builds dense null-filled arrays per dynamic path (which made it O(paths x rows) even for keys present in few rows); sparse paths collect (row, value) pairs instead, ~38% faster encode on sparse-keyed objects. Row-key iteration also avoids allocating a key array per row (~9% dense, ~18% sparse).
+
 ## 1.0.0
 
 `@maxjustus/chwire` is the renamed successor to `@maxjustus/chttp`, continuing from `1.15.0`.
@@ -16,6 +46,7 @@
 
 ### Fixed
 
+- `JsonColumn.type` now preserves the declared type string (e.g. `JSON(id UInt32)`) instead of always reporting `JSON`, so `batchFromCols` schema inference picks up typed-path declarations.
 - HTTP requests now send `Accept-Encoding: identity`: the client already does its own block compression, and against ClickHouse 26.x a non-identity Accept-Encoding combined with `compress=1` made the server return empty error bodies (errors surfaced as "Unknown" with no message).
 - Fixed mid-stream HTTP exception detection against ClickHouse 26.x, which frames the `__exception__` trailer with the random tag announced in `X-ClickHouse-Exception-Tag`. The old parser missed tagged trailers entirely: text formats returned silently truncated results, and Native streams surfaced decoder garbage (e.g. "Need 4 bytes at offset N") instead of the server exception.
 - Native stream decoding now reports "stream ended mid-block" with byte counts when the source ends inside a block, instead of a bare buffer-underflow error.

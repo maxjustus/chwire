@@ -33,9 +33,18 @@ export function parseTypeList(inner: string): string[] {
   let depth = 0;
   let inQuote = false;
   let current = "";
-  for (const char of inner) {
+  for (let i = 0; i < inner.length; i++) {
+    const char = inner[i]!;
     // A backtick-quoted name (e.g. a JSON path `a.b`) may contain commas/parens
-    // that must not be treated as list or type delimiters.
+    // that must not be treated as list or type delimiters. Inside quotes a
+    // backslash escapes the next character (ClickHouse's canonical rendering of
+    // a literal backtick/backslash in an identifier), so it must not toggle the
+    // quote state or be split on.
+    if (inQuote && char === "\\" && i + 1 < inner.length) {
+      current += char + inner[i + 1];
+      i++;
+      continue;
+    }
     if (char === "`") inQuote = !inQuote;
     if (!inQuote) {
       if (char === "(") depth++;
@@ -52,39 +61,106 @@ export function parseTypeList(inner: string): string[] {
   return types;
 }
 
-export function parseTupleElements(inner: string): { name: string | null; type: string }[] {
+export interface NamedElement {
+  name: string | null;
+  type: string;
+  /**
+   * True when the name was backtick-quoted. A quoted name is always a literal
+   * identifier — `` `SKIP` `` is a path named SKIP, while an unquoted SKIP in a
+   * JSON type is a skip directive — so consumers that treat keywords specially
+   * must check this.
+   */
+  quoted: boolean;
+}
+
+export function parseTupleElements(inner: string): NamedElement[] {
   return parseTypeList(inner).map(parseNamedElement);
 }
 
 /**
- * Split a "name Type" element into name and type. Names are either bare
- * identifiers that may contain dots (JSON nested paths like `a.b.c`) or, when the
- * name has characters ClickHouse must quote, a backtick-quoted string (`` `a.b` ``,
- * a doubled backtick escaping a literal one). A bare type with no name (a Tuple
- * element, a config param) returns name=null.
+ * ClickHouse escape sequences valid inside a backtick-quoted identifier. Any
+ * other escaped character (`` \` ``, `\\`, `\'`) decodes to the character itself,
+ * matching ClickHouse's parser.
  */
-function parseNamedElement(part: string): { name: string | null; type: string } {
-  if (part.startsWith("`")) {
-    let name = "";
-    let i = 1;
-    for (; i < part.length; i++) {
-      if (part[i] === "`") {
-        if (part[i + 1] === "`") {
-          name += "`";
-          i++;
+const IDENT_ESCAPES: Record<string, string> = {
+  n: "\n",
+  r: "\r",
+  t: "\t",
+  b: "\b",
+  f: "\f",
+  a: "\x07",
+  v: "\v",
+  "0": "\0",
+};
+
+/**
+ * Split a "name Type" element into name and type. A name is a dotted path of
+ * segments (JSON nested paths like `a.b.c`), each segment either a bare
+ * identifier or, when it has characters ClickHouse must quote, backtick-quoted
+ * (`` `sp ace`.s0 ``; ClickHouse also canonicalizes whole paths to a single
+ * quoted `` `sp ace.s0` ``, where the dots still mean nesting). Inside quotes a
+ * literal backtick/backslash/control char is backslash-escaped (`` `a\`b` ``); a
+ * doubled backtick escaping a literal one is also accepted on input. A bare type
+ * with no name (a Tuple element, a config param) returns name=null.
+ */
+function parseNamedElement(part: string): NamedElement {
+  const path = scanNamePath(part);
+  if (path && /\s/.test(part[path.end] ?? "")) {
+    const type = part.slice(path.end).trim();
+    if (type) return { name: path.name, type, quoted: path.quoted };
+  }
+  return { name: null, type: part, quoted: false };
+}
+
+/**
+ * Scan a dotted identifier path (segments bare or backtick-quoted) from the
+ * start of `part`. Returns the decoded name, the offset just past it, and
+ * whether any segment was quoted; null when `part` does not start with one.
+ */
+function scanNamePath(part: string): { name: string; end: number; quoted: boolean } | null {
+  let i = 0;
+  let name = "";
+  let quoted = false;
+  while (true) {
+    if (part[i] === "`") {
+      quoted = true;
+      i++;
+      let closed = false;
+      while (i < part.length) {
+        const c = part[i]!;
+        if (c === "\\" && i + 1 < part.length) {
+          const next = part[i + 1]!;
+          name += IDENT_ESCAPES[next] ?? next;
+          i += 2;
           continue;
         }
-        i++; // consume the closing backtick
-        break;
+        if (c === "`") {
+          if (part[i + 1] === "`") {
+            name += "`";
+            i += 2;
+            continue;
+          }
+          i++; // consume the closing backtick
+          closed = true;
+          break;
+        }
+        name += c;
+        i++;
       }
-      name += part[i];
+      if (!closed) return null;
+    } else {
+      const m = /^[a-z_][a-z0-9_]*/i.exec(part.slice(i));
+      if (!m) return null;
+      name += m[0];
+      i += m[0].length;
     }
-    const type = part.slice(i).trim();
-    return type ? { name, type } : { name: null, type: part };
+    if (part[i] === ".") {
+      name += ".";
+      i++;
+      continue;
+    }
+    return { name, end: i, quoted };
   }
-  const match = part.match(/^([a-z_][a-z0-9_]*(?:\.[a-z_][a-z0-9_]*)*)\s+(.+)$/i);
-  if (match) return { name: match[1]!, type: match[2]! };
-  return { name: null, type: part };
 }
 
 // Extracts the content between the outermost parentheses: "Array(Int32)" -> "Int32"
@@ -144,8 +220,14 @@ export interface Codec {
   makeBuilder?(expectedRows?: number): ColumnBuilder;
   zeroValue(): unknown;
   estimateSize(rows: number): number;
-  writePrefix?(writer: BufferWriter, col: Column): void;
-  readPrefix?(reader: BufferReader): void;
+  /**
+   * Write/read the per-block wire metadata that precedes column data
+   * (LowCardinality key version, Variant mode, Dynamic type list, JSON path
+   * list). Required even for prefix-less codecs so composites forward to
+   * children unconditionally.
+   */
+  writePrefix(writer: BufferWriter, col: Column): void;
+  readPrefix(reader: BufferReader, state: DeserializerState): void;
   readKinds(reader: BufferReader): SerializationNode;
   /**
    * Serialize a single value to ClickHouse literal string syntax.
@@ -248,8 +330,9 @@ export function columnFromRows(
 
 export function defaultDeserializerState(): DeserializerState {
   return {
-    serNode: DEFAULT_DENSE_NODE,
+    serializationNode: DEFAULT_DENSE_NODE,
     sparseRuntime: new Map(),
+    prefix: { children: [] },
   };
 }
 
@@ -261,7 +344,10 @@ export function defaultDeserializerState(): DeserializerState {
 export function childState(state: DeserializerState, index: number): DeserializerState {
   return {
     ...state,
-    serNode: state.serNode.children[index] ?? DEFAULT_DENSE_NODE,
+    serializationNode: state.serializationNode.children[index] ?? DEFAULT_DENSE_NODE,
+    // Grown lazily so readPrefix (populates prefix.data) and decode (consumes
+    // it) land on the same node when both derive it from the same parent.
+    prefix: (state.prefix.children[index] ??= { children: [] }),
   };
 }
 
@@ -298,7 +384,7 @@ export function readKindsMany(reader: BufferReader, children: readonly Codec[]):
 
 /**
  * Read sparse-encoded column data and materialize to dense array.
- * Only called from BaseCodec.decode() when serNode.kind is Sparse.
+ * Only called from BaseCodec.decode() when serializationNode.kind is Sparse.
  */
 function readSparse(
   codec: BaseCodec,
@@ -306,7 +392,7 @@ function readSparse(
   rows: number,
   state: DeserializerState,
 ): Column {
-  const node = state.serNode;
+  const node = state.serializationNode;
   const [initialTrailing, hasValueAfter] = state.sparseRuntime.get(node) || [0, false];
 
   let trailingDefaultCount = initialTrailing;
@@ -478,7 +564,7 @@ export abstract class BaseCodec implements Codec {
   }
 
   decode(reader: BufferReader, rows: number, state: DeserializerState): Column {
-    if (state.serNode.kind === SerializationKind.Sparse) {
+    if (state.serializationNode.kind === SerializationKind.Sparse) {
       return readSparse(this, reader, rows, state);
     }
     return this.decodeDense(reader, rows, state);
@@ -488,4 +574,8 @@ export abstract class BaseCodec implements Codec {
     const kind = reader.readU8();
     return { kind, children: [] };
   }
+
+  writePrefix(_writer: BufferWriter, _col: Column): void {}
+
+  readPrefix(_reader: BufferReader, _state: DeserializerState): void {}
 }

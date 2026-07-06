@@ -6,6 +6,7 @@
  */
 
 import { getCodec, SQL_NULL } from "./native/codecs.ts";
+import { isAsciiWhitespace } from "./native/types.ts";
 
 export { SQL_NULL };
 
@@ -44,10 +45,6 @@ function skipBlockComment(query: string, i: number): number {
   return query.length;
 }
 
-function isWhitespace(ch: string): boolean {
-  return ch === " " || ch === "\t" || ch === "\n" || ch === "\r";
-}
-
 function isWordChar(ch: string): boolean {
   return (
     (ch >= "a" && ch <= "z") || (ch >= "A" && ch <= "Z") || (ch >= "0" && ch <= "9") || ch === "_"
@@ -55,7 +52,7 @@ function isWordChar(ch: string): boolean {
 }
 
 function skipWhitespace(query: string, i: number): number {
-  while (i < query.length && isWhitespace(query[i]!)) {
+  while (i < query.length && isAsciiWhitespace(query.charCodeAt(i))) {
     i++;
   }
   return i;
@@ -144,13 +141,12 @@ export function extractParamTypes(query: string): Map<string, string> {
       const parsed = parseParam(query, i + 1);
       if (parsed) {
         const [name, type, end] = parsed;
-        const existing = result.get(name);
-        if (existing !== undefined && existing !== type) {
-          throw new Error(
-            `Parameter '${name}' declared with conflicting types: ${existing} vs ${type}`,
-          );
+        // First declaration wins. Only one raw value is sent per name; the
+        // server casts it at each use site, so redeclarations at other types
+        // are its concern, not ours.
+        if (!result.has(name)) {
+          result.set(name, type);
         }
-        result.set(name, type);
         i = end;
       } else {
         i++;
@@ -197,12 +193,8 @@ export function serializeParams(
     result[name] = codec.toLiteral(value);
   }
 
-  // Check for missing required params
-  for (const [name, type] of types) {
-    if (!(name in result)) {
-      throw new Error(`Missing parameter: ${name} (type: ${type})`);
-    }
-  }
-
+  // Unbound placeholders are left for the server to resolve: they may be
+  // legal (parameterized-view DDL, SET param_x session bindings) or an
+  // error the server reports as UNKNOWN_QUERY_PARAMETER.
   return result;
 }

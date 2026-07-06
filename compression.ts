@@ -1,3 +1,4 @@
+import { Compression as CompressionFrame } from "./native/constants.ts";
 import { cityhash_102_128 } from "./vendor/cityhash/cityhash.js";
 
 // Build-time constant set by esbuild --define
@@ -25,10 +26,7 @@ export let usingNativeZstd = false;
 
 function prependUint32LE(data: Uint8Array, size: number): Uint8Array {
   const out = new Uint8Array(4 + data.length);
-  out[0] = size & 0xff;
-  out[1] = (size >> 8) & 0xff;
-  out[2] = (size >> 16) & 0xff;
-  out[3] = (size >> 24) & 0xff;
+  writeUInt32LE(out, size, 0);
   out.set(data, 4);
   return out;
 }
@@ -127,10 +125,11 @@ export function concat(arrays: Uint8Array<ArrayBufferLike>[]): Uint8Array<ArrayB
 
 export function readUInt32LE(arr: Uint8Array, offset: number): number {
   return (
-    arr[offset]! |
-    (arr[offset + 1]! << 8) |
-    (arr[offset + 2]! << 16) |
-    ((arr[offset + 3]! << 24) >>> 0)
+    (arr[offset]! |
+      (arr[offset + 1]! << 8) |
+      (arr[offset + 2]! << 16) |
+      (arr[offset + 3]! << 24)) >>>
+    0
   );
 }
 
@@ -149,8 +148,7 @@ function equals(a: Uint8Array, b: Uint8Array): boolean {
   return true;
 }
 
-const CHECKSUM_SIZE = 16;
-const HEADER_SIZE = 9;
+const { CHECKSUM_SIZE, HEADER_SIZE } = CompressionFrame;
 const MAGIC_OFFSET = 0;
 const COMPRESSED_SIZE_OFFSET = 1;
 const UNCOMPRESSED_SIZE_OFFSET = 5;
@@ -361,6 +359,12 @@ export function decodeBlocks(data: Uint8Array): Uint8Array {
     blocks.push(decompressed);
 
     offset += blockSize;
+  }
+
+  // Leftover bytes mean the input isn't a clean block sequence (e.g. a
+  // plain-text error body) - throw so callers can fall back to raw bytes.
+  if (offset !== data.length) {
+    throw new Error(`decodeBlocks: ${data.length - offset} undecodable trailing bytes`);
   }
 
   return concat(blocks);

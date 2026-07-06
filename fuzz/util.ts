@@ -1,7 +1,22 @@
 /** Small shared helpers for the fuzz harness. */
 
-export const randomInt = (min: number, max: number): number =>
-  Math.floor(Math.random() * (max - min + 1)) + min;
+import type { Rng } from "../native/codecs/base.ts";
+
+/** Random element of a non-empty array. */
+export const pick = <T>(rng: Rng, arr: readonly T[]): T => arr[rng.int(0, arr.length - 1)]!;
+
+export function randomString(rng: Rng, maxLen: number): string {
+  const len = rng.int(0, maxLen);
+  let s = "";
+  for (let i = 0; i < len; i++) {
+    // Mix ASCII with the occasional multi-byte code point.
+    s +=
+      rng.next() < 0.9
+        ? String.fromCharCode(rng.int(32, 126))
+        : String.fromCodePoint(rng.int(0x80, 0x2fff));
+  }
+  return s;
+}
 
 /** Drain an async stream, discarding every item (DDL / DROP that returns nothing). */
 export async function consume<T>(input: AsyncIterable<T>): Promise<void> {

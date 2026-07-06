@@ -7,7 +7,7 @@ import {
   encodeNative,
   RecordBatch,
 } from "../native/index.ts";
-import { TcpClient } from "../tcp_client/client.ts";
+import { TcpClient, type QueryParamValue } from "../tcp_client/client.ts";
 import { BufferWriter } from "../native/io.ts";
 import { BlockInfoField } from "../native/constants.ts";
 
@@ -116,6 +116,20 @@ export function connectTcpClient(
     password: config.password,
     ...opts,
   });
+}
+
+/** First cell of the first non-empty Data packet, or throw if the query returns no rows. */
+export async function queryScalar(
+  client: TcpClient,
+  sql: string,
+  params?: Record<string, QueryParamValue>,
+): Promise<unknown> {
+  for await (const packet of client.query(sql, params !== undefined ? { params } : {})) {
+    if (packet.type === "Data" && packet.batch.rowCount > 0) {
+      return packet.batch.getAt(0, 0);
+    }
+  }
+  throw new Error(`No rows returned for: ${sql}`);
 }
 
 export async function collectQueryResults(

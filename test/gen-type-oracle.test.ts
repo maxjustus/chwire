@@ -68,20 +68,21 @@ describe("genType type-only oracle", { timeout: 120000 }, () => {
     consume(query(sql, { url, auth, sessionId: sid, compression: false }));
   const drop = (name: string) => run(`DROP TABLE IF EXISTS ${name} SYNC`);
 
-  /** name -> CH-normalized type for every column of `name`, system.columns TSV unescaped. */
+  /** name -> CH-normalized type for every column of `name`. JSONEachRow so the
+   * poison-pool identifiers (backslashes, control chars) survive transport
+   * without hand-rolled TSV unescaping. */
   async function readColumns(name: string): Promise<Map<string, string>> {
-    const tsv = await collectText(
+    const text = await collectText(
       query(
-        `SELECT name, type FROM system.columns WHERE database = currentDatabase() AND table = '${name}' FORMAT TabSeparated`,
+        `SELECT name, type FROM system.columns WHERE database = currentDatabase() AND table = '${name}' FORMAT JSONEachRow`,
         { url, auth, sessionId: sid },
       ),
     );
     const map = new Map<string, string>();
-    for (const line of tsv.split("\n")) {
+    for (const line of text.split("\n")) {
       if (!line) continue;
-      const tab = line.indexOf("\t");
-      if (tab === -1) continue;
-      map.set(line.slice(0, tab), line.slice(tab + 1).replace(/\\'/g, "'"));
+      const row = JSON.parse(line) as { name: string; type: string };
+      map.set(row.name, row.type);
     }
     return map;
   }

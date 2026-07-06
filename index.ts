@@ -5,6 +5,7 @@ export {
   type ColumnDef,
   collectRows,
   DynamicValue,
+  VariantValue,
   encodeNative,
   getCodec,
   RecordBatch,

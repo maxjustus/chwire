@@ -28,7 +28,7 @@ export {
 import { mapAsync, prepend, readChunks, toAsyncIterable } from "./iter.ts";
 import { type ExternalTableData, encodeNative, RecordBatch } from "./native/index.ts";
 import { BlockBuffer } from "./native/io.ts";
-import { extractParamTypes, SQL_NULL, serializeParams } from "./params.ts";
+import { SQL_NULL, serializeParams } from "./params.ts";
 import { type CollectableAsyncGenerator, collectable } from "./util.ts";
 
 export type { QueryParams, QueryParamValue } from "./types.ts";
@@ -130,12 +130,7 @@ function mergeQueryParams(
   query: string,
   source?: QueryParams,
 ): void {
-  const types = extractParamTypes(query);
-  if (types.size > 0 && !source) {
-    throw new Error(`Missing parameters: ${[...types.keys()].join(", ")}`);
-  }
-  if (!source) return;
-  const serialized = serializeParams(query, source);
+  const serialized = serializeParams(query, source ?? {});
   for (const [key, value] of Object.entries(serialized)) {
     // For HTTP params, SQL_NULL symbol becomes \N escape sequence
     target[`param_${key}`] = value === SQL_NULL ? "\\N" : value;
@@ -152,20 +147,20 @@ interface AuthConfig {
  * @param params - Query params including ClickHouse settings (max_execution_time, etc.)
  *   See: https://clickhouse.com/docs/en/operations/settings/settings
  */
-function buildReqUrl(base: string, params: Record<string, string>, auth?: AuthConfig): URL {
+function buildReqUrl(base: string, params: Record<string, string>): URL {
   const url = new URL(base);
   Object.entries(params).forEach(([key, value]) => {
     url.searchParams.append(key, value);
   });
-
-  if (auth?.username) {
-    url.searchParams.append("user", auth.username);
-    if (auth.password) {
-      url.searchParams.append("password", auth.password);
-    }
-  }
-
   return url;
+}
+
+/** Credentials go in headers, not the URL, to keep them out of logs and caches. */
+function authHeaders(auth?: AuthConfig): Record<string, string> {
+  if (!auth?.username) return {};
+  const headers: Record<string, string> = { "X-ClickHouse-User": auth.username };
+  if (auth.password) headers["X-ClickHouse-Key"] = auth.password;
+  return headers;
 }
 
 interface ProgressInfo {
@@ -438,12 +433,14 @@ async function insert(
 ): Promise<InsertResult> {
   await init();
   const baseUrl = options.url || "http://localhost:8123/";
-  const {
-    compression = "lz4",
-    bufferSize = 1024 * 1024,
-    threshold = bufferSize - 2048,
-    onProgress = null,
-  } = options;
+  const { compression = "lz4", bufferSize = 1024 * 1024, onProgress = null } = options;
+  if (!Number.isInteger(bufferSize) || bufferSize <= 0) {
+    // A zero-capacity buffer can never absorb input, so the flush loop would
+    // spin forever emitting empty blocks.
+    throw new Error(`insert: bufferSize must be a positive integer, got ${bufferSize}`);
+  }
+  // A threshold above bufferSize can never trigger a flush, so clamp it.
+  const threshold = Math.min(options.threshold ?? bufferSize - 2048, bufferSize);
 
   const params: Record<string, string> = {
     query: query,
@@ -462,88 +459,61 @@ async function insert(
     data instanceof Uint8Array ? [data] : data;
 
   // Streaming path: buffer, compress at threshold, report progress
-  const url = buildReqUrl(baseUrl, params, options.auth);
+  const url = buildReqUrl(baseUrl, params);
 
   let blocksSent = 0;
   let totalCompressed = 0;
   let totalUncompressed = 0;
 
-  const stream = new ReadableStream({
-    async start(controller) {
-      try {
-        const bufferA = new Uint8Array(bufferSize);
-        const bufferB = new Uint8Array(bufferSize);
-        let fillBuffer = bufferA;
-        let fillLen = 0;
-        let flushPromise: Promise<void> | null = null;
+  // Pull-based stream: blocks are compressed on demand as fetch consumes the
+  // body, so a fast producer can't buffer the whole payload ahead of the network.
+  async function* compressedBlocks(): AsyncGenerator<Uint8Array> {
+    const buffer = new Uint8Array(bufferSize);
+    let fillLen = 0;
 
-        const flush = async (buf: Uint8Array, len: number) => {
-          const compressed = encodeBlock(buf.subarray(0, len), compression);
-          controller.enqueue(compressed);
-          blocksSent++;
-          totalCompressed += compressed.length;
-          totalUncompressed += len;
+    const flush = (): Uint8Array => {
+      const compressed = encodeBlock(buffer.subarray(0, fillLen), compression);
+      blocksSent++;
+      totalCompressed += compressed.length;
+      totalUncompressed += fillLen;
+      onProgress?.({
+        blocksSent,
+        bytesCompressed: compressed.length,
+        bytesUncompressed: fillLen,
+      });
+      fillLen = 0;
+      return compressed;
+    };
 
-          if (onProgress) {
-            onProgress({
-              blocksSent,
-              bytesCompressed: compressed.length,
-              bytesUncompressed: len,
-            });
-          }
-        };
+    for await (const chunk of inputData as AsyncIterable<Uint8Array>) {
+      let chunkOffset = 0;
+      while (chunkOffset < chunk.length) {
+        const bytesToCopy = Math.min(buffer.length - fillLen, chunk.length - chunkOffset);
+        buffer.set(chunk.subarray(chunkOffset, chunkOffset + bytesToCopy), fillLen);
+        fillLen += bytesToCopy;
+        chunkOffset += bytesToCopy;
 
-        for await (const chunk of inputData as AsyncIterable<Uint8Array>) {
-          let chunkOffset = 0;
-
-          while (chunkOffset < chunk.length) {
-            const spaceAvailable = fillBuffer.length - fillLen;
-            const bytesToCopy = Math.min(spaceAvailable, chunk.length - chunkOffset);
-
-            fillBuffer.set(chunk.subarray(chunkOffset, chunkOffset + bytesToCopy), fillLen);
-            fillLen += bytesToCopy;
-            chunkOffset += bytesToCopy;
-
-            if (fillLen >= threshold) {
-              if (flushPromise) await flushPromise;
-
-              const flushBuf = fillBuffer;
-              const flushLen = fillLen;
-              fillBuffer = fillBuffer === bufferA ? bufferB : bufferA;
-              fillLen = 0;
-
-              flushPromise = flush(flushBuf, flushLen);
-            }
-          }
-        }
-
-        if (flushPromise) await flushPromise;
-
-        if (fillLen > 0) {
-          await flush(fillBuffer, fillLen);
-        }
-
-        if (onProgress) {
-          onProgress({
-            blocksSent,
-            bytesCompressed: totalCompressed,
-            bytesUncompressed: totalUncompressed,
-            complete: true,
-          });
-        }
-
-        controller.close();
-      } catch (err) {
-        controller.error(err);
+        if (fillLen >= threshold) yield flush();
       }
-    },
-  });
+    }
+
+    if (fillLen > 0) yield flush();
+
+    onProgress?.({
+      blocksSent,
+      bytesCompressed: totalCompressed,
+      bytesUncompressed: totalUncompressed,
+      complete: true,
+    });
+  }
+
+  const stream = ReadableStream.from(compressedBlocks());
 
   const response = await fetch(url.toString(), {
     method: "POST",
     headers: {
       "Content-Type": "application/octet-stream",
-      Connection: "close",
+      ...authHeaders(options.auth),
     },
     body: stream,
     duplex: "half",
@@ -553,6 +523,17 @@ async function insert(
   if (!response.ok) {
     const body = await response.text();
     throw parseHttpError(response, body);
+  }
+
+  // ClickHouse can fail after committing 200 headers and deliver the
+  // exception in the body - drain it and surface any error it carries.
+  const body = new Uint8Array(await response.arrayBuffer());
+  if (body.length > 0) {
+    const tag = response.headers.get("X-ClickHouse-Exception-Tag") ?? undefined;
+    const match = splitStreamException(body, true, tag);
+    if (match) throw match.error;
+    const text = new TextDecoder().decode(body);
+    if (parseErrorText(text).code !== 0) throw exceptionFromText(text);
   }
 
   return {
@@ -773,10 +754,10 @@ async function* queryImpl(sql: string, options: QueryOptions = {}): AsyncGenerat
     }
   }
 
-  const url = buildReqUrl(baseUrl, params, options.auth);
+  const url = buildReqUrl(baseUrl, params);
 
   const headers: Record<string, string> = {
-    Connection: "close",
+    ...authHeaders(options.auth),
     "User-Agent": `chwire/${options.clientVersion || "1.0"}`,
     // The client does its own block compression (compress=1), so HTTP content
     // coding on top only adds CPU - and it breaks against 26.x: with
@@ -952,7 +933,10 @@ async function* queryImpl(sql: string, options: QueryOptions = {}): AsyncGenerat
           if (isFramedExceptionAt(streamBuffer.view, 0, exceptionTagBytes)) {
             throw parseStreamException(streamBuffer.view, exceptionTag);
           }
-          throw new Error("Incomplete block");
+          throw new Error(
+            `Incomplete block: stream ended with ${streamBuffer.available} unparsed bytes and no exception trailer; ` +
+              `the server may have closed the connection mid-stream (e.g. send_timeout) — check the server query log`,
+          );
         }
       }
     } finally {

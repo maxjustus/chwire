@@ -15,6 +15,7 @@ import { decodeNativeBlock } from "../../native/index.ts";
 import { getCodec } from "../../native/codecs.ts";
 import { BlockInfoField, LowCardinality as LC, Dynamic, Variant } from "../../native/constants.ts";
 import { buildTestBlock, BufferWriter } from "../test_utils.ts";
+import { VariantValue } from "../../native/types.ts";
 
 describe("prefix round-trip tests", () => {
   describe("LowCardinality", () => {
@@ -82,11 +83,10 @@ describe("prefix round-trip tests", () => {
   describe("Variant", () => {
     it("round-trips through encode/decode", () => {
       const codec = getCodec("Variant(String, UInt64)");
-      // Variant values are [discriminator, value]
       const values = [
-        [0, "hello"],
-        [1, 42n],
-        [0, "world"],
+        new VariantValue(0, "hello"),
+        new VariantValue(1, 42n),
+        new VariantValue(0, "world"),
       ];
       const col = codec.fromValues(values);
 
@@ -110,9 +110,9 @@ describe("prefix round-trip tests", () => {
       assert.strictEqual(result.rowCount, 3);
 
       const col0 = result.columnData[0]!;
-      assert.deepStrictEqual(col0.get(0), [0, "hello"]);
-      assert.deepStrictEqual(col0.get(1), [1, 42n]);
-      assert.deepStrictEqual(col0.get(2), [0, "world"]);
+      assert.deepStrictEqual(col0.get(0), new VariantValue(0, "hello"));
+      assert.deepStrictEqual(col0.get(1), new VariantValue(1, 42n));
+      assert.deepStrictEqual(col0.get(2), new VariantValue(0, "world"));
     });
 
     it("handles mode prefix correctly", () => {
@@ -137,9 +137,9 @@ describe("prefix round-trip tests", () => {
 
       const result = decodeNativeBlock(data, 0, { clientVersion: 54454 });
       assert.strictEqual(result.rowCount, 3);
-      assert.deepStrictEqual(result.columnData[0]!.get(0), [0, "a"]);
-      assert.deepStrictEqual(result.columnData[0]!.get(1), [1, 123n]);
-      assert.deepStrictEqual(result.columnData[0]!.get(2), [0, "b"]);
+      assert.deepStrictEqual(result.columnData[0]!.get(0), new VariantValue(0, "a"));
+      assert.deepStrictEqual(result.columnData[0]!.get(1), new VariantValue(1, 123n));
+      assert.deepStrictEqual(result.columnData[0]!.get(2), new VariantValue(0, "b"));
     });
   });
 
@@ -173,12 +173,36 @@ describe("prefix round-trip tests", () => {
       const result = decodeNativeBlock(data, 0, { clientVersion: 54454 });
       assert.strictEqual(result.rowCount, 4);
 
-      // Dynamic returns unwrapped values (unlike Variant which returns [disc, value])
+      // Dynamic returns unwrapped values (unlike Variant which returns VariantValue)
       const col = result.columnData[0]!;
       assert.strictEqual(col.get(0), "a");
       assert.strictEqual(col.get(1), 42n);
       assert.strictEqual(col.get(2), null);
       assert.strictEqual(col.get(3), "b");
+    });
+
+    it("reads UInt16 flattened indexes when the prefix declares more than 255 types", () => {
+      // Shared-variant overflow means a V3 flattened type list is not bounded
+      // by max_types; the index width scales (CH getSmallestIndexesType).
+      const data = buildTestBlock({
+        colName: "val",
+        colType: "Dynamic",
+        rows: 2,
+        prefix: (w) => {
+          w.writeU64LE(Dynamic.VERSION_V3);
+          w.writeVarint(300);
+          for (let i = 1; i <= 300; i++) w.writeString(`FixedString(${i})`);
+        },
+        data: (w) => {
+          // UInt16LE indexes: type 0 (FixedString(1)), then 300 = null
+          w.write(new Uint8Array([0, 0, 44, 1]));
+          w.write(new Uint8Array([97])); // FixedString(1) value "a"
+        },
+      });
+
+      const result = decodeNativeBlock(data, 0, { clientVersion: 54454 });
+      assert.deepStrictEqual(result.columnData[0]!.get(0), new Uint8Array([97]));
+      assert.strictEqual(result.columnData[0]!.get(1), null);
     });
   });
 });

@@ -5,6 +5,7 @@
 import assert from "node:assert";
 import { after, before, describe, it } from "node:test";
 import { TcpClient } from "../tcp_client/client.ts";
+import { VariantValue } from "../native/types.ts";
 import { startClickHouse, stopClickHouse } from "./setup.ts";
 import { toArrayRows } from "./test_utils.ts";
 
@@ -146,14 +147,14 @@ describe("TCP sparse deserialization", { timeout: 120000 }, () => {
           if (decodedRows.length > 50) {
             assert.deepStrictEqual(
               decodedRows[50]![1],
-              [0, "hello"],
+              new VariantValue(0, "hello"),
               "Row 50 should have Variant(String) = 'hello'",
             );
           }
           if (decodedRows.length > 5000) {
             assert.deepStrictEqual(
               decodedRows[5000]![1],
-              [1, 42n],
+              new VariantValue(1, 42n),
               "Row 5000 should have Variant(UInt64) = 42",
             );
           }

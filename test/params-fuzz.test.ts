@@ -1,20 +1,11 @@
 import assert from "node:assert";
 import { describe, it, before, after } from "node:test";
-import { TcpClient, type QueryParamValue } from "../tcp_client/client.ts";
+import { TcpClient } from "../tcp_client/client.ts";
 import { startClickHouse, stopClickHouse } from "./setup.ts";
+import { queryScalar } from "./test_utils.ts";
 
 let ch: Awaited<ReturnType<typeof startClickHouse>>;
 let client: TcpClient;
-
-async function queryScalar(sql: string, params: Record<string, QueryParamValue>): Promise<unknown> {
-  const stream = client.query(sql, { params });
-  for await (const packet of stream) {
-    if (packet.type === "Data" && packet.batch.rowCount > 0) {
-      return packet.batch.getAt(0, 0);
-    }
-  }
-  throw new Error(`No rows returned for: ${sql}`);
-}
 
 function randomString(length: number): string {
   const chars: string[] = [];
@@ -57,7 +48,7 @@ describe("Query Parameter Fuzzing", { timeout: 120000 }, () => {
     for (let i = 0; i < iterations; i++) {
       const testStr = randomString(1 + Math.floor(Math.random() * 100));
       try {
-        const result = await queryScalar("SELECT {s: String}", { s: testStr });
+        const result = await queryScalar(client, "SELECT {s: String}", { s: testStr });
         assert.strictEqual(result, testStr, `Failed on iteration ${i}`);
       } catch (err) {
         // Some strings may contain invalid UTF-8 sequences that ClickHouse rejects
@@ -76,7 +67,7 @@ describe("Query Parameter Fuzzing", { timeout: 120000 }, () => {
         randomString(1 + Math.floor(Math.random() * 30)),
       );
       try {
-        const result = await queryScalar("SELECT {arr: Array(String)}", { arr });
+        const result = await queryScalar(client, "SELECT {arr: Array(String)}", { arr });
         assert.deepStrictEqual(result, arr, `Failed on iteration ${i}`);
       } catch (err) {
         if (!(err instanceof Error) || !err.message.includes("Cannot parse")) {
@@ -96,7 +87,7 @@ describe("Query Parameter Fuzzing", { timeout: 120000 }, () => {
       "1; UPDATE users SET admin=1 WHERE id=1; --",
     ];
     for (const injection of injections) {
-      const result = await queryScalar("SELECT {s: String}", { s: injection });
+      const result = await queryScalar(client, "SELECT {s: String}", { s: injection });
       // The injection should be treated as a literal string, not executed
       assert.strictEqual(result, injection, `Injection not properly escaped: ${injection}`);
     }
@@ -109,9 +100,13 @@ describe("Query Parameter Fuzzing", { timeout: 120000 }, () => {
       ["foo", 2],
       [null, 3],
     ];
-    const result = await queryScalar("SELECT {arr: Array(Tuple(Nullable(String), Int32))}", {
-      arr: data,
-    });
+    const result = await queryScalar(
+      client,
+      "SELECT {arr: Array(Tuple(Nullable(String), Int32))}",
+      {
+        arr: data,
+      },
+    );
     assert.deepStrictEqual(result, data);
   });
 });

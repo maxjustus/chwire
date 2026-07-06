@@ -193,9 +193,10 @@ export function toValidIPv4(v: unknown): string {
 }
 
 // IPv6 validation: checks structure without full RFC compliance
-// Allows: 2001:db8::1, ::1, ::ffff:192.168.1.1, fe80::1%eth0
-// Zone IDs after % can contain alphanumeric chars
-const IPV6_CHARS = /^[0-9a-fA-F:.]+(%[a-zA-Z0-9]+)?$/;
+// Allows: 2001:db8::1, ::1, ::ffff:192.168.1.1
+// Zone IDs (fe80::1%eth0) are rejected: they are not representable in the
+// 16-byte wire value, so accepting them would silently drop data.
+const IPV6_CHARS = /^[0-9a-fA-F:.]+$/;
 
 export function toValidIPv6(v: unknown): string {
   if (v == null) return "::";
@@ -203,7 +204,10 @@ export function toValidIPv6(v: unknown): string {
   if (s === "") {
     throw new TypeError(`Invalid IPv6 address: empty string`);
   }
-  // Basic character check - only hex, colons, dots (IPv4-mapped), % (zone ID)
+  if (s.includes("%")) {
+    throw new TypeError(`Invalid IPv6 address: "${s}" (zone IDs cannot be stored in 16 bytes)`);
+  }
+  // Basic character check - only hex, colons, dots (IPv4-mapped)
   if (!IPV6_CHARS.test(s)) {
     throw new TypeError(`Invalid IPv6 address: "${s}"`);
   }
@@ -243,7 +247,11 @@ export function toValidDecimal(v: unknown): string {
 
 // --- Array detection ---
 
+export function isTypedArray(v: unknown): v is TypedArray {
+  return ArrayBuffer.isView(v) && !(v instanceof DataView);
+}
+
 /** Check if value is an array-like (regular array or TypedArray) */
 export function isArrayLike(v: unknown): v is unknown[] | TypedArray {
-  return Array.isArray(v) || (ArrayBuffer.isView(v) && !(v instanceof DataView));
+  return Array.isArray(v) || isTypedArray(v);
 }

@@ -66,7 +66,7 @@ export class DynamicCodec extends InternalDynamicCodec {
 }
 
 export class JsonCodec extends InternalJsonCodec {
-  constructor(typedPaths: { name: string; type: string }[] = []) {
-    super(getCodec, typedPaths);
+  constructor(typedPaths: { name: string; type: string }[] = [], type = "JSON") {
+    super(getCodec, typedPaths, type);
   }
 }
