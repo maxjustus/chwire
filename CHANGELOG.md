@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- Queries with unbound `{name: Type}` placeholders are now sent as-is instead of throwing `Missing parameter` client-side. Parameterized-view DDL (`CREATE VIEW v AS SELECT ... {x: String}`) and session-level `SET param_x = ...` bindings work; a genuinely unbound parameter fails server-side with `UNKNOWN_QUERY_PARAMETER`. Redeclaring a parameter at a conflicting type also no longer throws — the first declaration determines serialization and the server casts per use site.
+
 ## 1.0.0
 
 `@maxjustus/chwire` is the renamed successor to `@maxjustus/chttp`, continuing from `1.15.0`.

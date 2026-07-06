@@ -81,6 +81,8 @@ const result = await collectText(
 
 Parameters are type-safe and prevent SQL injection. The type annotation (e.g., `{name: String}`) tells ClickHouse how to parse the value.
 
+Placeholders without a supplied value are sent as-is and resolved by the server. This makes parameterized-view DDL and session-level `SET param_x = ...` bindings work; a genuinely unbound parameter fails server-side with `UNKNOWN_QUERY_PARAMETER`.
+
 Unknown root-level option keys are forwarded as raw ClickHouse URL params:
 
 ```ts
