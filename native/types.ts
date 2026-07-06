@@ -33,7 +33,8 @@ export interface EnumMapping {
   valueToName: Map<number, string>;
 }
 
-export function isAsciiWhitespace(code: number): boolean {
+function isAsciiWhitespace(code: number): boolean {
+  // "good enough" for type strings emitted by ClickHouse (space/newlines/tabs).
   return code === 9 || code === 10 || code === 13 || code === 32;
 }
 
