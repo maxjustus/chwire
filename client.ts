@@ -130,7 +130,6 @@ function mergeQueryParams(
   query: string,
   source?: QueryParams,
 ): void {
-  // serializeParams parses the query and throws on missing params.
   const serialized = serializeParams(query, source ?? {});
   for (const [key, value] of Object.entries(serialized)) {
     // For HTTP params, SQL_NULL symbol becomes \N escape sequence

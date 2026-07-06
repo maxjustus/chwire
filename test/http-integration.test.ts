@@ -605,6 +605,22 @@ describe("ClickHouse Integration Tests", { timeout: 60000 }, () => {
       await consume(query("DROP VIEW param_view", { url, auth, sessionId }));
     });
 
+    it("binds placeholders from SET param_x in the same session", async () => {
+      await consume(query("SET param_greeting = 'hello'", { url, auth, sessionId }));
+
+      const result = await collectText(
+        query("SELECT {greeting: String} AS g FORMAT JSON", { url, auth, sessionId }),
+      );
+      assert.strictEqual(JSON.parse(result).data[0].g, "hello");
+    });
+
+    it("surfaces the server error for a truly unbound placeholder", async () => {
+      await assert.rejects(
+        collectText(query("SELECT {nope: String}", { url, auth, sessionId })),
+        /UNKNOWN_QUERY_PARAMETER|Substitution.*is not set/,
+      );
+    });
+
     it("should use query parameters with UInt64", async () => {
       const result = await collectText(
         query("SELECT {value:UInt64} as v FORMAT JSON", {

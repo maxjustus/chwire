@@ -54,13 +54,10 @@ describe("insert option handling", () => {
     assert.equal(captured.requestBodies.length, 0);
   });
 
-  it("throws on missing query params before sending", async () => {
+  it("sends queries with unbound placeholders for the server to resolve", async () => {
     const captured = mockFetch(() => new Response("", { status: 200 }));
-    await assert.rejects(
-      insert("INSERT INTO t SELECT {x: UInt64}", new Uint8Array([1])),
-      /Missing parameter: x/,
-    );
-    assert.equal(captured.requestBodies.length, 0);
+    await insert("INSERT INTO t SELECT {x: UInt64}", new Uint8Array([1]));
+    assert.equal(captured.requestBodies.length, 1);
   });
 });
 

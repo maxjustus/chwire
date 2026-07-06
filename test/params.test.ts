@@ -206,16 +206,14 @@ describe("serializeParams", () => {
     assert.deepStrictEqual(Object.keys(result), ["id"]);
   });
 
-  it("throws on missing required param", () => {
-    assert.throws(() => serializeParams("SELECT {id: UInt64}", {}), /Missing parameter: id/);
-  });
-
-  it("allows unbound placeholders in CREATE VIEW DDL", () => {
-    const result = serializeParams("CREATE VIEW v AS SELECT * FROM t WHERE x = {x: String}", {});
+  it("leaves unbound placeholders for the server to resolve", () => {
+    // Unbound placeholders can be legal (parameterized views, SET param_x);
+    // when they're not, the server reports UNKNOWN_QUERY_PARAMETER.
+    const result = serializeParams("SELECT {id: UInt64}", {});
     assert.deepStrictEqual(result, {});
   });
 
-  it("allows unbound placeholders in CREATE OR REPLACE VIEW with ON CLUSTER macro", () => {
+  it("serializes only supplied params in view DDL with an ON CLUSTER macro", () => {
     const result = serializeParams(
       `CREATE OR REPLACE VIEW generate_schema_sync_queries ON CLUSTER '{cluster}' AS
          SELECT * FROM system.columns
@@ -225,46 +223,11 @@ describe("serializeParams", () => {
     assert.deepStrictEqual(result, {});
   });
 
-  it("allows unbound placeholders in CREATE MATERIALIZED VIEW DDL", () => {
-    const result = serializeParams("CREATE MATERIALIZED VIEW mv TO t AS SELECT {x: UInt64}", {});
-    assert.deepStrictEqual(result, {});
-  });
-
-  it("allows unbound placeholders in ATTACH ... VIEW DDL", () => {
-    const result = serializeParams("ATTACH MATERIALIZED VIEW mv AS SELECT {x: UInt64}", {});
-    assert.deepStrictEqual(result, {});
-  });
-
-  it("allows view DDL preceded by comments and whitespace", () => {
-    const result = serializeParams(
-      `-- sync schema helper
-       /* multi
-          line */
-       CREATE OR REPLACE VIEW v AS SELECT {x: String}`,
-      {},
-    );
-    assert.deepStrictEqual(result, {});
-  });
-
-  it("still substitutes supplied params in view DDL", () => {
+  it("serializes supplied params and skips unbound ones in the same query", () => {
     const result = serializeParams("CREATE VIEW v AS SELECT {bound: UInt64}, {unbound: String}", {
       bound: 7,
     });
     assert.deepStrictEqual(result, { bound: "7" });
-  });
-
-  it("still throws on missing params in a SELECT mentioning views", () => {
-    assert.throws(
-      () => serializeParams("SELECT * FROM some_view WHERE x = {x: String}", {}),
-      /Missing parameter: x/,
-    );
-  });
-
-  it("still throws on missing params in CREATE TABLE DDL", () => {
-    assert.throws(
-      () => serializeParams("CREATE TABLE t ENGINE = Memory AS SELECT {x: String}", {}),
-      /Missing parameter: x/,
-    );
   });
 
   it("serializes complex nested structures", () => {
