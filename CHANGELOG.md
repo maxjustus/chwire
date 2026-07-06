@@ -4,6 +4,7 @@
 
 ### Changed
 
+- **Breaking**: `Codec.readPrefix` takes the block's `DeserializerState` as a second parameter; Dynamic/JSON wire metadata (type list, dynamic path list) now lives on that per-column, per-block state instead of the codec instance. Custom codecs implementing `readPrefix` must add the parameter. Codecs are now fully stateless, so `getCodec` caches every type — including `Dynamic`, `JSON`, and composites containing them, which previously rebuilt their codec tree per column per block.
 - **Breaking**: Explicit Variant arm selection now uses the exported `VariantValue` class instead of `[discriminator, value]` arrays. Any `[number, x]` array was previously treated as an explicit discriminator pair, so `[1, 5]` into `Variant(Array(Int64), Int64)` silently encoded as `Int64 5` instead of an array. Plain arrays now always encode as values; `VariantColumn.get` returns `VariantValue` symmetrically.
 - Credentials are sent via `X-ClickHouse-User`/`X-ClickHouse-Key` headers instead of URL parameters, keeping them out of server logs, proxies, and URL caches.
 - `insert()` streams its body with pull-based backpressure, so a fast producer no longer buffers the entire payload in memory.
