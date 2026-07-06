@@ -9,3 +9,4 @@ settings-versions.json
 reference-clickhouse-arrow-rs/
 test/_browser_entry.ts
 plans/
+bench_out/
