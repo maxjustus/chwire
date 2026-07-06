@@ -2,9 +2,31 @@
 
 ## Unreleased
 
+### Changed
+
+- **Breaking**: Explicit Variant arm selection now uses the exported `VariantValue` class instead of `[discriminator, value]` arrays. Any `[number, x]` array was previously treated as an explicit discriminator pair, so `[1, 5]` into `Variant(Array(Int64), Int64)` silently encoded as `Int64 5` instead of an array. Plain arrays now always encode as values; `VariantColumn.get` returns `VariantValue` symmetrically.
+- Credentials are sent via `X-ClickHouse-User`/`X-ClickHouse-Key` headers instead of URL parameters, keeping them out of server logs, proxies, and URL caches.
+- `insert()` streams its body with pull-based backpressure, so a fast producer no longer buffers the entire payload in memory.
+
 ### Fixed
 
 - Queries with unbound `{name: Type}` placeholders are now sent as-is instead of throwing `Missing parameter` client-side. Parameterized-view DDL (`CREATE VIEW v AS SELECT ... {x: String}`) and session-level `SET param_x = ...` bindings work; a genuinely unbound parameter fails server-side with `UNKNOWN_QUERY_PARAMETER`. Redeclaring a parameter at a conflicting type also no longer throws — the first declaration determines serialization and the server casts per use site.
+- Composite codecs containing `Dynamic`/`JSON` (e.g. `Array(Dynamic)`) now bypass the codec cache. Cached instances shared stateful codecs across uses, letting one prefix read clobber another's state and silently corrupt decodes.
+- `JsonCodec` clears its dynamic-path codecs at each block prefix; stale per-block `Dynamic` codecs from a previous block previously lingered.
+- `Dynamic` index columns scale UInt8/UInt16/UInt32 with the flattened type count (shared-variant overflow makes the list unbounded by `max_types`); a 300-type Native insert now round-trips.
+- Bare JS numbers into `Variant` route to `Int64`/`UInt64` arms; previously they skipped those arms and hit a narrower one (`Variant(Int64, UInt8)`: 300 threw out-of-range, 5 encoded on the wrong wire arm).
+- JSON type parsing handles ClickHouse's canonical identifier spellings: per-segment backtick-quoted dotted paths (`` JSON(`sp ace`.s0 Int64) ``), backslash-escaped characters in quoted identifiers, a quoted `` `SKIP` `` typed path no longer treated as a SKIP directive, and only exact `SKIP` directives dropped (typed paths named `skipped`/`skip_*` were silently discarded).
+- `JsonCodec.fromCols()` accepts `Dynamic` columns on dynamic paths without re-shredding, and rejects non-arraylike inputs (a bare string previously became one row per character).
+- IPv4-mapped IPv6 addresses (`::ffff:192.168.1.1`) encode instead of throwing; zone IDs (`fe80::1%eth0`) are rejected at validation since 16 wire bytes cannot carry them.
+- Decimal values with trailing zeros beyond the scale (`"1.50"` into `Decimal(9, 1)`) no longer throw a false precision-loss error; real precision loss still throws.
+- `insert()` rejects non-positive `bufferSize` up front and clamps the flush threshold to `bufferSize`; both previously caused infinite flush loops. Server exceptions delivered in the body of a 200 insert response are now detected, and draining the body returns the connection to the pool.
+- `decodeBlocks` throws on undecodable trailing bytes instead of silently dropping them; plain-text error bodies previously decoded to an empty string and surfaced as `ClickHouseException(0, "Unknown", "")`.
+- Varint reads/writes guard against overflow and negative lengths (a negative string length previously moved the read cursor backward), and `readUInt32LE` stays unsigned when the high bit is set.
+
+### Performance
+
+- `Variant` `fromValues` shredding is 2.3x faster and `Dynamic` 1.17x (precomputed `typeof`-to-discriminator dispatch instead of a linear arm scan); JSON typed-path `fromValues` gains 1.38x indirectly.
+- JSON `fromValues` no longer builds dense null-filled arrays per dynamic path (which made it O(paths x rows) even for keys present in few rows); sparse paths collect (row, value) pairs instead, ~38% faster encode on sparse-keyed objects. Row-key iteration also avoids allocating a key array per row (~9% dense, ~18% sparse).
 
 ## 1.0.0
 
