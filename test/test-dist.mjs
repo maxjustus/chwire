@@ -50,14 +50,40 @@ try {
   process.exit(1);
 }
 
+console.log("=== Testing CJS main bundle (dist/chwire.cjs) ===\n");
+
+// CJS require() does not link-check named imports the way ESM does, so a
+// missing export from an externalized subpath only surfaces when the code
+// path runs — exercise init + compression here rather than just requiring.
+import { createRequire } from "node:module";
+const require = createRequire(import.meta.url);
+
+try {
+  const cjsMain = require("@maxjustus/chwire");
+  await cjsMain.init();
+
+  const testData = new TextEncoder().encode("CJS smoke test payload");
+  const compressed = cjsMain.encodeBlock(testData, "lz4");
+  const decompressed = cjsMain.decodeBlocks(compressed);
+  if (new TextDecoder().decode(decompressed) !== "CJS smoke test payload") {
+    throw new Error("CJS encode/decode round-trip mismatch");
+  }
+  for (const name of ["query", "insert", "RecordBatch", "batchFromCols"]) {
+    if (cjsMain[name] === undefined) throw new Error(`CJS main bundle missing export: ${name}`);
+  }
+
+  console.log("CJS main bundle PASSED!\n");
+} catch (err) {
+  console.error("ERROR:", err.message);
+  console.error("Stack:", err.stack);
+  process.exit(1);
+}
+
 console.log("=== Testing RecordBatch dual-package hazard ===\n");
 
 // Resolve via the package's published subpaths (self-reference), exactly as a
 // consumer would, so this exercises the build's native-externalization and the
 // real ESM/CJS export conditions — not a direct dist/ file import.
-import { createRequire } from "node:module";
-const require = createRequire(import.meta.url);
-
 try {
   const esmNative = await import("@maxjustus/chwire/native");
   const esmMain = await import("@maxjustus/chwire");
