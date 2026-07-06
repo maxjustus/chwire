@@ -15,13 +15,13 @@ function roundTrip(type: string, values: unknown[]): unknown[] {
   const encCodec = getCodec(type);
   const col = encCodec.fromValues(values);
   const writer = new BufferWriter(1024);
-  encCodec.writePrefix?.(writer, col);
+  encCodec.writePrefix(writer, col);
   writer.write(encCodec.encode(col));
 
   const decCodec = getCodec(type);
   const reader = new BufferReader(writer.finish());
   const state = defaultDeserializerState();
-  decCodec.readPrefix?.(reader, state);
+  decCodec.readPrefix(reader, state);
   const decoded = decCodec.decode(reader, values.length, state);
   return Array.from(decoded);
 }
@@ -63,14 +63,14 @@ describe("codec cache and stateful codecs", () => {
     const encodeBlock = (values: unknown[]) => {
       const col = codec.fromValues(values);
       const writer = new BufferWriter(256);
-      codec.writePrefix?.(writer, col);
+      codec.writePrefix(writer, col);
       writer.write(codec.encode(col));
       return writer.finish();
     };
     const decodeBlock = (bytes: Uint8Array, rows: number) => {
       const reader = new BufferReader(bytes);
       const state = defaultDeserializerState();
-      codec.readPrefix?.(reader, state);
+      codec.readPrefix(reader, state);
       return Array.from(codec.decode(reader, rows, state));
     };
     assert.deepStrictEqual(decodeBlock(encodeBlock([{ a: 1n }]), 1), [{ a: 1n }]);

@@ -136,14 +136,14 @@ export class VariantCodec implements Codec {
     for (let i = 0; i < this.codecs.length; i++) {
       const codec = this.codecs[i]!;
       const group = variant.groups.get(i) ?? codec.fromValues([]);
-      codec.writePrefix?.(writer, group);
+      codec.writePrefix(writer, group);
     }
   }
 
   readPrefix(reader: BufferReader, state: DeserializerState) {
     reader.offset += 8;
     for (let i = 0; i < this.codecs.length; i++) {
-      this.codecs[i]!.readPrefix?.(reader, childState(state, i));
+      this.codecs[i]!.readPrefix(reader, childState(state, i));
     }
   }
 
@@ -310,7 +310,7 @@ export class DynamicCodec implements Codec {
 
     for (let i = 0; i < types.length; i++) {
       const group = dyn.groups.get(i);
-      if (group) this.resolveCodec(types[i]!).writePrefix?.(writer, group);
+      if (group) this.resolveCodec(types[i]!).writePrefix(writer, group);
     }
   }
 
@@ -326,7 +326,7 @@ export class DynamicCodec implements Codec {
     state.prefix.data = { types, codecs } satisfies DynamicPrefix;
 
     for (let i = 0; i < codecs.length; i++) {
-      codecs[i]!.readPrefix?.(reader, childState(state, i));
+      codecs[i]!.readPrefix(reader, childState(state, i));
     }
   }
 
@@ -571,13 +571,13 @@ export class JsonCodec implements Codec {
     for (const tp of this.typedPaths) {
       const pathCol = json.pathColumns.get(tp.name);
       if (pathCol) {
-        tp.codec.writePrefix?.(writer, pathCol);
+        tp.codec.writePrefix(writer, pathCol);
       }
     }
 
     const dynCodec = this.resolveCodec("Dynamic");
     for (const path of dynamicPaths) {
-      dynCodec.writePrefix?.(writer, json.pathColumns.get(path)!);
+      dynCodec.writePrefix(writer, json.pathColumns.get(path)!);
     }
   }
 
@@ -598,12 +598,12 @@ export class JsonCodec implements Codec {
     let idx = 0;
     for (const tp of this.typedPaths) {
       const child = childState(state, idx++);
-      tp.codec.readPrefix?.(reader, child);
+      tp.codec.readPrefix(reader, child);
     }
 
     const dynCodec = this.resolveCodec("Dynamic");
     for (let i = 0; i < dynamicPaths.length; i++) {
-      dynCodec.readPrefix?.(reader, childState(state, idx++));
+      dynCodec.readPrefix(reader, childState(state, idx++));
     }
   }
 

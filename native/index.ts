@@ -180,7 +180,7 @@ export function decodeNativeBlockWithReader(
       };
       // Only read prefix and decode when there are rows - empty blocks are schema-only
       if (numRows > 0) {
-        codec.readPrefix?.(reader, state);
+        codec.readPrefix(reader, state);
         columnData.push(codec.decode(reader, numRows, state));
       } else {
         // Schema-only block: no prefix or data, create empty column
@@ -260,7 +260,7 @@ export function encodeNative(batch: RecordBatch): Uint8Array {
     writer.writeString(colDef.type);
     // Only write prefix and data when there are rows (matches decode behavior)
     if (rowCount > 0) {
-      codec.writePrefix?.(writer, col);
+      codec.writePrefix(writer, col);
       writer.write(codec.encode(col, codec.estimateSize(col.length)));
     }
   }

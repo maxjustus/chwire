@@ -20,7 +20,7 @@ function encodeBlock(type: string, values: unknown[]): Uint8Array {
   const codec = createCodec(type);
   const col = codec.fromValues(values);
   const writer = new BufferWriter(1024);
-  codec.writePrefix?.(writer, col);
+  codec.writePrefix(writer, col);
   writer.write(codec.encode(col));
   return writer.finish();
 }
@@ -31,7 +31,7 @@ describe("shared codec instance reuse", () => {
     const decodeBlock = (bytes: Uint8Array, rows: number) => {
       const reader = new BufferReader(bytes);
       const state = defaultDeserializerState();
-      shared.readPrefix?.(reader, state);
+      shared.readPrefix(reader, state);
       return Array.from(shared.decode(reader, rows, state));
     };
     assert.deepStrictEqual(decodeBlock(encodeBlock("Dynamic", [1n, 2n]), 2), [1n, 2n]);
@@ -43,7 +43,7 @@ describe("shared codec instance reuse", () => {
     const decodeBlock = (bytes: Uint8Array, rows: number) => {
       const reader = new BufferReader(bytes);
       const state = defaultDeserializerState();
-      shared.readPrefix?.(reader, state);
+      shared.readPrefix(reader, state);
       return Array.from(shared.decode(reader, rows, state));
     };
     assert.deepStrictEqual(decodeBlock(encodeBlock("Array(Dynamic)", [[1n, 2n]]), 1), [[1n, 2n]]);
@@ -55,7 +55,7 @@ describe("shared codec instance reuse", () => {
     const decodeBlock = (bytes: Uint8Array, rows: number) => {
       const reader = new BufferReader(bytes);
       const state = defaultDeserializerState();
-      shared.readPrefix?.(reader, state);
+      shared.readPrefix(reader, state);
       return Array.from(shared.decode(reader, rows, state));
     };
     assert.deepStrictEqual(decodeBlock(encodeBlock("JSON", [{ a: 1n }]), 1), [{ a: 1n }]);
@@ -68,8 +68,8 @@ describe("shared codec instance reuse", () => {
     const colA = shared.fromValues([1n, 2n]);
     const colB = shared.fromValues(["x", "y"]);
     const writer = new BufferWriter(1024);
-    shared.writePrefix?.(writer, colA);
-    shared.writePrefix?.(writer, colB);
+    shared.writePrefix(writer, colA);
+    shared.writePrefix(writer, colB);
     writer.write(shared.encode(colA));
     writer.write(shared.encode(colB));
 
@@ -78,8 +78,8 @@ describe("shared codec instance reuse", () => {
     const decB = createCodec("Dynamic");
     const stateA = defaultDeserializerState();
     const stateB = defaultDeserializerState();
-    decA.readPrefix?.(reader, stateA);
-    decB.readPrefix?.(reader, stateB);
+    decA.readPrefix(reader, stateA);
+    decB.readPrefix(reader, stateB);
     assert.deepStrictEqual(Array.from(decA.decode(reader, 2, stateA)), [1n, 2n]);
     assert.deepStrictEqual(Array.from(decB.decode(reader, 2, stateB)), ["x", "y"]);
   });
@@ -91,8 +91,8 @@ describe("shared codec instance reuse", () => {
     const colA = encA.fromValues([1n, 2n]);
     const colB = encB.fromValues(["x", "y"]);
     const writer = new BufferWriter(1024);
-    encA.writePrefix?.(writer, colA);
-    encB.writePrefix?.(writer, colB);
+    encA.writePrefix(writer, colA);
+    encB.writePrefix(writer, colB);
     writer.write(encA.encode(colA));
     writer.write(encB.encode(colB));
 
@@ -100,8 +100,8 @@ describe("shared codec instance reuse", () => {
     const reader = new BufferReader(writer.finish());
     const stateA = defaultDeserializerState();
     const stateB = defaultDeserializerState();
-    shared.readPrefix?.(reader, stateA);
-    shared.readPrefix?.(reader, stateB);
+    shared.readPrefix(reader, stateA);
+    shared.readPrefix(reader, stateB);
     assert.deepStrictEqual(Array.from(shared.decode(reader, 2, stateA)), [1n, 2n]);
     assert.deepStrictEqual(Array.from(shared.decode(reader, 2, stateB)), ["x", "y"]);
   });
@@ -112,8 +112,8 @@ describe("shared codec instance reuse", () => {
     const colA = encA.fromValues([{ a: 1n }]);
     const colB = encB.fromValues([{ b: "x" }]);
     const writer = new BufferWriter(1024);
-    encA.writePrefix?.(writer, colA);
-    encB.writePrefix?.(writer, colB);
+    encA.writePrefix(writer, colA);
+    encB.writePrefix(writer, colB);
     writer.write(encA.encode(colA));
     writer.write(encB.encode(colB));
 
@@ -121,8 +121,8 @@ describe("shared codec instance reuse", () => {
     const reader = new BufferReader(writer.finish());
     const stateA = defaultDeserializerState();
     const stateB = defaultDeserializerState();
-    shared.readPrefix?.(reader, stateA);
-    shared.readPrefix?.(reader, stateB);
+    shared.readPrefix(reader, stateA);
+    shared.readPrefix(reader, stateB);
     assert.deepStrictEqual(Array.from(shared.decode(reader, 1, stateA)), [{ a: 1n }]);
     assert.deepStrictEqual(Array.from(shared.decode(reader, 1, stateB)), [{ b: "x" }]);
   });
@@ -132,7 +132,7 @@ describe("readKinds is independent of prior prefix reads", () => {
   it("Dynamic readKinds consumes exactly one byte after a prefix populated two types", () => {
     const codec = createCodec("Dynamic");
     const prefixed = encodeBlock("Dynamic", [1n, "s"]);
-    codec.readPrefix?.(new BufferReader(prefixed), defaultDeserializerState());
+    codec.readPrefix(new BufferReader(prefixed), defaultDeserializerState());
 
     // Dynamic children depend on prefix content, so they are not part of
     // the static kinds tree; the server emits a single kind byte.
@@ -146,8 +146,8 @@ describe("readKinds is independent of prior prefix reads", () => {
     const encCodec = createCodec("JSON(t UInt32)");
     const col = encCodec.fromValues([{ t: 1, a: 1n, b: "x" }]);
     const writer = new BufferWriter(1024);
-    encCodec.writePrefix?.(writer, col);
-    codec.readPrefix?.(new BufferReader(writer.finish()), defaultDeserializerState());
+    encCodec.writePrefix(writer, col);
+    codec.readPrefix(new BufferReader(writer.finish()), defaultDeserializerState());
 
     // Kinds tree covers self + typed paths only; dynamic paths depend on
     // prefix content the kinds pass has not seen yet.

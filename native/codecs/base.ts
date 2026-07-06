@@ -220,8 +220,14 @@ export interface Codec {
   makeBuilder?(expectedRows?: number): ColumnBuilder;
   zeroValue(): unknown;
   estimateSize(rows: number): number;
-  writePrefix?(writer: BufferWriter, col: Column): void;
-  readPrefix?(reader: BufferReader, state: DeserializerState): void;
+  /**
+   * Write/read the per-block wire metadata that precedes column data
+   * (LowCardinality key version, Variant mode, Dynamic type list, JSON path
+   * list). Required even for prefix-less codecs so composites forward to
+   * children unconditionally.
+   */
+  writePrefix(writer: BufferWriter, col: Column): void;
+  readPrefix(reader: BufferReader, state: DeserializerState): void;
   readKinds(reader: BufferReader): SerializationNode;
   /**
    * Serialize a single value to ClickHouse literal string syntax.
@@ -568,4 +574,8 @@ export abstract class BaseCodec implements Codec {
     const kind = reader.readU8();
     return { kind, children: [] };
   }
+
+  writePrefix(_writer: BufferWriter, _col: Column): void {}
+
+  readPrefix(_reader: BufferReader, _state: DeserializerState): void {}
 }

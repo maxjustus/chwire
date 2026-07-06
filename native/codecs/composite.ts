@@ -83,13 +83,13 @@ export class ArrayCodec extends BaseCodec {
     this.inner = inner;
   }
 
-  writePrefix(writer: BufferWriter, col: Column) {
+  override writePrefix(writer: BufferWriter, col: Column) {
     const arr = col as ArrayColumn;
-    this.inner.writePrefix?.(writer, arr.inner);
+    this.inner.writePrefix(writer, arr.inner);
   }
 
-  readPrefix(reader: BufferReader, state: DeserializerState) {
-    this.inner.readPrefix?.(reader, childState(state, 0));
+  override readPrefix(reader: BufferReader, state: DeserializerState) {
+    this.inner.readPrefix(reader, childState(state, 0));
   }
 
   encode(col: Column, sizeHint?: number): Uint8Array {
@@ -189,13 +189,13 @@ export class NullableCodec extends BaseCodec {
     return this.inner;
   }
 
-  writePrefix(writer: BufferWriter, col: Column) {
+  override writePrefix(writer: BufferWriter, col: Column) {
     const nc = col as NullableColumn;
-    this.inner.writePrefix?.(writer, nc.inner);
+    this.inner.writePrefix(writer, nc.inner);
   }
 
-  readPrefix(reader: BufferReader, state: DeserializerState) {
-    this.inner.readPrefix?.(reader, childState(state, 0));
+  override readPrefix(reader: BufferReader, state: DeserializerState) {
+    this.inner.readPrefix(reader, childState(state, 0));
   }
 
   encode(col: Column, sizeHint?: number): Uint8Array {
@@ -277,11 +277,11 @@ export class LowCardinalityCodec extends BaseCodec {
     this.dictCodec = inner instanceof NullableCodec ? inner.getInnerCodec() : inner;
   }
 
-  writePrefix(writer: BufferWriter) {
+  override writePrefix(writer: BufferWriter) {
     writer.writeU64LE(LC.VERSION);
   }
 
-  readPrefix(reader: BufferReader) {
+  override readPrefix(reader: BufferReader) {
     reader.offset += 8;
   }
 
@@ -436,15 +436,15 @@ export class MapCodec extends BaseCodec {
     this.valCodec = valCodec;
   }
 
-  writePrefix(writer: BufferWriter, col: Column) {
+  override writePrefix(writer: BufferWriter, col: Column) {
     const map = col as MapColumn;
-    this.keyCodec.writePrefix?.(writer, map.keys);
-    this.valCodec.writePrefix?.(writer, map.values);
+    this.keyCodec.writePrefix(writer, map.keys);
+    this.valCodec.writePrefix(writer, map.values);
   }
 
-  readPrefix(reader: BufferReader, state: DeserializerState) {
-    this.keyCodec.readPrefix?.(reader, childState(state, 0));
-    this.valCodec.readPrefix?.(reader, childState(state, 1));
+  override readPrefix(reader: BufferReader, state: DeserializerState) {
+    this.keyCodec.readPrefix(reader, childState(state, 0));
+    this.valCodec.readPrefix(reader, childState(state, 1));
   }
 
   encode(col: Column, sizeHint?: number): Uint8Array {
@@ -614,16 +614,16 @@ export class TupleCodec extends BaseCodec {
     this.isNamed = isNamed;
   }
 
-  writePrefix(writer: BufferWriter, col: Column) {
+  override writePrefix(writer: BufferWriter, col: Column) {
     const tuple = col as TupleColumn;
     for (let i = 0; i < this.elements.length; i++) {
-      this.elements[i]!.codec.writePrefix?.(writer, tuple.columns[i]!);
+      this.elements[i]!.codec.writePrefix(writer, tuple.columns[i]!);
     }
   }
 
-  readPrefix(reader: BufferReader, state: DeserializerState) {
+  override readPrefix(reader: BufferReader, state: DeserializerState) {
     for (let i = 0; i < this.elements.length; i++) {
-      this.elements[i]!.codec.readPrefix?.(reader, childState(state, i));
+      this.elements[i]!.codec.readPrefix(reader, childState(state, i));
     }
   }
 
