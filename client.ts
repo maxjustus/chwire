@@ -933,7 +933,10 @@ async function* queryImpl(sql: string, options: QueryOptions = {}): AsyncGenerat
           if (isFramedExceptionAt(streamBuffer.view, 0, exceptionTagBytes)) {
             throw parseStreamException(streamBuffer.view, exceptionTag);
           }
-          throw new Error("Incomplete block");
+          throw new Error(
+            `Incomplete block: stream ended with ${streamBuffer.available} unparsed bytes and no exception trailer; ` +
+              `the server may have closed the connection mid-stream (e.g. send_timeout) — check the server query log`,
+          );
         }
       }
     } finally {
