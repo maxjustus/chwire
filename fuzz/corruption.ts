@@ -21,23 +21,11 @@ import { batchFromRows, type ColumnDef, decodeNativeBlock, encodeNative } from "
 import type { Rng } from "../native/codecs/base.ts";
 import { config, getIterationIndex, logConfig } from "./config.ts";
 import { makeRng } from "./rng.ts";
+import { randomString } from "./util.ts";
 
 logConfig("corruption");
 
 const MUTATIONS_PER_TARGET = 200;
-
-function randomString(rng: Rng, maxLen: number): string {
-  const len = rng.int(0, maxLen);
-  let s = "";
-  for (let i = 0; i < len; i++) {
-    // Mix ASCII with the occasional multi-byte code point.
-    s +=
-      rng.next() < 0.9
-        ? String.fromCharCode(rng.int(32, 126))
-        : String.fromCodePoint(rng.int(0x80, 0x2fff));
-  }
-  return s;
-}
 
 function randomDynamicValue(rng: Rng): unknown {
   switch (rng.int(0, 3)) {

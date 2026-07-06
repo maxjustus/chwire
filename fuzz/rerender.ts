@@ -1,16 +1,11 @@
 /**
- * Representation re-render stage: rewrite canonical generated values into the
- * ALTERNATE input forms the coercion layer (native/coercion.ts) documents as
- * accepted, so fromValues is fuzzed over its whole accepted input space instead
- * of only the canonical forms codec.generate() emits. Silent-corruption bugs in
- * the coercions (decimal trailing zeros, IPv4-mapped IPv6, string/number/bigint
- * swaps) are invisible to a canonical-only fuzzer because the buggy branches are
- * never entered.
+ * Rewrite canonical generated values into the alternate input forms the
+ * coercion layer (native/coercion.ts) accepts, so the fuzzer exercises those
+ * branches instead of only the canonical forms codec.generate() emits.
  *
- * Every rewrite here is value-preserving per the coercion contracts: encoding
- * the rewritten cell must produce a column that decodes equal (codec.compare) to
- * the canonical cell. Each leaf is rewritten with probability 1/2 so mixed
- * canonical/alternate columns are covered too.
+ * Invariant: every rewrite is value-preserving — the rewritten cell must
+ * decode equal (codec.compare) to the canonical one. Each leaf is rewritten
+ * with probability 1/2 so mixed columns are covered too.
  */
 
 import {
@@ -20,9 +15,7 @@ import {
   type Rng,
 } from "../native/codecs/base.ts";
 import { DynamicValue } from "../native/index.ts";
-
-/** Random element of a non-empty array. */
-const pick = <T>(rng: Rng, arr: readonly T[]): T => arr[rng.int(0, arr.length - 1)]!;
+import { pick } from "./util.ts";
 
 const INT_32_OR_NARROWER = /^U?Int(8|16|32)$/;
 const BIG_INT_TYPES = /^U?Int(64|128|256)$/;
@@ -48,7 +41,7 @@ function rerenderValue(type: string, v: unknown, rng: Rng): unknown {
     return v.map((e) => rerenderValue(inner, e, rng));
   }
   if (type.startsWith("Map(") && Array.isArray(v)) {
-    const [keyType, valType] = parseTypeList(extractTypeArgs(type));
+    const [, valType] = parseTypeList(extractTypeArgs(type));
     return (v as [unknown, unknown][]).map(([k, val]) => [
       // Keys stay canonical: rewriting a key must not perturb CH's key identity.
       k,

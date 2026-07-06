@@ -27,9 +27,7 @@
  */
 import type { Rng } from "../native/codecs/base.ts";
 import { maybePoisonName, renderIdent } from "./identifiers.ts";
-
-/** Random element of a non-empty array. */
-const pick = <T>(rng: Rng, arr: readonly T[]): T => arr[rng.int(0, arr.length - 1)]!;
+import { pick } from "./util.ts";
 
 /** Leaf types with no parameters. Each is a valid Nullable inner and Map value. */
 const SIMPLE_SCALARS = [
