@@ -4,18 +4,15 @@
  * composite codecs produce (all children's prefixes, then all children's
  * data). Sibling reuse is what a universal codec cache hands out for
  * duplicate type strings, e.g. Tuple(Dynamic, Dynamic).
- *
- * Tests marked todo pin behavior that lands with the stateless-codec
- * refactor (prefix state threaded through DeserializerState).
  */
 
 import assert from "node:assert";
 import { describe, it } from "node:test";
 import { defaultDeserializerState } from "../../native/codecs/base.ts";
-import { createCodec } from "../../native/codecs.ts";
+import { type Codec, createCodec } from "../../native/codecs.ts";
 import { BufferReader, BufferWriter } from "../../native/io.ts";
 
-/** Encode one block (prefix + data) with a fresh codec, as getCodec-bypass does today. */
+/** Encode one block (prefix + data) with a fresh codec. */
 function encodeBlock(type: string, values: unknown[]): Uint8Array {
   const codec = createCodec(type);
   const col = codec.fromValues(values);
@@ -25,41 +22,33 @@ function encodeBlock(type: string, values: unknown[]): Uint8Array {
   return writer.finish();
 }
 
+/** Decode one block (prefix + data) through the given codec instance. */
+function decodeBlock(codec: Codec, bytes: Uint8Array, rows: number): unknown[] {
+  const reader = new BufferReader(bytes);
+  const state = defaultDeserializerState();
+  codec.readPrefix(reader, state);
+  return Array.from(codec.decode(reader, rows, state));
+}
+
 describe("shared codec instance reuse", () => {
   it("one Dynamic instance decodes consecutive blocks with different type sets", () => {
     const shared = createCodec("Dynamic");
-    const decodeBlock = (bytes: Uint8Array, rows: number) => {
-      const reader = new BufferReader(bytes);
-      const state = defaultDeserializerState();
-      shared.readPrefix(reader, state);
-      return Array.from(shared.decode(reader, rows, state));
-    };
-    assert.deepStrictEqual(decodeBlock(encodeBlock("Dynamic", [1n, 2n]), 2), [1n, 2n]);
-    assert.deepStrictEqual(decodeBlock(encodeBlock("Dynamic", ["x", 3.5]), 2), ["x", 3.5]);
+    assert.deepStrictEqual(decodeBlock(shared, encodeBlock("Dynamic", [1n, 2n]), 2), [1n, 2n]);
+    assert.deepStrictEqual(decodeBlock(shared, encodeBlock("Dynamic", ["x", 3.5]), 2), ["x", 3.5]);
   });
 
   it("one Array(Dynamic) instance decodes consecutive blocks with different type sets", () => {
     const shared = createCodec("Array(Dynamic)");
-    const decodeBlock = (bytes: Uint8Array, rows: number) => {
-      const reader = new BufferReader(bytes);
-      const state = defaultDeserializerState();
-      shared.readPrefix(reader, state);
-      return Array.from(shared.decode(reader, rows, state));
-    };
-    assert.deepStrictEqual(decodeBlock(encodeBlock("Array(Dynamic)", [[1n, 2n]]), 1), [[1n, 2n]]);
-    assert.deepStrictEqual(decodeBlock(encodeBlock("Array(Dynamic)", [["x"]]), 1), [["x"]]);
+    assert.deepStrictEqual(decodeBlock(shared, encodeBlock("Array(Dynamic)", [[1n, 2n]]), 1), [
+      [1n, 2n],
+    ]);
+    assert.deepStrictEqual(decodeBlock(shared, encodeBlock("Array(Dynamic)", [["x"]]), 1), [["x"]]);
   });
 
   it("one JSON instance decodes consecutive blocks with different path sets", () => {
     const shared = createCodec("JSON");
-    const decodeBlock = (bytes: Uint8Array, rows: number) => {
-      const reader = new BufferReader(bytes);
-      const state = defaultDeserializerState();
-      shared.readPrefix(reader, state);
-      return Array.from(shared.decode(reader, rows, state));
-    };
-    assert.deepStrictEqual(decodeBlock(encodeBlock("JSON", [{ a: 1n }]), 1), [{ a: 1n }]);
-    assert.deepStrictEqual(decodeBlock(encodeBlock("JSON", [{ b: "x" }]), 1), [{ b: "x" }]);
+    assert.deepStrictEqual(decodeBlock(shared, encodeBlock("JSON", [{ a: 1n }]), 1), [{ a: 1n }]);
+    assert.deepStrictEqual(decodeBlock(shared, encodeBlock("JSON", [{ b: "x" }]), 1), [{ b: "x" }]);
   });
 
   it("one Dynamic instance encodes two sibling columns in composite layout", () => {

@@ -1,20 +1,20 @@
+import { isArrayLike, isTypedArray } from "../coercion.ts";
 import {
-  countAndIndexDiscriminators,
   type Column,
+  countAndIndexDiscriminators,
   type DiscriminatorArray,
   DynamicColumn,
   JsonColumn,
   VariantColumn,
 } from "../columns.ts";
-import { isArrayLike, isTypedArray } from "../coercion.ts";
 import { Dynamic, JSONFormat, Variant } from "../constants.ts";
-import { DynamicValue, type TypedArray, VariantValue } from "../types.ts";
 import { type BufferReader, BufferWriter, type TypedArrayConstructor } from "../io.ts";
 import type { DeserializerState } from "../serialization.ts";
+import { DynamicValue, type TypedArray, VariantValue } from "../types.ts";
 import {
   asBytes,
-  childState,
   type Codec,
+  childState,
   deepCompare,
   escapeString,
   type GenContext,
@@ -527,10 +527,6 @@ export class DynamicCodec implements Codec {
   }
 }
 
-interface JsonPrefix {
-  dynamicPaths: string[];
-}
-
 export class JsonCodec implements Codec {
   readonly type: string;
   private typedPaths: { name: string; type: string; codec: Codec }[] = [];
@@ -590,15 +586,13 @@ export class JsonCodec implements Codec {
     for (let i = 0; i < count; i++) allPathNames.push(reader.readString());
 
     const dynamicPaths = allPathNames.filter((p) => !this.typedPathNames.has(p));
-    state.prefix.data = { dynamicPaths } satisfies JsonPrefix;
+    state.prefix.data = dynamicPaths;
 
     // Children are keyed typed paths first, then dynamic paths, matching
-    // decode's traversal order. idx must advance for every path (an optional
-    // call would skip its argument evaluation for prefix-less codecs).
+    // decode's traversal order.
     let idx = 0;
     for (const tp of this.typedPaths) {
-      const child = childState(state, idx++);
-      tp.codec.readPrefix(reader, child);
+      tp.codec.readPrefix(reader, childState(state, idx++));
     }
 
     const dynCodec = this.resolveCodec("Dynamic");
@@ -629,11 +623,10 @@ export class JsonCodec implements Codec {
   }
 
   decode(reader: BufferReader, rows: number, state: DeserializerState): JsonColumn {
-    const prefix = state.prefix.data as JsonPrefix | undefined;
-    if (!prefix) {
+    const dynamicPaths = state.prefix.data as string[] | undefined;
+    if (!dynamicPaths) {
       throw new Error("JSON decode requires readPrefix on the same DeserializerState");
     }
-    const { dynamicPaths } = prefix;
     const pathColumns = new Map<string, Column>();
     let idx = 0;
 
