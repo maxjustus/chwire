@@ -192,6 +192,13 @@ export function serializeParams(
       // Param not in query - silently ignore (matches clickhouse-js behavior)
       continue;
     }
+    if (type === "Identifier") {
+      // Identifier is a param-only pseudo-type (table/column/db names), not a
+      // data type: the server escapes the raw value into a quoted identifier,
+      // so we pass it through verbatim. Pre-quoting here double-escapes.
+      result[name] = String(value);
+      continue;
+    }
     const codec = getCodec(type);
     result[name] = codec.toLiteral(value);
   }

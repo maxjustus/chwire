@@ -899,6 +899,60 @@ describe("ClickHouse Integration Tests", { timeout: 60000 }, () => {
       assert.ok(parsed.data[0].ip.includes("2001:db8"));
     });
 
+    it("should use query parameters with Identifier as a column name", async () => {
+      const result = await collectText(
+        query("SELECT {col: Identifier} as v FROM system.numbers LIMIT 1 FORMAT JSON", {
+          url,
+          auth,
+          sessionId,
+          params: { col: "number" },
+        }),
+      );
+
+      const parsed = JSON.parse(result);
+      assert.strictEqual(Number(parsed.data[0].v), 0);
+    });
+
+    it("should use query parameters with Identifier as a db.table name", async () => {
+      const result = await collectText(
+        query("SELECT count() as c FROM {db: Identifier}.{tbl: Identifier} FORMAT JSON", {
+          url,
+          auth,
+          sessionId,
+          params: { db: "system", tbl: "one" },
+        }),
+      );
+
+      const parsed = JSON.parse(result);
+      assert.strictEqual(Number(parsed.data[0].c), 1);
+    });
+
+    it("should use an Identifier value needing escaping without pre-quoting", async () => {
+      await consume(
+        query("CREATE TABLE IF NOT EXISTS `weird name` (x UInt8) ENGINE = Memory", {
+          url,
+          auth,
+          sessionId,
+        }),
+      );
+      await consume(query("INSERT INTO `weird name` VALUES (7)", { url, auth, sessionId }));
+      try {
+        const result = await collectText(
+          query("SELECT x FROM {tbl: Identifier} FORMAT JSON", {
+            url,
+            auth,
+            sessionId,
+            params: { tbl: "weird name" },
+          }),
+        );
+
+        const parsed = JSON.parse(result);
+        assert.strictEqual(Number(parsed.data[0].x), 7);
+      } finally {
+        await consume(query("DROP TABLE `weird name`", { url, auth, sessionId }));
+      }
+    });
+
     it("should use query parameters with Date", async () => {
       const result = await collectText(
         query("SELECT {d: Date} as d FORMAT JSON", {

@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.1.2
+
+### Fixed
+
+- `{name: Identifier}` query parameters (table/column/database names) no longer throw `Unknown type: Identifier`. The value is sent verbatim so the server escapes it into a quoted identifier; pre-quoting is not applied.
+
 ## 1.1.1
 
 ### Fixed

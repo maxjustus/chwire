@@ -277,4 +277,19 @@ describe("serializeParams", () => {
       /Invalid enum value: 3/,
     );
   });
+
+  it("passes Identifier value through verbatim (server escapes it)", () => {
+    const result = serializeParams("SELECT count() FROM db.{tbl: Identifier}", {
+      tbl: "widgets",
+    });
+    assert.strictEqual(result.tbl, "widgets");
+  });
+
+  it("does not pre-quote an Identifier needing escaping", () => {
+    // Pre-quoting here would double-escape once the server re-quotes it.
+    const result = serializeParams("SELECT x FROM db.{tbl: Identifier}", {
+      tbl: "weird name",
+    });
+    assert.strictEqual(result.tbl, "weird name");
+  });
 });
