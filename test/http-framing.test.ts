@@ -80,6 +80,21 @@ describe("HTTP framing formats", { timeout: 120000 }, () => {
     });
   }
 
+  for (const framing of FRAMINGS) {
+    it(`reports the final counters in the Summary under ${framing}`, async () => {
+      const packets = await collectPackets("SELECT number FROM numbers(10) FORMAT JSONEachRow", {
+        url,
+        auth,
+        sessionId,
+        framing,
+      });
+      const last = packets.at(-1);
+      assert.ok(last?.type === "Summary");
+      assert.strictEqual(last.summary.read_rows, "10");
+      assert.strictEqual(last.summary.result_rows, "10");
+    });
+  }
+
   it("releases the connection when a framed query is abandoned early", async () => {
     for (let i = 0; i < 10; i++) {
       const gen = query("SELECT number FROM numbers(100000) FORMAT JSONEachRow", {

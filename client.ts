@@ -870,7 +870,7 @@ async function* queryImpl(sql: string, options: QueryOptions = {}): AsyncGenerat
     throw new Error("Response body is null");
   }
 
-  const summary = parseSummary(response);
+  let summary = parseSummary(response);
   const queryId = response.headers.get("X-ClickHouse-Query-Id") || "";
   const reader = response.body.getReader();
   // ClickHouse appends a framed __exception__ trailer when a query errors after
@@ -1002,6 +1002,9 @@ async function* queryImpl(sql: string, options: QueryOptions = {}): AsyncGenerat
     for await (const packet of parseFramedStream(createStream(), framing)) {
       if (packet.kind === "exception") throw exceptionFromText(packet.message);
       if (packet.kind === "progress") {
+        // Headers leave before the first packet, so X-ClickHouse-Summary holds
+        // zeros. Progress is cumulative and the last packet has the totals.
+        summary = { ...summary, ...packet.progress };
         yield { type: "Progress", progress: packet.progress as unknown as HttpProgress };
       } else if (packet.kind === "log") {
         yield { type: "Log", entries: [packet.entry] };
