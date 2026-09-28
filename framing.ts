@@ -11,8 +11,8 @@ export type FramingFormat = "EventStream" | "JSONEachPacketBase64" | "JSONEachPa
 
 /** One row of a `log` packet; all fields are strings on the wire. */
 export interface HttpLogEntry {
+  /** Includes microseconds: `2026-09-28 19:08:55.984860` */
   event_time: string;
-  event_time_microseconds: string;
   host_name: string;
   query_id: string;
   thread_id: string;

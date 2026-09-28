@@ -15,6 +15,8 @@ import {
   collectRows,
   collectText,
   dataChunks,
+  type HttpLogEntry,
+  type HttpProfileEvent,
   init,
   query,
   streamDecodeNative,
@@ -26,6 +28,26 @@ import { collect, generateSessionId } from "./test_utils.ts";
 // file starts its own container. Override with CH_FRAMING_VERSION.
 const FRAMING_CH_VERSION = process.env.CH_FRAMING_VERSION || "26.8";
 const FRAMINGS = ["EventStream", "JSONEachPacketBase64", "JSONEachPacketString"] as const;
+
+// Record<keyof T, true> fails to compile when the type declares a key that
+// the wire lacks; the runtime comparison fails when the wire adds one.
+const LOG_KEYS: Record<keyof HttpLogEntry, true> = {
+  event_time: true,
+  host_name: true,
+  query_id: true,
+  thread_id: true,
+  priority: true,
+  source: true,
+  text: true,
+};
+const PROFILE_EVENT_KEYS: Record<keyof HttpProfileEvent, true> = {
+  host_name: true,
+  current_time: true,
+  thread_id: true,
+  type: true,
+  name: true,
+  value: true,
+};
 
 describe("HTTP framing formats", { timeout: 120000 }, () => {
   let clickhouse: Awaited<ReturnType<typeof startClickHouse>>;
@@ -94,9 +116,7 @@ describe("HTTP framing formats", { timeout: 120000 }, () => {
         for (const l of logs) {
           assert.ok(l.entries.length > 0);
           for (const entry of l.entries) {
-            assert.strictEqual(typeof entry.text, "string");
-            assert.strictEqual(typeof entry.source, "string");
-            assert.strictEqual(typeof entry.priority, "string");
+            assert.deepStrictEqual(Object.keys(entry).sort(), Object.keys(LOG_KEYS).sort());
           }
         }
 
@@ -108,6 +128,10 @@ describe("HTTP framing formats", { timeout: 120000 }, () => {
         assert.ok(selected, "should report SelectedRows");
         assert.strictEqual(selected.value, "10");
         assert.ok(selected.type === "gauge" || selected.type === "increment");
+        assert.deepStrictEqual(
+          Object.keys(selected).sort(),
+          Object.keys(PROFILE_EVENT_KEYS).sort(),
+        );
       });
     }
   });
