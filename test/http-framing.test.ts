@@ -138,6 +138,27 @@ describe("HTTP framing formats", { timeout: 120000 }, () => {
 
   describe("Exception packets", () => {
     for (const framing of FRAMINGS) {
+      it(`surfaces an error that precedes the response under ${framing}`, async () => {
+        // The server answers 404 with a framed body, not plain error text.
+        const sql = "SELECT * FROM framing_missing_table";
+        const plain = await collectText(query(sql, { url, auth, sessionId })).catch((e) => e);
+        assert.ok(plain instanceof ClickHouseException);
+        for (const compression of [false, "lz4"] as const) {
+          await assert.rejects(
+            collectText(query(sql, { url, auth, sessionId, framing, compression })),
+            (err: unknown) => {
+              assert.ok(err instanceof ClickHouseException);
+              assert.strictEqual(err.code, plain.code);
+              // The framed packet appends the server version to the plain text.
+              assert.ok(err.message.startsWith(plain.message), err.message);
+              assert.doesNotMatch(err.message, /"\}$/);
+              return true;
+            },
+            `compression: ${compression}`,
+          );
+        }
+      });
+
       it(`surfaces a mid-stream error under ${framing}`, async () => {
         await assert.rejects(
           collectText(

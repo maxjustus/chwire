@@ -853,6 +853,16 @@ async function* queryImpl(sql: string, options: QueryOptions = {}): AsyncGenerat
     } else {
       body = await response.text();
     }
+    // Query errors keep the framing; auth and setting errors arrive as plain text.
+    const contentType = response.headers.get("Content-Type") ?? "";
+    if (framing && /^(text\/event-stream|application\/x-ndjson)/.test(contentType)) {
+      for await (const packet of parseFramedStream(
+        toAsyncIterable<Uint8Array>(encoder.encode(body)),
+        framing,
+      )) {
+        if (packet.kind === "exception") body = packet.message;
+      }
+    }
     throw parseHttpError(response, body);
   }
 
