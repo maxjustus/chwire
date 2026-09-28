@@ -650,16 +650,13 @@ export interface QueryOptions {
    */
   compressQuery?: "lz4" | "zstd" | { method: "zstd"; level?: number };
   /**
-   * Parse the response as a framed stream (server setting
+   * Parse the response as framed packets (server setting
    * `framing_output_format`, ClickHouse 26.8+).
    *
-   * Data, totals, and extremes packets surface as Data chunks whose
-   * concatenation equals the unframed format output; progress arrives as
-   * Progress packets; log rows as Log packets (needs `send_logs_level`);
-   * profile events as ProfileEvents packets; a failed query throws from the
-   * exception packet even after the server committed a 200. The server flushes
-   * each packet as it is produced, including under `compress=1` block
-   * compression.
+   * Data, totals, and extremes arrive as Data chunks that join to the
+   * unframed format output. Progress, Log, and ProfileEvents packets arrive
+   * as the server sends them, also with `compression`. Log packets need
+   * `send_logs_level`. A failed query throws, also after a 200 response.
    */
   framing?: FramingFormat;
   /** AbortSignal for manual cancellation */
@@ -853,7 +850,7 @@ async function* queryImpl(sql: string, options: QueryOptions = {}): AsyncGenerat
     } else {
       body = await response.text();
     }
-    // Query errors keep the framing; auth and setting errors arrive as plain text.
+    // Query errors keep the framing. Auth and setting errors arrive as plain text.
     const contentType = response.headers.get("Content-Type") ?? "";
     if (framing && /^(text\/event-stream|application\/x-ndjson)/.test(contentType)) {
       for await (const packet of parseFramedStream(
@@ -885,7 +882,7 @@ async function* queryImpl(sql: string, options: QueryOptions = {}): AsyncGenerat
     try {
       if (!compressed && framing) {
         // Framing reports errors as packets, never as the __exception__ trailer.
-        // A held-back tail would delay each small packet until the next one.
+        // A held-back tail delays each small packet until the next one arrives.
         yield* readChunks(reader);
       } else if (!compressed) {
         // Keep a small tail so a framed exception preamble split across reads

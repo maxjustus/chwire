@@ -9,7 +9,7 @@
 
 export type FramingFormat = "EventStream" | "JSONEachPacketBase64" | "JSONEachPacketString";
 
-/** One row of a `log` packet; all fields are strings on the wire. */
+/** One row of a `log` packet. All fields are strings on the wire. */
 export interface HttpLogEntry {
   /** Includes microseconds: `2026-09-28 19:08:55.984860` */
   event_time: string;
@@ -21,7 +21,7 @@ export interface HttpLogEntry {
   text: string;
 }
 
-/** One row of a `profile_events` packet; all fields are strings on the wire. */
+/** One row of a `profile_events` packet. All fields are strings on the wire. */
 export interface HttpProfileEvent {
   host_name: string;
   current_time: string;
@@ -69,7 +69,7 @@ async function* parseRecords(
       from = 0;
       if (packet) yield packet;
     }
-    // a delimiter can span the chunk boundary; rescan only the overhang
+    // A delimiter can span the chunk boundary. Rescan only the overhang.
     from = Math.max(0, pending.length - delimiter.length + 1);
   }
   if (pending + decoder.decode()) {
@@ -79,8 +79,8 @@ async function* parseRecords(
 
 /**
  * Server-sent event: `event: <kind>\ndata: <payload>`. Payload packets are
- * base64 (the formatted block has no line breaks, so it is always one data
- * field); auxiliary packets are JSON.
+ * base64, with no line breaks, so they are always one data field. Auxiliary
+ * packets are JSON.
  */
 function parseSseEvent(text: string): FramedPacket | undefined {
   let kind = "";

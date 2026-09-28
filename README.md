@@ -781,7 +781,7 @@ LZ4 and ZSTD use native Node addons (`lz4-napi`, `zstd-napi`) installed automati
 
 ### Framed responses
 
-ClickHouse 26.8+ can multiplex data, totals, extremes, progress, and exceptions into one response stream with the `framing_output_format` setting. Set `framing` in HTTP query options to enable it and parse the frames back into packets:
+ClickHouse 26.8 and later can send data, totals, extremes, progress, logs, profile events, and exceptions as packets in one response (setting `framing_output_format`). Set `framing` in HTTP query options to turn it on. The client parses the packets:
 
 ```ts
 for await (const packet of query("SELECT number FROM numbers(1000) FORMAT JSONEachRow", {
@@ -793,13 +793,14 @@ for await (const packet of query("SELECT number FROM numbers(1000) FORMAT JSONEa
 }
 ```
 
-- Data, totals, and extremes packets surface as `Data` chunks whose concatenation equals the unframed format output, so `collectText`, `streamText`, and `FORMAT Native` decoding work unchanged — including binary formats, which the base64 and EventStream framings carry byte-exactly. `packet.kind` tags which block a chunk came from. One server-side exception: the `JSONCompactEachRow` family drops totals and extremes when unframed but emits them as packets under framing, so framed output for those formats carries extra rows.
-- Omit the `*WithProgress` formats. The server rejects them under framing because they write progress in-band; the client's default format changes to `JSONEachRow` when `framing` is set.
-- A response cut short mid-packet throws instead of delivering a truncated final chunk.
-- Progress arrives as `Progress` packets instead of `X-ClickHouse-Progress` headers.
-- A failed query throws `ClickHouseException` from the terminal exception packet, even when the server already committed a 200 response.
-- Log rows surface as `Log` packets (requires the `send_logs_level` setting) and profile events as `ProfileEvents` packets, mirroring the TCP client packet names.
-- The server flushes each packet as it is produced, including under `compression` block compression, so results and progress stream instead of arriving at the end.
+- Data, totals, and extremes packets surface as `Data` chunks whose concatenation equals the unframed format output, so `collectText`, `streamText`, and `FORMAT Native` decode work as before, also for binary formats. `packet.kind` tells which block (`data`, `totals`, or `extremes`) a chunk comes from.
+- Without framing, the `JSONCompactEachRow` formats drop totals and extremes. Under framing, the server sends them as packets, so the output has extra rows.
+- Do not use the `*WithProgress` formats. The server rejects them under framing because they write progress into the data. When `framing` is set, the default format is `JSONEachRow`.
+- Progress arrives as `Progress` packets. The `Summary` packet takes its counters from the last progress packet.
+- Log rows arrive as `Log` packets when you set `send_logs_level`. Profile events arrive as `ProfileEvents` packets. These names match the TCP client.
+- A failed query throws `ClickHouseException`, also after the server sends status 200.
+- If the stream stops in the middle of a packet, the client throws. It does not return a short chunk.
+- The server sends each packet when it is ready, also with `compression`. In a test, the first row of a 2 s query arrived after 205 ms with framing, and after 2046 ms without it.
 
 ## Performance
 

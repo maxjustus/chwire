@@ -30,7 +30,7 @@ const FRAMING_CH_VERSION = process.env.CH_FRAMING_VERSION || "26.8";
 const FRAMINGS = ["EventStream", "JSONEachPacketBase64", "JSONEachPacketString"] as const;
 
 // Record<keyof T, true> fails to compile when the type declares a key that
-// the wire lacks; the runtime comparison fails when the wire adds one.
+// the wire lacks. The runtime comparison fails when the wire adds one.
 const LOG_KEYS: Record<keyof HttpLogEntry, true> = {
   event_time: true,
   host_name: true,
