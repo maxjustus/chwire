@@ -114,6 +114,31 @@ describe("HTTP framing formats", { timeout: 120000 }, () => {
     assert.deepStrictEqual(rows, [{ n: 1 }]);
   });
 
+  describe("Streaming", () => {
+    for (const compression of [false, "lz4", "zstd"] as const) {
+      it(`delivers the first row before the query ends with compression ${compression}`, async () => {
+        // 4 one-row blocks 0.5 s apart: a streamed row lands near 0.5 s, a
+        // buffered or held-back one at 1 s or later.
+        const sql =
+          "SELECT number, sleepEachRow(0.5) FROM numbers(4) SETTINGS max_block_size = 1 FORMAT JSONEachRow";
+        const started = performance.now();
+        let firstRow = Infinity;
+        for await (const packet of query(sql, {
+          url,
+          auth,
+          sessionId,
+          framing: "EventStream",
+          compression,
+        })) {
+          if (packet.type === "Data" && firstRow === Infinity) {
+            firstRow = performance.now() - started;
+          }
+        }
+        assert.ok(firstRow < 800, `first row after ${Math.round(firstRow)} ms`);
+      });
+    }
+  });
+
   describe("Auxiliary packets", () => {
     for (const framing of FRAMINGS) {
       it(`surfaces log and profile-events packets under ${framing}`, async () => {

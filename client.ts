@@ -883,7 +883,11 @@ async function* queryImpl(sql: string, options: QueryOptions = {}): AsyncGenerat
 
   async function* createStream(): AsyncGenerator<Uint8Array, void, unknown> {
     try {
-      if (!compressed) {
+      if (!compressed && framing) {
+        // Framing reports errors as packets, never as the __exception__ trailer.
+        // A held-back tail would delay each small packet until the next one.
+        yield* readChunks(reader);
+      } else if (!compressed) {
         // Keep a small tail so a framed exception preamble split across reads
         // is validated before we emit those bytes to the caller.
         let pending: Uint8Array = new Uint8Array(0);
