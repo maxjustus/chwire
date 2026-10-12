@@ -740,58 +740,57 @@ export class JsonCodec implements Codec {
     }
 
     const pathColumns = new Map<string, Column>();
-
     for (const tp of this.typedPaths) {
-      const value = input[tp.name];
-      if (value === undefined) {
-        throw new Error(
-          `Missing typed path '${tp.name}' (declared in ${this.type}); ` +
-            `pass an array of nulls for an all-null path`,
-        );
-      }
-      if (isArrayLike(value)) {
-        pathColumns.set(tp.name, tp.codec.fromValues(value));
-      } else {
-        // Exact-spelling match: codecs preserve caller spelling, so there is no
-        // canonical form to compare against, and whitespace-insensitive equality
-        // can false-positive on pathological names (`a UInt8` vs `aU Int8`).
-        if (value.type !== tp.type) {
-          throw new Error(
-            `Type mismatch for typed path '${tp.name}': expected '${tp.type}', got '${value.type}'`,
-          );
-        }
-        pathColumns.set(tp.name, value);
-      }
+      pathColumns.set(tp.name, this.typedPathColumn(tp, input[tp.name]));
     }
 
     const dynamicPathOrder: string[] = [];
-    const dynCodec = this.resolveCodec("Dynamic");
     for (const key of keys) {
       if (this.typedPathNames.has(key)) continue;
-      const value = input[key]!;
-      // JS callers can pass anything; a non-arraylike is only usable when it is
-      // a genuine Dynamic column (any other shape loses per-value types).
-      const colType = isArrayLike(value) ? undefined : (value as Column).type;
-      if (colType?.startsWith("Dynamic")) {
-        dynamicPathOrder.push(key);
-        pathColumns.set(key, value as Column);
-        continue;
-      }
-      if (!Array.isArray(value)) {
-        let got = `a ${typeof value}`;
-        if (isTypedArray(value)) got = "a TypedArray";
-        else if (colType !== undefined) got = `a '${colType}' column`;
-        throw new TypeError(
-          `Dynamic path '${key}' must be a plain array or a Dynamic column, got ${got}. ` +
-            `TypedArrays and typed columns lose per-value type information; ` +
-            `use DynamicValue[] to pin types.`,
-        );
-      }
       dynamicPathOrder.push(key);
-      pathColumns.set(key, dynCodec.fromValues(value));
+      pathColumns.set(key, this.dynamicPathColumn(key, input[key]!));
     }
 
     return this.assembleColumn(pathColumns, dynamicPathOrder, rowCount);
+  }
+
+  private typedPathColumn(
+    tp: { name: string; type: string; codec: Codec },
+    value: Column | unknown[] | TypedArray | undefined,
+  ): Column {
+    if (value === undefined) {
+      throw new Error(
+        `Missing typed path '${tp.name}' (declared in ${this.type}); ` +
+          `pass an array of nulls for an all-null path`,
+      );
+    }
+    if (isArrayLike(value)) return tp.codec.fromValues(value);
+    // Exact-spelling match: codecs preserve caller spelling, so there is no
+    // canonical form to compare against, and whitespace-insensitive equality
+    // can false-positive on pathological names (`a UInt8` vs `aU Int8`).
+    if (value.type !== tp.type) {
+      throw new Error(
+        `Type mismatch for typed path '${tp.name}': expected '${tp.type}', got '${value.type}'`,
+      );
+    }
+    return value;
+  }
+
+  private dynamicPathColumn(key: string, value: Column | unknown[] | TypedArray): Column {
+    // JS callers can pass anything; a non-arraylike is only usable when it is
+    // a genuine Dynamic column (any other shape loses per-value types).
+    const colType = isArrayLike(value) ? undefined : (value as Column).type;
+    if (colType?.startsWith("Dynamic")) return value as Column;
+    if (Array.isArray(value)) return this.resolveCodec("Dynamic").fromValues(value);
+
+    let got = `a ${typeof value}`;
+    if (isTypedArray(value)) got = "a TypedArray";
+    else if (colType !== undefined) got = `a '${colType}' column`;
+    throw new TypeError(
+      `Dynamic path '${key}' must be a plain array or a Dynamic column, got ${got}. ` +
+        `TypedArrays and typed columns lose per-value type information; ` +
+        `use DynamicValue[] to pin types.`,
+    );
   }
 
   private assembleColumn(
