@@ -166,20 +166,10 @@ export function parseEnumDefinition(type: string): EnumMapping | null {
     while (i < len && (content[i] === "," || isAsciiWhitespace(content.charCodeAt(i)))) i++;
     if (i >= len) break;
 
-    // Parse quoted name
-    const parsed = parseQuotedString(content, i);
-    if (!parsed) return null;
-    const [name, nextIdx] = parsed;
-    i = nextIdx;
-
-    i = skipWhitespace(content, i);
-    if (content[i] !== "=") return null;
-    i = skipWhitespace(content, i + 1);
-
-    const parsedValue = parseSignedInt(content, i);
-    if (!parsedValue) return null;
-    const [value, afterValue] = parsedValue;
-    i = afterValue;
+    const entry = parseEnumEntry(content, i);
+    if (!entry) return null;
+    const [name, value, afterEntry] = entry;
+    i = afterEntry;
     if (value < min || value > max) return null; // out of Int8/Int16 range
 
     // Reject duplicate names or values — ClickHouse requires both to be unique
@@ -190,6 +180,18 @@ export function parseEnumDefinition(type: string): EnumMapping | null {
 
   if (nameToValue.size === 0) return null;
   return { nameToValue, valueToName };
+}
+
+/** Parse `'name' = value` at `start`. Returns [name, value, index_after_value] or null. */
+function parseEnumEntry(s: string, start: number): [string, number, number] | null {
+  const parsedName = parseQuotedString(s, start);
+  if (!parsedName) return null;
+  const [name, afterName] = parsedName;
+  const eq = skipWhitespace(s, afterName);
+  if (s[eq] !== "=") return null;
+  const parsedValue = parseSignedInt(s, skipWhitespace(s, eq + 1));
+  if (!parsedValue) return null;
+  return [name, parsedValue[0], parsedValue[1]];
 }
 
 function skipWhitespace(s: string, i: number): number {
