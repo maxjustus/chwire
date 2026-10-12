@@ -1,7 +1,7 @@
 import assert from "node:assert";
 import { describe, it } from "node:test";
-import { decodeBatch, encodeNativeRows, toArrayRows } from "../test_utils.ts";
 import { VariantValue } from "../../native/types.ts";
+import { decodeBatch, encodeNativeRows, toArrayRows } from "../test_utils.ts";
 
 type MatrixCase = {
   type: string;

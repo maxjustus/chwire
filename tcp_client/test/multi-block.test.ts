@@ -1,11 +1,11 @@
 import assert from "node:assert";
 import { after, before, describe, test } from "node:test";
-import { startClickHouse, stopClickHouse } from "../../test/setup.ts";
-import { type TcpConfig, withClient as withClientBase } from "../../test/test_utils.ts";
 // Import from source, not the dist package: withClient (test_utils) constructs
 // the source TcpClient, so a RecordBatch from the dist factory would fail the
 // source `instanceof RecordBatch` insert-dispatch check and be mis-encoded.
 import { batchFromRows } from "../../native/index.ts";
+import { startClickHouse, stopClickHouse } from "../../test/setup.ts";
+import { type TcpConfig, withClient as withClientBase } from "../../test/test_utils.ts";
 import type { TcpClient } from "../index.ts";
 
 describe("TCP Client Multi-block Integration", () => {

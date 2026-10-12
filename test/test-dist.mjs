@@ -56,6 +56,7 @@ console.log("=== Testing CJS main bundle (dist/chwire.cjs) ===\n");
 // missing export from an externalized subpath only surfaces when the code
 // path runs — exercise init + compression here rather than just requiring.
 import { createRequire } from "node:module";
+
 const require = createRequire(import.meta.url);
 
 try {

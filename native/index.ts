@@ -35,8 +35,8 @@ export {
   type ColumnDef,
   type DecodeOptions,
   DynamicValue,
-  VariantValue,
   TEXT_DECODER,
+  VariantValue,
 } from "./types.ts";
 
 // Re-export table helpers / types

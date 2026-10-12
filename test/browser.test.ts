@@ -1,9 +1,9 @@
-import { test } from "node:test";
 import { strict as assert } from "node:assert";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, type Server } from "node:http";
-import { readFileSync, writeFileSync, mkdtempSync, rmSync } from "node:fs";
-import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { test } from "node:test";
 import * as esbuild from "esbuild";
 import { chromium } from "playwright";
 

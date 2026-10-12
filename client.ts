@@ -12,10 +12,10 @@ import {
 } from "./compression.ts";
 import { ClickHouseException } from "./errors.ts";
 import {
-  parseFramedStream,
   type FramingFormat,
   type HttpLogEntry,
   type HttpProfileEvent,
+  parseFramedStream,
 } from "./framing.ts";
 import type { ClickHouseSettings } from "./settings.generated.ts";
 

@@ -8,10 +8,10 @@
 
 import assert from "node:assert";
 import { describe, it } from "node:test";
-import { decodeNativeBlock } from "../../native/index.ts";
+import { DecimalCodec } from "../../native/codecs/scalar.ts";
 import { toValidIPv4, toValidIPv6 } from "../../native/coercion.ts";
 import { LowCardinality as LC } from "../../native/constants.ts";
-import { DecimalCodec } from "../../native/codecs/scalar.ts";
+import { decodeNativeBlock } from "../../native/index.ts";
 import { buildTestBlock } from "../test_utils.ts";
 
 describe("bounds validation", () => {

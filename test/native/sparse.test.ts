@@ -10,8 +10,8 @@
 
 import assert from "node:assert";
 import { describe, it } from "node:test";
+import { SerializationKind, Sparse } from "../../native/constants.ts";
 import { decodeNativeBlock } from "../../native/index.ts";
-import { Sparse, SerializationKind } from "../../native/constants.ts";
 import { buildTestBlock } from "../test_utils.ts";
 
 /**

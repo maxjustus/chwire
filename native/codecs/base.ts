@@ -342,12 +342,13 @@ export function defaultDeserializerState(): DeserializerState {
  * (older ClickHouse versions or incomplete tree).
  */
 export function childState(state: DeserializerState, index: number): DeserializerState {
+  // Grown lazily so readPrefix (populates prefix.data) and decode (consumes
+  // it) land on the same node when both derive it from the same parent.
+  state.prefix.children[index] ??= { children: [] };
   return {
     ...state,
     serializationNode: state.serializationNode.children[index] ?? DEFAULT_DENSE_NODE,
-    // Grown lazily so readPrefix (populates prefix.data) and decode (consumes
-    // it) land on the same node when both derive it from the same parent.
-    prefix: (state.prefix.children[index] ??= { children: [] }),
+    prefix: state.prefix.children[index],
   };
 }
 

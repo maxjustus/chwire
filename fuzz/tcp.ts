@@ -7,10 +7,10 @@
  * RecordBatches and re-inserts them.
  */
 
-import { type ColumnDef, RecordBatch } from "../native/index.ts";
+import type { ColumnDef, RecordBatch } from "../native/index.ts";
 import { TcpClient } from "../tcp_client/client.ts";
 import { startClickHouse, stopClickHouse } from "../test/setup.ts";
-import { type Compression } from "./config.ts";
+import type { Compression } from "./config.ts";
 import { defineIntegrationFuzz, type FuzzTransport, type TransportHandle } from "./integration.ts";
 import { consume } from "./util.ts";
 

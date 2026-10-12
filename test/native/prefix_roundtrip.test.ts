@@ -11,11 +11,11 @@
 
 import assert from "node:assert";
 import { describe, it } from "node:test";
-import { decodeNativeBlock } from "../../native/index.ts";
 import { getCodec } from "../../native/codecs.ts";
-import { BlockInfoField, LowCardinality as LC, Dynamic, Variant } from "../../native/constants.ts";
-import { buildTestBlock, BufferWriter } from "../test_utils.ts";
+import { BlockInfoField, Dynamic, LowCardinality as LC, Variant } from "../../native/constants.ts";
+import { decodeNativeBlock } from "../../native/index.ts";
 import { VariantValue } from "../../native/types.ts";
+import { BufferWriter, buildTestBlock } from "../test_utils.ts";
 
 describe("prefix round-trip tests", () => {
   describe("LowCardinality", () => {

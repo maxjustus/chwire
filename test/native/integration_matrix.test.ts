@@ -7,9 +7,9 @@ import assert from "node:assert";
 import { after, before, describe, it } from "node:test";
 import { collectBytes, init, insert, query } from "../../client.ts";
 import type { ColumnDef } from "../../native/index.ts";
+import { VariantValue } from "../../native/types.ts";
 import { startClickHouse, stopClickHouse } from "../setup.ts";
 import { consume, decodeBatch, encodeNativeRows, toArrayRows } from "../test_utils.ts";
-import { VariantValue } from "../../native/types.ts";
 
 describe("Native integration type matrix", { timeout: 120000 }, () => {
   let url: string;

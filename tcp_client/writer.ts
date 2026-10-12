@@ -1,6 +1,6 @@
-import { BlockInfoField, BufferWriter } from "../native/index.ts";
 import { type Compression, encodeBlock } from "../compression.ts";
-import { serializeParams, SQL_NULL } from "../params.ts";
+import { BlockInfoField, BufferWriter } from "../native/index.ts";
+import { SQL_NULL, serializeParams } from "../params.ts";
 import {
   CLIENT_VERSION,
   ClientPacketId,

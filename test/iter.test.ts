@@ -1,6 +1,6 @@
-import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { toAsyncIterable, mapAsync, prepend, readChunks } from "../iter.ts";
+import { describe, it } from "node:test";
+import { mapAsync, prepend, readChunks, toAsyncIterable } from "../iter.ts";
 
 async function collect<T>(gen: AsyncIterable<T>): Promise<T[]> {
   const out: T[] = [];

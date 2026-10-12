@@ -3,8 +3,9 @@ import {
   JsonCodec as InternalJsonCodec,
   VariantCodec,
 } from "./codecs/dynamic.ts";
-import { getCodec, createCodec } from "./codecs/registry.ts";
+import { createCodec, getCodec } from "./codecs/registry.ts";
 
+export type { Codec } from "./codecs/base.ts";
 export {
   asBytes,
   BaseCodec,
@@ -21,7 +22,6 @@ export {
   SQL_NULL,
   wrapQuoted,
 } from "./codecs/base.ts";
-export type { Codec } from "./codecs/base.ts";
 
 export {
   ArrayCodec,
@@ -48,15 +48,15 @@ export {
 
 export {
   toBigInt,
+  toInt8,
   toInt16,
   toInt32,
   toInt64,
-  toInt8,
   toNumber,
+  toUInt8,
   toUInt16,
   toUInt32,
   toUInt64,
-  toUInt8,
 } from "./coercion.ts";
 
 export class DynamicCodec extends InternalDynamicCodec {
