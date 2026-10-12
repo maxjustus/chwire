@@ -545,6 +545,23 @@ export class DynamicCodec implements Codec {
   }
 }
 
+/**
+ * Values of one JSON dynamic path. `rows === null` means the path has appeared
+ * in every row so far (identity indices); it is materialized only when a gap
+ * shows up, so fully-dense paths never allocate an index array.
+ */
+type SparsePath = { rows: number[] | null; values: unknown[] };
+
+function appendSparse(entry: SparsePath, row: number, value: unknown): void {
+  if (entry.rows) {
+    entry.rows.push(row);
+  } else if (entry.values.length !== row) {
+    entry.rows = Array.from({ length: entry.values.length }, (_, j) => j);
+    entry.rows.push(row);
+  }
+  entry.values.push(value);
+}
+
 export class JsonCodec implements Codec {
   readonly type: string;
   private typedPaths: { name: string; type: string; codec: Codec }[] = [];
@@ -664,11 +681,7 @@ export class JsonCodec implements Codec {
   fromValues(values: unknown[]): JsonColumn {
     const n = values.length;
     const typedPathArrays = this.typedPaths.map(() => new Array<unknown>(n).fill(null));
-    // rows === null means the path has appeared in every row so far (identity
-    // indices); it is materialized only when a gap shows up, so fully-dense
-    // paths never allocate an index array.
-    const dynamicPathEntries = new Map<string, { rows: number[] | null; values: unknown[] }>();
-    const dynamicPathOrder: string[] = [];
+    const dynamicPathEntries = new Map<string, SparsePath>();
 
     for (let i = 0; i < n; i++) {
       const v = values[i];
@@ -691,15 +704,8 @@ export class JsonCodec implements Codec {
         if (!entry) {
           entry = { rows: null, values: [] };
           dynamicPathEntries.set(key, entry);
-          dynamicPathOrder.push(key);
         }
-        if (entry.rows) {
-          entry.rows.push(i);
-        } else if (entry.values.length !== i) {
-          entry.rows = Array.from({ length: entry.values.length }, (_, j) => j);
-          entry.rows.push(i);
-        }
-        entry.values.push(obj[key]);
+        appendSparse(entry, i, obj[key]);
       }
     }
 
@@ -712,12 +718,11 @@ export class JsonCodec implements Codec {
     }
 
     const dynCodec = this.resolveCodec("Dynamic") as DynamicCodec;
-    for (const path of dynamicPathOrder) {
-      const entry = dynamicPathEntries.get(path)!;
+    for (const [path, entry] of dynamicPathEntries) {
       pathColumns.set(path, dynCodec.fromSparse(entry.rows, entry.values, n));
     }
 
-    return this.assembleColumn(pathColumns, dynamicPathOrder, n);
+    return this.assembleColumn(pathColumns, [...dynamicPathEntries.keys()], n);
   }
 
   fromCols(input: Record<string, Column | unknown[] | TypedArray>): JsonColumn {
