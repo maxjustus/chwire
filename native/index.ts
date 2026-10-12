@@ -299,11 +299,7 @@ export async function* streamDecodeNative(
   const retryMaxBytes = Math.max(0, options?.underflowRetryMaxBytes ?? 1024 * 1024);
   const retryMinBytes = options?.underflowRetryMinBytes;
   const initialRetryWait = (chunkLength: number): number =>
-    retryMinBytes !== undefined
-      ? Math.min(retryMinBytes, retryMaxBytes)
-      : retryMaxBytes > 0
-        ? Math.min(chunkLength, retryMaxBytes)
-        : 0;
+    Math.min(retryMinBytes ?? chunkLength, retryMaxBytes);
   const blockBuffer = new BlockBuffer(minBuffer);
   let columns: ColumnDef[] = [];
   let totalBytesReceived = 0;
