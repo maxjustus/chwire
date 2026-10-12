@@ -284,14 +284,7 @@ const SCHEMAS: Record<(typeof DATA_TYPES)[number], Schema> = {
       { name: "id", type: "UInt32" },
       { name: "v", type: "Variant(String, Int64, Float64)" },
     ],
-    generate: (i) => [
-      i,
-      [
-        [0, `str_${i}`], // String
-        [1, BigInt(i * 100)], // Int64
-        [2, Math.random()], // Float64
-      ][i % 3],
-    ],
+    generate: (i) => [i, [`str_${i}`, BigInt(i * 100), Math.random()][i % 3]],
   },
 
   dynamic: {
