@@ -8,7 +8,6 @@ declare const BUILD_WITH_ZSTD: boolean | undefined;
 
 // Lazy-loaded compression functions - initialized by init()
 let lz4CompressFn: ((source: Uint8Array) => Uint8Array) | undefined;
-let lz4CompressFrameFn: ((source: Uint8Array) => Uint8Array) | undefined;
 let lz4DecompressFn: ((source: Uint8Array, uncompressedSize: number) => Uint8Array) | undefined;
 let zstdCompressFn: ((source: Uint8Array, level: number) => Uint8Array) | undefined;
 let zstdDecompressFn: ((source: Uint8Array) => Uint8Array) | undefined;
@@ -38,8 +37,6 @@ async function initLz4(): Promise<void> {
       const native = await import("lz4-napi");
       // lz4-napi compressSync prepends 4-byte size prefix - strip it for raw block output
       lz4CompressFn = (d) => new Uint8Array(native.compressSync(Buffer.from(d))).subarray(4);
-      // LZ4 frame format for HTTP Content-Encoding
-      lz4CompressFrameFn = (d) => new Uint8Array(native.compressFrameSync(Buffer.from(d)));
       // uncompressSync expects 4-byte size prefix - prepend it
       lz4DecompressFn = (d, size) =>
         new Uint8Array(native.uncompressSync(Buffer.from(prependUint32LE(d, size))));
@@ -50,12 +47,11 @@ async function initLz4(): Promise<void> {
     }
   }
 
-  // WASM fallback - no frame support
+  // WASM fallback
   const lz4 = await import("./vendor/lz4/lz4.js");
   await lz4.init();
   // WASM compress prepends 4-byte size prefix - strip it for raw block output
   lz4CompressFn = (d) => lz4.compress(d).subarray(4);
-  // lz4CompressFrameFn stays undefined - WASM doesn't support frame format
   // WASM decompress expects 4-byte size prefix - prepend it
   lz4DecompressFn = (d, size) => lz4.decompress(prependUint32LE(d, size));
 }
@@ -199,18 +195,30 @@ export function lz4CompressRaw(raw: Uint8Array): Uint8Array {
   return lz4CompressFn(raw);
 }
 
-/**
- * LZ4 frame compression for HTTP Content-Encoding.
- * Produces standard LZ4 frame format with magic number and checksums.
- * Only available with lz4-napi (Node.js), not in WASM builds.
- */
+// https://github.com/lz4/lz4/blob/dev/doc/lz4_Frame_format.md
+// Magic, then FLG 0x60 (version 1, independent blocks, no checksums), BD 0x70
+// (4 MiB max block), and HC 0x73 = (XXH32(FLG BD) >> 8) & 0xff.
+const LZ4_FRAME_HEADER = new Uint8Array([0x04, 0x22, 0x4d, 0x18, 0x60, 0x70, 0x73]);
+const LZ4_FRAME_BLOCK_SIZE = 4 * 1024 * 1024;
+const LZ4_FRAME_UNCOMPRESSED_FLAG = 0x80000000;
+
+/** LZ4 frame compression for HTTP Content-Encoding. */
 export function lz4CompressFrame(raw: Uint8Array): Uint8Array {
-  if (!lz4CompressFrameFn) {
-    throw new Error(
-      "LZ4 frame compression not available - requires lz4-napi (not available in WASM builds)",
-    );
+  const parts: Uint8Array[] = [LZ4_FRAME_HEADER];
+  for (let offset = 0; offset < raw.length; offset += LZ4_FRAME_BLOCK_SIZE) {
+    const block = raw.subarray(offset, offset + LZ4_FRAME_BLOCK_SIZE);
+    const compressed = lz4CompressRaw(block);
+    const size = new Uint8Array(4);
+    if (compressed.length < block.length) {
+      writeUInt32LE(size, compressed.length, 0);
+      parts.push(size, compressed);
+    } else {
+      writeUInt32LE(size, LZ4_FRAME_UNCOMPRESSED_FLAG + block.length, 0);
+      parts.push(size, block);
+    }
   }
-  return lz4CompressFrameFn(raw);
+  parts.push(new Uint8Array(4));
+  return concat(parts);
 }
 
 function lz4Decompress(compressed: Uint8Array, uncompressedSize: number): Uint8Array {
