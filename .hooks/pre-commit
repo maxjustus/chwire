@@ -7,10 +7,10 @@ if [ -z "$STAGED" ]; then
   exit 0
 fi
 
-# Format staged files
-echo "$STAGED" | xargs npx biome format --write
+# Format, lint, and apply safe fixes to staged files
+echo "$STAGED" | xargs npx biome check --write --no-errors-on-unmatched || exit 1
 
-# Re-stage formatted files
+# Re-stage fixed files
 echo "$STAGED" | xargs git add
 
 exit 0
