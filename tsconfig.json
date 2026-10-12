@@ -16,6 +16,7 @@
 
     "target": "ES2022",
     "lib": ["ESNext"],
+    "types": ["node"],
     "module": "nodenext",
     "moduleResolution": "nodenext",
     "allowImportingTsExtensions": true,
