@@ -881,110 +881,15 @@ async function* queryImpl(sql: string, options: QueryOptions = {}): AsyncGenerat
 
   async function* createStream(): AsyncGenerator<Uint8Array, void, unknown> {
     try {
-      if (!compressed && framing) {
+      const chunks = readChunks(reader);
+      if (compressed) {
+        yield* decompressStream(chunks, requireLineStart, exceptionTag);
+      } else if (framing) {
         // Framing reports errors as packets, never as the __exception__ trailer.
         // A held-back tail delays each small packet until the next one arrives.
-        yield* readChunks(reader);
-      } else if (!compressed) {
-        // Keep a small tail so a framed exception preamble split across reads
-        // is validated before we emit those bytes to the caller.
-        let pending: Uint8Array = new Uint8Array(0);
-
-        for await (const value of readChunks(reader)) {
-          const combined = pending.length === 0 ? value : concat([pending, value]);
-          const match = splitStreamException(combined, requireLineStart, exceptionTag);
-
-          if (match) {
-            pending = new Uint8Array(0);
-            if (match.prefix.length > 0) yield match.prefix;
-            throw match.error;
-          }
-
-          const keep = Math.min(combined.length, EXCEPTION_SCAN_TAIL_BYTES);
-          const emitLen = combined.length - keep;
-          if (emitLen > 0) yield combined.subarray(0, emitLen);
-          pending = combined.subarray(emitLen);
-        }
-        // Stream ended: scan the held-back tail one final time. A marker at the
-        // tail's offset 0 can match here even when it didn't mid-stream, since
-        // findExceptionMarker drops the preceding-newline requirement at offset 0.
-        if (pending.length > 0) {
-          const match = splitStreamException(pending, requireLineStart, exceptionTag);
-          if (match) {
-            if (match.prefix.length > 0) yield match.prefix;
-            throw match.error;
-          }
-          yield pending;
-        }
+        yield* chunks;
       } else {
-        const streamBuffer = new BlockBuffer(64 * 1024);
-        const exceptionTagBytes = exceptionTag ? encoder.encode(exceptionTag) : undefined;
-
-        for await (const value of readChunks(reader)) {
-          streamBuffer.append(value);
-
-          // process complete blocks
-          while (streamBuffer.available >= 25) {
-            const bufferView = streamBuffer.view;
-
-            // An uncompressed __exception__ trailer sits at the buffer start once
-            // every complete block ahead of it has been consumed. Offset 0 only,
-            // so the line-start guard is moot — check it directly and cheaply.
-            if (isFramedExceptionAt(bufferView, 0, exceptionTagBytes)) {
-              throw parseStreamException(bufferView, exceptionTag);
-            }
-
-            const compressedSize = readUInt32LE(bufferView, 17);
-            const blockSize = 16 + compressedSize;
-
-            if (streamBuffer.available < blockSize) break;
-
-            const block = bufferView.subarray(0, blockSize);
-
-            try {
-              const decompressed = decodeBlock(block);
-              const decompressedMatch = splitStreamException(
-                decompressed,
-                requireLineStart,
-                exceptionTag,
-              );
-              // In-place consume is safe here: nothing aliasing streamBuffer
-              // escapes this loop — decodeBlock always returns an independent
-              // buffer (including the None method, which copies).
-              streamBuffer.consume(blockSize);
-
-              if (decompressedMatch) {
-                if (decompressedMatch.prefix.length > 0) {
-                  yield decompressedMatch.prefix;
-                }
-                throw decompressedMatch.error;
-              }
-
-              yield decompressed;
-            } catch (err: unknown) {
-              if (err instanceof ClickHouseException) throw err;
-              // A failed decode at the buffer start is usually the exception
-              // trailer being mistaken for a block — surface it as the real error.
-              if (isFramedExceptionAt(streamBuffer.view, 0, exceptionTagBytes)) {
-                throw parseStreamException(streamBuffer.view, exceptionTag);
-              }
-              const message = err instanceof Error ? err.message : String(err);
-              throw new Error(`Block decompression failed: ${message}`);
-            }
-          }
-        }
-
-        // after stream ends: any remaining bytes mean an incomplete compressed
-        // block, or the exception trailer left after the last complete block.
-        if (streamBuffer.available > 0) {
-          if (isFramedExceptionAt(streamBuffer.view, 0, exceptionTagBytes)) {
-            throw parseStreamException(streamBuffer.view, exceptionTag);
-          }
-          throw new Error(
-            `Incomplete block: stream ended with ${streamBuffer.available} unparsed bytes and no exception trailer; ` +
-              `the server may have closed the connection mid-stream (e.g. send_timeout) — check the server query log`,
-          );
-        }
+        yield* scanUncompressedStream(chunks, requireLineStart, exceptionTag);
       }
     } finally {
       // Cancel releases the lock on response.body so the HTTP connection
@@ -1032,6 +937,117 @@ async function* queryImpl(sql: string, options: QueryOptions = {}): AsyncGenerat
 
   // Yield Summary packet at end
   yield { type: "Summary", summary, queryId };
+}
+
+// Keep a small tail so a framed exception preamble split across reads
+// is validated before we emit those bytes to the caller.
+async function* scanUncompressedStream(
+  chunks: AsyncIterable<Uint8Array>,
+  requireLineStart: boolean,
+  exceptionTag: string | undefined,
+): AsyncGenerator<Uint8Array> {
+  let pending: Uint8Array = new Uint8Array(0);
+
+  for await (const value of chunks) {
+    const combined = pending.length === 0 ? value : concat([pending, value]);
+    const match = splitStreamException(combined, requireLineStart, exceptionTag);
+
+    if (match) {
+      if (match.prefix.length > 0) yield match.prefix;
+      throw match.error;
+    }
+
+    const keep = Math.min(combined.length, EXCEPTION_SCAN_TAIL_BYTES);
+    const emitLen = combined.length - keep;
+    if (emitLen > 0) yield combined.subarray(0, emitLen);
+    pending = combined.subarray(emitLen);
+  }
+  // Stream ended: scan the held-back tail one final time. A marker at the
+  // tail's offset 0 can match here even when it didn't mid-stream, since
+  // findExceptionMarker drops the preceding-newline requirement at offset 0.
+  if (pending.length === 0) return;
+  const match = splitStreamException(pending, requireLineStart, exceptionTag);
+  if (match) {
+    if (match.prefix.length > 0) yield match.prefix;
+    throw match.error;
+  }
+  yield pending;
+}
+
+async function* decompressStream(
+  chunks: AsyncIterable<Uint8Array>,
+  requireLineStart: boolean,
+  exceptionTag: string | undefined,
+): AsyncGenerator<Uint8Array> {
+  const streamBuffer = new BlockBuffer(64 * 1024);
+  const exceptionTagBytes = exceptionTag ? encoder.encode(exceptionTag) : undefined;
+
+  for await (const value of chunks) {
+    streamBuffer.append(value);
+
+    // process complete blocks
+    while (streamBuffer.available >= 25) {
+      const bufferView = streamBuffer.view;
+
+      // An uncompressed __exception__ trailer sits at the buffer start once
+      // every complete block ahead of it has been consumed. Offset 0 only,
+      // so the line-start guard is moot — check it directly and cheaply.
+      if (isFramedExceptionAt(bufferView, 0, exceptionTagBytes)) {
+        throw parseStreamException(bufferView, exceptionTag);
+      }
+
+      const blockSize = 16 + readUInt32LE(bufferView, 17);
+      if (streamBuffer.available < blockSize) break;
+
+      const decompressed = decodeStreamBlock(
+        streamBuffer,
+        blockSize,
+        exceptionTagBytes,
+        exceptionTag,
+      );
+      // In-place consume is safe here: nothing aliasing streamBuffer
+      // escapes this loop — decodeBlock always returns an independent
+      // buffer (including the None method, which copies).
+      streamBuffer.consume(blockSize);
+
+      const match = splitStreamException(decompressed, requireLineStart, exceptionTag);
+      if (match) {
+        if (match.prefix.length > 0) yield match.prefix;
+        throw match.error;
+      }
+      yield decompressed;
+    }
+  }
+
+  // after stream ends: any remaining bytes mean an incomplete compressed
+  // block, or the exception trailer left after the last complete block.
+  if (streamBuffer.available === 0) return;
+  if (isFramedExceptionAt(streamBuffer.view, 0, exceptionTagBytes)) {
+    throw parseStreamException(streamBuffer.view, exceptionTag);
+  }
+  throw new Error(
+    `Incomplete block: stream ended with ${streamBuffer.available} unparsed bytes and no exception trailer; ` +
+      `the server may have closed the connection mid-stream (e.g. send_timeout) — check the server query log`,
+  );
+}
+
+function decodeStreamBlock(
+  streamBuffer: BlockBuffer,
+  blockSize: number,
+  exceptionTagBytes: Uint8Array | undefined,
+  exceptionTag: string | undefined,
+): Uint8Array {
+  try {
+    return decodeBlock(streamBuffer.view.subarray(0, blockSize));
+  } catch (err: unknown) {
+    // A failed decode at the buffer start is usually the exception
+    // trailer being mistaken for a block — surface it as the real error.
+    if (isFramedExceptionAt(streamBuffer.view, 0, exceptionTagBytes)) {
+      throw parseStreamException(streamBuffer.view, exceptionTag);
+    }
+    const message = err instanceof Error ? err.message : String(err);
+    throw new Error(`Block decompression failed: ${message}`);
+  }
 }
 
 /** Input type for stream helpers - accepts query() result or any async iterable of packets */
