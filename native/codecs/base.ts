@@ -123,44 +123,47 @@ function scanNamePath(part: string): { name: string; end: number; quoted: boolea
   let quoted = false;
   while (true) {
     if (part[i] === "`") {
+      const segment = scanQuotedSegment(part, i + 1);
+      if (!segment) return null;
       quoted = true;
-      i++;
-      let closed = false;
-      while (i < part.length) {
-        const c = part[i]!;
-        if (c === "\\" && i + 1 < part.length) {
-          const next = part[i + 1]!;
-          name += IDENT_ESCAPES[next] ?? next;
-          i += 2;
-          continue;
-        }
-        if (c === "`") {
-          if (part[i + 1] === "`") {
-            name += "`";
-            i += 2;
-            continue;
-          }
-          i++; // consume the closing backtick
-          closed = true;
-          break;
-        }
-        name += c;
-        i++;
-      }
-      if (!closed) return null;
+      name += segment[0];
+      i = segment[1];
     } else {
       const m = /^[a-z_][a-z0-9_]*/i.exec(part.slice(i));
       if (!m) return null;
       name += m[0];
       i += m[0].length;
     }
-    if (part[i] === ".") {
-      name += ".";
-      i++;
-      continue;
-    }
-    return { name, end: i, quoted };
+    if (part[i] !== ".") return { name, end: i, quoted };
+    name += ".";
+    i++;
   }
+}
+
+/**
+ * Decode a backtick-quoted segment whose content starts at `start`. Returns
+ * [segment, index_after_closing_backtick], or null when the quote is unclosed.
+ */
+function scanQuotedSegment(part: string, start: number): [string, number] | null {
+  let segment = "";
+  let i = start;
+  while (i < part.length) {
+    const c = part[i]!;
+    if (c === "\\" && i + 1 < part.length) {
+      const next = part[i + 1]!;
+      segment += IDENT_ESCAPES[next] ?? next;
+      i += 2;
+    } else if (c !== "`") {
+      segment += c;
+      i++;
+    } else if (part[i + 1] === "`") {
+      segment += "`";
+      i += 2;
+    } else {
+      return [segment, i + 1];
+    }
+  }
+  return null;
 }
 
 // Extracts the content between the outermost parentheses: "Array(Int32)" -> "Int32"
