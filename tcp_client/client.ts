@@ -154,6 +154,13 @@ function validateSchema(expected: ColumnDef[], actual: ColumnSchema[]): void {
   }
 }
 
+/** Build a batch from row objects, coercing each value through the server schema. */
+function rowsToBatch(rows: Record<string, unknown>[], serverSchema: ColumnSchema[]): RecordBatch {
+  const values = transposeRowObjectsToColumns(serverSchema, rows);
+  const columnData = serverSchema.map((col, i) => getCodec(col.type).fromValues(values[i]!));
+  return RecordBatch.from({ columns: serverSchema, columnData, rowCount: rows.length });
+}
+
 /** Query read progress as a percentage of the larger of rows read and rows to read. */
 function readPercent(acc: AccumulatedProgress): number {
   const denom = acc.readRows > acc.totalRowsToRead ? acc.readRows : acc.totalRowsToRead;
@@ -613,13 +620,12 @@ export class TcpClient {
       for await (const chunk of insertChunks(data, batchSize, throwIfAborted)) {
         throwIfAborted();
         if (cancelled) throw createAbortError("Insert aborted");
-        const isBatch = RecordBatch.isRecordBatch(chunk);
-        const dataPacket = isBatch
-          ? this.encodeBatchAsDataPacket("", chunk, useCompression, compression)
-          : this.encodeRowsAsDataPacket(chunk, serverSchema, useCompression, compression);
-        await this.writeWithBackpressure(dataPacket);
+        const batch = RecordBatch.isRecordBatch(chunk) ? chunk : rowsToBatch(chunk, serverSchema);
+        await this.writeWithBackpressure(
+          this.encodeBatchAsDataPacket("", batch, useCompression, compression),
+        );
         throwIfAborted();
-        totalInserted += isBatch ? chunk.rowCount : chunk.length;
+        totalInserted += batch.rowCount;
       }
 
       const delimiter = this.writer.encodeData(
@@ -1322,34 +1328,6 @@ export class TcpClient {
     return this.writer.encodeData(
       tableName,
       batch.rowCount,
-      encodedColumns,
-      this.serverHello!.revision,
-      compress,
-      compression,
-    );
-  }
-
-  /** Encode row objects as a Data packet, coercing each value through the server schema. */
-  private encodeRowsAsDataPacket(
-    rows: Record<string, unknown>[],
-    serverSchema: ColumnSchema[],
-    compress: boolean,
-    compression: Compression,
-  ): Uint8Array {
-    const columns = transposeRowObjectsToColumns(serverSchema, rows);
-    const encodedColumns = [];
-    for (let i = 0; i < serverSchema.length; i++) {
-      const schemaCol = serverSchema[i]!;
-      const codec = getCodec(schemaCol.type);
-      const col = codec.fromValues(columns[i]!);
-      const writer = new BufferWriter();
-      codec.writePrefix(writer, col);
-      writer.write(codec.encode(col));
-      encodedColumns.push({ name: schemaCol.name, type: schemaCol.type, data: writer.finish() });
-    }
-    return this.writer.encodeData(
-      "",
-      rows.length,
       encodedColumns,
       this.serverHello!.revision,
       compress,
