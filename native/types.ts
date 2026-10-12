@@ -172,41 +172,14 @@ export function parseEnumDefinition(type: string): EnumMapping | null {
     const [name, nextIdx] = parsed;
     i = nextIdx;
 
-    // Skip whitespace
-    while (i < len && isAsciiWhitespace(content.charCodeAt(i))) i++;
-
-    // Expect =
+    i = skipWhitespace(content, i);
     if (content[i] !== "=") return null;
-    i++;
+    i = skipWhitespace(content, i + 1);
 
-    // Skip whitespace
-    while (i < len && isAsciiWhitespace(content.charCodeAt(i))) i++;
-
-    // Read numeric value (possibly negative)
-    let sign = 1;
-    if (content[i] === "-") {
-      sign = -1;
-      i++;
-    } else if (content[i] === "+") {
-      i++;
-    }
-    // Hand-rolled decimal integer parse — we're already positioned at the first digit,
-    // so this avoids a substring allocation that parseInt would need.
-    let value = 0;
-    let digits = 0;
-    while (i < len) {
-      const code = content.charCodeAt(i);
-      if (code >= 48 && code <= 57) {
-        // '0'–'9'
-        value = value * 10 + (code - 48);
-        digits++;
-        i++;
-      } else {
-        break;
-      }
-    }
-    if (digits === 0) return null; // no digits found after '='
-    value *= sign;
+    const parsedValue = parseSignedInt(content, i);
+    if (!parsedValue) return null;
+    const [value, afterValue] = parsedValue;
+    i = afterValue;
     if (value < min || value > max) return null; // out of Int8/Int16 range
 
     // Reject duplicate names or values — ClickHouse requires both to be unique
@@ -217,6 +190,31 @@ export function parseEnumDefinition(type: string): EnumMapping | null {
 
   if (nameToValue.size === 0) return null;
   return { nameToValue, valueToName };
+}
+
+function skipWhitespace(s: string, i: number): number {
+  while (i < s.length && isAsciiWhitespace(s.charCodeAt(i))) i++;
+  return i;
+}
+
+/**
+ * Parse an optionally signed decimal integer at `start`. Returns
+ * [value, index_after_last_digit] or null when no digit follows the sign.
+ * Hand-rolled to avoid the substring allocation that parseInt would need.
+ */
+function parseSignedInt(s: string, start: number): [number, number] | null {
+  let i = start;
+  const sign = s[i] === "-" ? -1 : 1;
+  if (s[i] === "-" || s[i] === "+") i++;
+  const firstDigit = i;
+  let value = 0;
+  while (i < s.length) {
+    const code = s.charCodeAt(i);
+    if (code < 48 || code > 57) break; // not '0'–'9'
+    value = value * 10 + (code - 48);
+    i++;
+  }
+  return i === firstDigit ? null : [sign * value, i];
 }
 
 export const TEXT_ENCODER = new TextEncoder();
