@@ -30,8 +30,8 @@ import {
 import type { JsonCodec } from "../native/codecs/dynamic.ts";
 import {
   type ColumnDef,
-  decodeNativeBlock,
   DynamicValue,
+  decodeNativeBlock,
   encodeNative,
   getCodec,
   VariantValue,
@@ -44,7 +44,7 @@ import { maybePoisonName, renderJsonPath } from "./identifiers.ts";
 import { rerenderCells } from "./rerender.ts";
 import { makeRng } from "./rng.ts";
 import { COMPLEX_TYPE_SETTINGS, type Conn, roundTripCells, stringify } from "./round-trip.ts";
-import { consume, unTsvEscape, uniqueSuffix } from "./util.ts";
+import { consume, uniqueSuffix, unTsvEscape } from "./util.ts";
 
 logConfig("generated");
 

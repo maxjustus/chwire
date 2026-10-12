@@ -7,9 +7,9 @@
 
 import assert from "node:assert";
 import { describe, it } from "node:test";
+import { defaultDeserializerState } from "../../native/codecs/base.ts";
 import { getCodec } from "../../native/codecs.ts";
 import { BufferReader, BufferWriter } from "../../native/io.ts";
-import { defaultDeserializerState } from "../../native/codecs/base.ts";
 
 function roundTrip(type: string, values: unknown[]): unknown[] {
   const encCodec = getCodec(type);

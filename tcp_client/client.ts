@@ -2,6 +2,9 @@ import { randomUUID } from "node:crypto";
 import { once } from "node:events";
 import * as net from "node:net";
 import * as tls from "node:tls";
+import { type Compression, init as initCompression } from "../compression.ts";
+import type { ClickHouseException } from "../errors.ts";
+import { prepend, toAsyncIterable } from "../iter.ts";
 import {
   BlockBuffer,
   BlockUnderflowError,
@@ -15,12 +18,9 @@ import {
   type PartialBlockState,
   RecordBatch,
 } from "../native/index.ts";
-import { type Compression, init as initCompression } from "../compression.ts";
-import type { ClickHouseException } from "../errors.ts";
 import type { ClickHouseSettings } from "../settings.generated.ts";
 import type { QueryParamValue } from "../types.ts";
 import { type CollectableAsyncGenerator, collectable } from "../util.ts";
-import { prepend, toAsyncIterable } from "../iter.ts";
 import { StreamingReader } from "./reader.ts";
 import { transposeRowObjectsToColumns } from "./row_object_insert.ts";
 import {

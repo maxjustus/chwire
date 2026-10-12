@@ -2,10 +2,11 @@
  * Offline checks for the random type generator (fuzz/gen-type.ts). No server:
  * these assert genType's output is internally consistent with our own parser.
  */
-import { describe, it } from "node:test";
+
 import assert from "node:assert/strict";
+import { describe, it } from "node:test";
+import { genCompositeType, genScalarType, genType } from "../fuzz/gen-type.ts";
 import { makeRng } from "../fuzz/rng.ts";
-import { genType, genScalarType, genCompositeType } from "../fuzz/gen-type.ts";
 import { getCodec } from "../native/index.ts";
 
 /** Max parenthesis nesting depth of a type string. */

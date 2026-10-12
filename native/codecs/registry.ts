@@ -1,5 +1,17 @@
+import {
+  toBool,
+  toInt8,
+  toInt16,
+  toInt32,
+  toInt64,
+  toNumber,
+  toUInt8,
+  toUInt16,
+  toUInt32,
+  toUInt64,
+} from "../coercion.ts";
 import { Time } from "../constants.ts";
-import { extractTypeArgs, type Codec, parseTupleElements, parseTypeList } from "./base.ts";
+import { type Codec, extractTypeArgs, parseTupleElements, parseTypeList } from "./base.ts";
 import {
   ArrayCodec,
   LowCardinalityCodec,
@@ -21,18 +33,6 @@ import {
   StringCodec,
   UUIDCodec,
 } from "./scalar.ts";
-import {
-  toBool,
-  toInt16,
-  toInt32,
-  toInt64,
-  toInt8,
-  toNumber,
-  toUInt16,
-  toUInt32,
-  toUInt64,
-  toUInt8,
-} from "../coercion.ts";
 
 const { MS_PER_DAY, MS_PER_SECOND } = Time;
 

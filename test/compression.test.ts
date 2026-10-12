@@ -4,8 +4,8 @@ import { before, describe, it } from "node:test";
 import { decompressFrameSync } from "lz4-napi";
 
 import {
-  concat,
   cityHash128LE,
+  concat,
   decodeBlock,
   decodeBlocks,
   encodeBlock,
@@ -15,8 +15,8 @@ import {
   Method,
   readUInt32LE,
   usingNativeLz4,
-  writeUInt32LE,
   usingNativeZstd,
+  writeUInt32LE,
 } from "../compression.ts";
 
 const encoder = new TextEncoder();

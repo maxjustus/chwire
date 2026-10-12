@@ -1,4 +1,5 @@
 import assert from "node:assert";
+import { BlockInfoField } from "../native/constants.ts";
 import {
   batchFromRows,
   type ColumnDef,
@@ -7,9 +8,8 @@ import {
   encodeNative,
   RecordBatch,
 } from "../native/index.ts";
-import { TcpClient, type QueryParamValue } from "../tcp_client/client.ts";
 import { BufferWriter } from "../native/io.ts";
-import { BlockInfoField } from "../native/constants.ts";
+import { type QueryParamValue, TcpClient } from "../tcp_client/client.ts";
 
 // Async iterable helpers. consume lives in the fuzz harness; re-export it so the
 // test suite shares one drain implementation.

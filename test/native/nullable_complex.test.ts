@@ -11,9 +11,8 @@
 
 import assert from "node:assert";
 import { describe, it } from "node:test";
-import { getCodec } from "../../native/codecs.ts";
+import { defaultDeserializerState, getCodec } from "../../native/codecs.ts";
 import { BufferReader } from "../../native/io.ts";
-import { defaultDeserializerState } from "../../native/codecs.ts";
 
 describe("Nullable with complex inner types", () => {
   describe("Nullable(LowCardinality(String))", () => {

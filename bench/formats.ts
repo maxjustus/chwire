@@ -20,6 +20,7 @@ import {
   streamDecodeNative,
   streamEncodeNative,
 } from "../native/index.ts";
+import { encodeNativeRows } from "../test/test_utils.ts";
 import {
   type BenchOptions,
   benchAsync,
@@ -27,7 +28,6 @@ import {
   readBenchOptions,
   reportEnvironment,
 } from "./harness.ts";
-import { encodeNativeRows } from "../test/test_utils.ts";
 
 async function collectByteChunks(chunks: AsyncIterable<Uint8Array>): Promise<Uint8Array> {
   const parts: Uint8Array[] = [];

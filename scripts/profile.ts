@@ -12,7 +12,7 @@ import {
   type ColumnDef,
   encodeNative,
   getCodec,
-  RecordBatch,
+  type RecordBatch,
   streamDecodeNative,
 } from "../native/index.ts";
 import { encodeNativeRows, toAsync } from "../test/test_utils.ts";
