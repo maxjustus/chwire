@@ -643,8 +643,8 @@ export interface QueryOptions {
   compression?: Compression;
   /**
    * Compress query body using HTTP Content-Encoding.
-   * - "zstd": ZSTD compression (recommended, works with native and WASM)
-   * - "lz4": LZ4 frame compression (requires lz4-napi, not available in WASM builds)
+   * - "zstd": ZSTD compression (recommended)
+   * - "lz4": LZ4 frame compression
    * - `{ method: "zstd", level }`: ZSTD with an explicit level (1-22, default: 3)
    * Requires server setting: enable_http_compression=1
    */

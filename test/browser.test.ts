@@ -11,7 +11,7 @@ const ROOT = join(import.meta.dirname, "..");
 
 // Browser test code — exercises codec + compression without Node.js Buffer
 const BROWSER_TEST_CODE = `
-import { init, encodeBlock, decodeBlock } from "../compression.ts";
+import { init, encodeBlock, decodeBlock, lz4CompressFrame } from "../compression.ts";
 import {
   batchFromRows,
   batchFromCols,
@@ -43,6 +43,9 @@ async function runTests() {
     const lz4Match = lz4Dec.length === testData.length &&
       lz4Dec.every((b, i) => b === testData[i]);
     ok("LZ4 roundtrip", lz4Match, lz4.length + " compressed bytes");
+
+    const frame = lz4CompressFrame(testData);
+    ok("LZ4 frame compression", frame.length < testData.length, frame.length + " frame bytes");
 
     // ZSTD roundtrip
     const zstd = encodeBlock(testData, "zstd");

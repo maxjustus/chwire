@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
+import { randomBytes } from "node:crypto";
 import { before, describe, it } from "node:test";
+import { decompressFrameSync } from "lz4-napi";
 
 import {
   concat,
@@ -8,6 +10,7 @@ import {
   decodeBlocks,
   encodeBlock,
   init,
+  lz4CompressFrame,
   MAX_DECOMPRESSED_BLOCK_SIZE,
   Method,
   readUInt32LE,
@@ -47,6 +50,31 @@ describe("Compression", () => {
       const decompressed = decodeBlock(compressed);
 
       assert.strictEqual(decoder.decode(decompressed), decoder.decode(data));
+    });
+  });
+
+  describe("LZ4 frame compression", () => {
+    const decodeFrame = (frame: Uint8Array) =>
+      new Uint8Array(decompressFrameSync(Buffer.from(frame)));
+
+    it("produces frames that a standard LZ4 decoder reads back", () => {
+      const text = encoder.encode("SELECT number FROM numbers(10) ".repeat(200));
+      const multiBlock = concat([
+        randomBytes(3 * 1024 * 1024),
+        text,
+        new Uint8Array(6 * 1024 * 1024),
+      ]);
+      for (const data of [new Uint8Array(0), text, multiBlock]) {
+        assert.deepStrictEqual(decodeFrame(lz4CompressFrame(data)), data, `${data.length} bytes`);
+      }
+    });
+
+    it("stores incompressible blocks uncompressed", () => {
+      const data = new Uint8Array(randomBytes(1000));
+      const frame = lz4CompressFrame(data);
+      // 7-byte frame header, 4-byte block size, block data, 4-byte end mark.
+      assert.strictEqual(frame.length, 7 + 4 + data.length + 4);
+      assert.deepStrictEqual(decodeFrame(frame), data);
     });
   });
 
