@@ -124,15 +124,7 @@ export function decodeNativeBlockWithReader(
     reader.offset = partial.resumeOffset;
   } else {
     // Fresh decode - parse header
-    if (clientVersion > 0) {
-      while (true) {
-        const fieldId = reader.readVarint();
-        if (fieldId === BlockInfoField.End) break;
-        if (fieldId === BlockInfoField.IsOverflows)
-          reader.offset += 1; // is_overflows
-        else if (fieldId === BlockInfoField.BucketNum) reader.offset += 4; // bucket_num
-      }
-    }
+    if (clientVersion > 0) skipBlockInfo(reader);
 
     numCols = reader.readVarint();
     numRows = reader.readVarint();
@@ -159,48 +151,22 @@ export function decodeNativeBlockWithReader(
     const colStartOffset = reader.offset;
 
     try {
-      const name = reader.readString();
-      const type = reader.readString();
-      columns.push({ name, type });
-
-      const codec = getCodec(type);
-
-      let serializationNode: SerializationNode = DEFAULT_DENSE_NODE;
-      if (clientVersion >= 54454) {
-        const hasCustomSerialization = reader.readU8() !== 0;
-        if (hasCustomSerialization) {
-          serializationNode = codec.readKinds(reader);
-        }
-      }
-
-      const state: DeserializerState = {
-        serializationNode,
-        sparseRuntime: new Map(),
-        prefix: { children: [] },
-      };
-      // Only read prefix and decode when there are rows - empty blocks are schema-only
-      if (numRows > 0) {
-        codec.readPrefix(reader, state);
-        columnData.push(codec.decode(reader, numRows, state));
-      } else {
-        // Schema-only block: no prefix or data, create empty column
-        columnData.push(new DataColumn(type, []));
-      }
+      const [column, data] = decodeColumn(reader, numRows, clientVersion);
+      columns.push(column);
+      columnData.push(data);
     } catch (err) {
-      if (err instanceof BufferUnderflowError) {
-        // Reset reader to column boundary and throw with partial state
-        reader.offset = colStartOffset;
-        throw new BlockUnderflowError(err.message, {
-          columns: columns.slice(0, i),
-          columnData: columnData.slice(0, i),
-          numCols,
-          numRows,
-          nextColIndex: i,
-          resumeOffset: colStartOffset,
-          startOffset,
-        });
-      }
-      throw err;
+      if (!(err instanceof BufferUnderflowError)) throw err;
+      // Reset reader to column boundary and throw with partial state
+      reader.offset = colStartOffset;
+      throw new BlockUnderflowError(err.message, {
+        columns: columns.slice(0, i),
+        columnData: columnData.slice(0, i),
+        numCols,
+        numRows,
+        nextColIndex: i,
+        resumeOffset: colStartOffset,
+        startOffset,
+      });
     }
   }
 
@@ -211,6 +177,41 @@ export function decodeNativeBlockWithReader(
     bytesConsumed: reader.offset - startOffset,
     isEndMarker: false,
   };
+}
+
+function skipBlockInfo(reader: BufferReader): void {
+  while (true) {
+    const fieldId = reader.readVarint();
+    if (fieldId === BlockInfoField.End) return;
+    if (fieldId === BlockInfoField.IsOverflows)
+      reader.offset += 1; // is_overflows
+    else if (fieldId === BlockInfoField.BucketNum) reader.offset += 4; // bucket_num
+  }
+}
+
+function decodeColumn(
+  reader: BufferReader,
+  numRows: number,
+  clientVersion: number,
+): [ColumnDef, Column] {
+  const name = reader.readString();
+  const type = reader.readString();
+  const codec = getCodec(type);
+
+  let serializationNode: SerializationNode = DEFAULT_DENSE_NODE;
+  if (clientVersion >= 54454 && reader.readU8() !== 0) {
+    serializationNode = codec.readKinds(reader);
+  }
+  // Only read prefix and decode when there are rows - empty blocks are schema-only
+  if (numRows === 0) return [{ name, type }, new DataColumn(type, [])];
+
+  const state: DeserializerState = {
+    serializationNode,
+    sparseRuntime: new Map(),
+    prefix: { children: [] },
+  };
+  codec.readPrefix(reader, state);
+  return [{ name, type }, codec.decode(reader, numRows, state)];
 }
 
 /**
