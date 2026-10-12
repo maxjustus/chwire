@@ -31,7 +31,10 @@ export type CodecResolver = (type: string) => Codec;
  * columns are serialized positionally with no name on the wire, so our encode
  * order must match the server's sort exactly or the streams desync on decode.
  */
-const byteOrder = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
+function byteOrder(a: string, b: string): number {
+  if (a === b) return 0;
+  return a < b ? -1 : 1;
+}
 
 /**
  * Smallest typed array whose element width can address `numIndexes` distinct
@@ -62,7 +65,8 @@ function compareDynamicCell(resolve: CodecResolver, a: unknown, b: unknown): boo
   const av = unwrapDynamic(a);
   const bv = unwrapDynamic(b);
   if (av == null || bv == null) return av === bv;
-  const type = a instanceof DynamicValue ? a.type : b instanceof DynamicValue ? b.type : null;
+  const tagged = a instanceof DynamicValue ? a : b;
+  const type = tagged instanceof DynamicValue ? tagged.type : null;
   return type ? resolve(type).compare(av, bv) : deepCompare(av, bv);
 }
 
@@ -751,11 +755,9 @@ export class JsonCodec implements Codec {
         continue;
       }
       if (!Array.isArray(value)) {
-        const got = isTypedArray(value)
-          ? "a TypedArray"
-          : colType !== undefined
-            ? `a '${colType}' column`
-            : `a ${typeof value}`;
+        let got = `a ${typeof value}`;
+        if (isTypedArray(value)) got = "a TypedArray";
+        else if (colType !== undefined) got = `a '${colType}' column`;
         throw new TypeError(
           `Dynamic path '${key}' must be a plain array or a Dynamic column, got ${got}. ` +
             `TypedArrays and typed columns lose per-value type information; ` +

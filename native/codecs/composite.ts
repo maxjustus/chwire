@@ -664,10 +664,11 @@ export class TupleCodec extends BaseCodec {
     const columns: Column[] = [];
     for (let ei = 0; ei < this.elements.length; ei++) {
       const elem = this.elements[ei]!;
+      const key = this.isNamed ? elem.name! : ei;
       const elemValues: unknown[] = new Array(values.length);
       for (let i = 0; i < values.length; i++) {
         const tuple = values[i] as any;
-        elemValues[i] = tuple == null ? undefined : this.isNamed ? tuple[elem.name!] : tuple[ei];
+        elemValues[i] = tuple == null ? undefined : tuple[key];
       }
       columns.push(elem.codec.fromValues(elemValues));
     }
