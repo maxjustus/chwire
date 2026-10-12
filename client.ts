@@ -209,7 +209,8 @@ export type QueryPacket =
    */
   | { type: "Data"; chunk: Uint8Array; kind?: "data" | "totals" | "extremes" }
   | { type: "Log"; entries: HttpLogEntry[] }
-  | { type: "ProfileEvents"; events: HttpProfileEvent[] }
+  /** `accumulated` sums increment events and keeps the latest gauge value. */
+  | { type: "ProfileEvents"; events: HttpProfileEvent[]; accumulated: Map<string, bigint> }
   | { type: "Summary"; summary: QuerySummary; queryId: string };
 
 /** Result from insert() with metadata */
@@ -1000,6 +1001,7 @@ async function* queryImpl(sql: string, options: QueryOptions = {}): AsyncGenerat
 
   // Yield Data packets from body stream
   if (framing) {
+    const profileEvents = new Map<string, bigint>();
     for await (const packet of parseFramedStream(createStream(), framing)) {
       if (packet.kind === "exception") throw exceptionFromText(packet.message);
       if (packet.kind === "progress") {
@@ -1010,7 +1012,14 @@ async function* queryImpl(sql: string, options: QueryOptions = {}): AsyncGenerat
       } else if (packet.kind === "log") {
         yield { type: "Log", entries: [packet.entry] };
       } else if (packet.kind === "profile_events") {
-        yield { type: "ProfileEvents", events: packet.events };
+        for (const event of packet.events) {
+          const value = BigInt(event.value);
+          profileEvents.set(
+            event.name,
+            event.type === "increment" ? (profileEvents.get(event.name) ?? 0n) + value : value,
+          );
+        }
+        yield { type: "ProfileEvents", events: packet.events, accumulated: new Map(profileEvents) };
       } else {
         yield { type: "Data", chunk: packet.payload, kind: packet.kind };
       }
