@@ -394,27 +394,12 @@ function readSparse(
   state: DeserializerState,
 ): Column {
   const node = state.serializationNode;
-  const [initialTrailing, hasValueAfter] = state.sparseRuntime.get(node) || [0, false];
-
-  let trailingDefaultCount = initialTrailing;
-  let hasValueAfterTrailing = hasValueAfter;
+  let [trailingDefaultCount, hasValueAfterTrailing] = state.sparseRuntime.get(node) || [0, false];
 
   const indices: number[] = [];
   let totalRows = trailingDefaultCount;
-  let readOffset = 0; // We don't support partial read requests yet, so readOffset is always 0
-  let skippedValuesRows = 0;
-  let isFirstValue = true;
-
   if (hasValueAfterTrailing) {
-    if (trailingDefaultCount >= readOffset) {
-      indices.push(trailingDefaultCount - readOffset);
-      readOffset = 0;
-      isFirstValue = false;
-    } else {
-      skippedValuesRows += 1;
-      readOffset -= trailingDefaultCount + 1;
-    }
-    trailingDefaultCount = 0;
+    indices.push(trailingDefaultCount);
     totalRows += 1;
   }
 
@@ -442,35 +427,21 @@ function readSparse(
       break;
     }
 
-    const startOfGroup = !isFirstValue && indices.length > 0 ? indices[indices.length - 1]! + 1 : 0;
-    if (defaultsBeforeValue >= readOffset) {
-      indices.push(startOfGroup + defaultsBeforeValue - readOffset);
-      readOffset = 0;
-      isFirstValue = false;
-    } else {
-      skippedValuesRows += 1;
-      readOffset -= defaultsBeforeValue + 1;
-    }
-
-    trailingDefaultCount = 0;
+    const startOfGroup = indices.length > 0 ? indices[indices.length - 1]! + 1 : 0;
+    indices.push(startOfGroup + defaultsBeforeValue);
     totalRows = nextTotalRows + 1;
   }
 
   state.sparseRuntime.set(node, [trailingDefaultCount, hasValueAfterTrailing]);
 
-  const zero = codec.zeroValue();
-  const decodeFn = (r: BufferReader, n: number) => codec.decodeDense(r, n, state);
-
-  if (skippedValuesRows > 0) {
-    decodeFn(reader, skippedValuesRows);
-  }
-
   if (indices.length === 0) {
-    return codec.fromValues(new Array(rows).fill(zero));
+    return codec.fromValues(new Array(rows).fill(codec.zeroValue()));
   }
+  return scatterSparse(codec, codec.decodeDense(reader, indices.length, state), indices, rows);
+}
 
-  const values = decodeFn(reader, indices.length);
-
+/** Place `values[i]` at row `indices[i]`; every other row gets the codec's zero value. */
+function scatterSparse(codec: BaseCodec, values: Column, indices: number[], rows: number): Column {
   // Fast path: TypedArray-backed columns (NumericCodec, EpochCodec, BigIntCodec)
   // Avoids boxing/unboxing through get()/fromValues() by copying directly.
   if (values instanceof DataColumn && ArrayBuffer.isView(values.data)) {
@@ -486,7 +457,7 @@ function readSparse(
     return new DataColumn(codec.type, dest);
   }
 
-  const resultValues = new Array(rows).fill(zero);
+  const resultValues = new Array(rows).fill(codec.zeroValue());
 
   for (let i = 0; i < indices.length; i++) {
     const idx = indices[i]!;
