@@ -296,6 +296,43 @@ interface DynamicPrefix {
   codecs: Codec[];
 }
 
+const NULL_SENTINEL = 0xffffffff;
+
+/** Scatter scanned discriminators to their rows. Rows without a value get `nullDisc`. */
+function scatterSparseDiscriminators(
+  wide: Uint32Array,
+  discs: Uint32Array,
+  rowIndices: number[],
+  nullDisc: number,
+): void {
+  if (nullDisc !== 0) wide.fill(nullDisc);
+  let prevRow = -1;
+  for (let j = 0; j < discs.length; j++) {
+    const row = rowIndices[j]!;
+    if (row <= prevRow) {
+      throw new Error(`fromSparse: rowIndices must be strictly ascending (index ${j})`);
+    }
+    prevRow = row;
+    const d = discs[j]!;
+    wide[row] = d === NULL_SENTINEL ? nullDisc : d;
+  }
+}
+
+/** Replace null sentinels in the first `k` rows, and null-fill the rows after them. */
+function fillDenseNullDiscriminators(
+  wide: Uint32Array,
+  k: number,
+  nullDisc: number,
+  hasNulls: boolean,
+): void {
+  if (hasNulls) {
+    for (let i = 0; i < k; i++) {
+      if (wide[i] === NULL_SENTINEL) wide[i] = nullDisc;
+    }
+  }
+  if (nullDisc !== 0) wide.fill(nullDisc, k);
+}
+
 export class DynamicCodec implements Codec {
   readonly type = "Dynamic";
   private resolveCodec: CodecResolver;
@@ -386,7 +423,6 @@ export class DynamicCodec implements Codec {
    * materializing a dense rows-length array per path.
    */
   fromSparse(rowIndices: number[] | null, values: unknown[], rows: number): DynamicColumn {
-    const NULL_SENTINEL = 0xffffffff;
     const typeIndex = new Map<string, number>();
     const typeOrder: string[] = [];
     const typeValues: unknown[][] = [];
@@ -421,26 +457,8 @@ export class DynamicCodec implements Codec {
     }
 
     const nullDisc = typeOrder.length;
-    if (rowIndices) {
-      if (nullDisc !== 0) wide.fill(nullDisc);
-      let prevRow = -1;
-      for (let j = 0; j < k; j++) {
-        const row = rowIndices[j]!;
-        if (row <= prevRow) {
-          throw new Error(`fromSparse: rowIndices must be strictly ascending (index ${j})`);
-        }
-        prevRow = row;
-        const d = discs[j]!;
-        wide[row] = d === NULL_SENTINEL ? nullDisc : d;
-      }
-    } else {
-      if (hasNulls) {
-        for (let i = 0; i < k; i++) {
-          if (wide[i] === NULL_SENTINEL) wide[i] = nullDisc;
-        }
-      }
-      if (k < rows && nullDisc !== 0) wide.fill(nullDisc, k);
-    }
+    if (rowIndices) scatterSparseDiscriminators(wide, discs, rowIndices, nullDisc);
+    else fillDenseNullDiscriminators(wide, k, nullDisc, hasNulls);
 
     // Server-side, types beyond max_types overflow into the shared variant on
     // unflatten, so any count the index width can address is legal.
