@@ -86,6 +86,29 @@ function decodeGroups(
   return groups;
 }
 
+/** Whether an untagged JS value can be stored in Variant arm type `t`. Any object fits a Map arm. */
+function variantAccepts(t: string, value: unknown): boolean {
+  switch (typeof value) {
+    case "string":
+      return t === "String";
+    case "bigint":
+      return t === "Int64" || t === "UInt64";
+    case "number":
+      return t.startsWith("Int") || t.startsWith("UInt") || t.startsWith("Float");
+    case "boolean":
+      return t === "Bool";
+    case "object":
+      if (value === null) return false;
+      if (t.startsWith("Map")) return true;
+      if (value instanceof Date) {
+        return t === "Date" || t === "DateTime" || t.startsWith("DateTime64");
+      }
+      return Array.isArray(value) && t.startsWith("Array");
+    default:
+      return false;
+  }
+}
+
 /**
  * VariantCodec handles Variant(T1, T2, ...) types.
  *
@@ -230,23 +253,7 @@ export class VariantCodec implements Codec {
 
   findVariantIndex(value: unknown, types: string[]): number {
     for (let i = 0; i < types.length; i++) {
-      const t = types[i]!;
-      if (t === "String" && typeof value === "string") return i;
-      if ((t === "Int64" || t === "UInt64") && typeof value === "bigint") return i;
-      if (
-        (t.startsWith("Int") || t.startsWith("UInt") || t.startsWith("Float")) &&
-        typeof value === "number"
-      )
-        return i;
-      if (t === "Bool" && typeof value === "boolean") return i;
-      if ((t === "Date" || t === "DateTime" || t.startsWith("DateTime64")) && value instanceof Date)
-        return i;
-      if (t.startsWith("Array") && Array.isArray(value)) return i;
-      if (
-        t.startsWith("Map") &&
-        (value instanceof Map || (typeof value === "object" && value !== null))
-      )
-        return i;
+      if (variantAccepts(types[i]!, value)) return i;
     }
     throw new TypeError(
       `Cannot match value of type ${typeof value} to any variant in ${types.join(" | ")}`,
