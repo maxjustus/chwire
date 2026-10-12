@@ -154,6 +154,12 @@ function validateSchema(expected: ColumnDef[], actual: ColumnSchema[]): void {
   }
 }
 
+/** Query read progress as a percentage of the larger of rows read and rows to read. */
+function readPercent(acc: AccumulatedProgress): number {
+  const denom = acc.readRows > acc.totalRowsToRead ? acc.readRows : acc.totalRowsToRead;
+  return denom > 0n ? Number((acc.readRows * 100n) / denom) : 0;
+}
+
 /**
  * Group insert input into Data-packet chunks. The first item picks the mode:
  * RecordBatches pass through, row objects are buffered into `batchSize` arrays.
@@ -1216,78 +1222,13 @@ export class TcpClient {
         throwIfAborted();
         throwIfTimedOut();
 
-        switch (packet.id) {
-          case ServerPacketId.Data: {
-            const batch = packet.batch;
-            this.log(`[query] got Data block with ${batch.rowCount} rows`);
-            if (this.currentSchema === null) {
-              this.currentSchema = batch.columns.map((c) => ({ name: c.name, type: c.type }));
-            }
-            if (batch.rowCount > 0) {
-              yield { type: "Data", batch };
-            }
-            break;
-          }
-          case ServerPacketId.Progress: {
-            const progress = packet.progress;
-            this.accumulateProgress(progress, progressAccumulated);
-            // Calculate percent for queries (based on read progress)
-            const progressDenom =
-              progressAccumulated.readRows > progressAccumulated.totalRowsToRead
-                ? progressAccumulated.readRows
-                : progressAccumulated.totalRowsToRead;
-            progressAccumulated.percent =
-              progressDenom > 0n
-                ? Number((progressAccumulated.readRows * 100n) / progressDenom)
-                : 0;
-            yield {
-              type: "Progress",
-              progress,
-              accumulated: this.snapshotProgress(progressAccumulated),
-            };
-            break;
-          }
-          case ServerPacketId.ProfileInfo:
-            yield { type: "ProfileInfo", info: packet.info };
-            break;
-          case ServerPacketId.ProfileEvents: {
-            this.processProfileEventsBlock(
-              packet.batch,
-              profileEventsAccumulated,
-              progressAccumulated,
-            );
-            yield {
-              type: "ProfileEvents",
-              batch: packet.batch,
-              accumulated: new Map(profileEventsAccumulated),
-            };
-            break;
-          }
-          case ServerPacketId.Totals:
-            yield { type: "Totals", batch: packet.batch };
-            break;
-          case ServerPacketId.Extremes:
-            yield { type: "Extremes", batch: packet.batch };
-            break;
-          case ServerPacketId.Log:
-            if (packet.batch.rowCount > 0) {
-              yield { type: "Log", entries: this.parseLogBlock(packet.batch) };
-            }
-            break;
-          case ServerPacketId.TimezoneUpdate:
-            this.log(`[query] timezone updated to: ${packet.timezone}`);
-            break;
-          default:
-            throw new Error(`Unexpected packet during query: ${serverPacketName(packet.id)}`);
-        }
+        const out = this.toQueryPacket(packet, progressAccumulated, profileEventsAccumulated);
+        if (out) yield out;
       }
     } catch (err: any) {
-      if (err?.name === "AbortError") {
-        throw err;
-      }
       if (
         timedOut &&
-        (err.message === "Premature close" || err.code === "ERR_STREAM_PREMATURE_CLOSE")
+        (err?.message === "Premature close" || err?.code === "ERR_STREAM_PREMATURE_CLOSE")
       ) {
         throw new Error(`Query timeout after ${queryTimeout}ms`);
       }
@@ -1304,6 +1245,54 @@ export class TcpClient {
       if (this.socket === startSocket) this.busy = false;
       clearQueryTimeout();
       signal?.removeEventListener("abort", abortHandler);
+    }
+  }
+
+  /** Map a non-terminal server packet to the packet a query yields, or null when it yields nothing. */
+  private toQueryPacket(
+    packet: WirePacket,
+    progressAccumulated: AccumulatedProgress,
+    profileEventsAccumulated: Map<string, bigint>,
+  ): Packet | null {
+    switch (packet.id) {
+      case ServerPacketId.Data: {
+        const batch = packet.batch;
+        this.log(`[query] got Data block with ${batch.rowCount} rows`);
+        this.currentSchema ??= batch.columns.map((c) => ({ name: c.name, type: c.type }));
+        return batch.rowCount > 0 ? { type: "Data", batch } : null;
+      }
+      case ServerPacketId.Progress: {
+        const progress = packet.progress;
+        this.accumulateProgress(progress, progressAccumulated);
+        progressAccumulated.percent = readPercent(progressAccumulated);
+        return {
+          type: "Progress",
+          progress,
+          accumulated: this.snapshotProgress(progressAccumulated),
+        };
+      }
+      case ServerPacketId.ProfileInfo:
+        return { type: "ProfileInfo", info: packet.info };
+      case ServerPacketId.ProfileEvents:
+        this.processProfileEventsBlock(packet.batch, profileEventsAccumulated, progressAccumulated);
+        return {
+          type: "ProfileEvents",
+          batch: packet.batch,
+          accumulated: new Map(profileEventsAccumulated),
+        };
+      case ServerPacketId.Totals:
+        return { type: "Totals", batch: packet.batch };
+      case ServerPacketId.Extremes:
+        return { type: "Extremes", batch: packet.batch };
+      case ServerPacketId.Log:
+        return packet.batch.rowCount > 0
+          ? { type: "Log", entries: this.parseLogBlock(packet.batch) }
+          : null;
+      case ServerPacketId.TimezoneUpdate:
+        this.log(`[query] timezone updated to: ${packet.timezone}`);
+        return null;
+      default:
+        throw new Error(`Unexpected packet during query: ${serverPacketName(packet.id)}`);
     }
   }
 
