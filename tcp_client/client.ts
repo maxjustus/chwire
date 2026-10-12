@@ -694,18 +694,9 @@ export class TcpClient {
       // But only if we've sent the delimiter - otherwise server is waiting for data, not sending responses
       if (!reachedEndOfStream && !receivedException && this.socket === startSocket && this.reader) {
         if (sentDataDelimiter || cancelled) {
-          try {
-            if (!cancelled) {
-              cancelled = true;
-              await this.writeWithBackpressure(this.writer.encodeCancel());
-            }
-            await this.drainPackets(useCompression);
-          } catch (err) {
-            this.log(
-              `[insert] drain failed, closing connection: ${err instanceof Error ? err.message : err}`,
-            );
-            if (this.socket === startSocket) this.close();
-          }
+          const cancelSent = cancelled;
+          cancelled = true;
+          await this.cancelAndDrain(startSocket, useCompression, cancelSent, "insert");
         } else {
           // We're in the middle of sending data - can't drain, must close
           this.log(`[insert] error before data sent, closing connection`);
@@ -714,6 +705,25 @@ export class TcpClient {
       }
       if (this.socket === startSocket) this.busy = false;
       signal?.removeEventListener("abort", abortHandler);
+    }
+  }
+
+  /** Cancel and drain an abandoned operation. A failed drain closes the connection. */
+  private async cancelAndDrain(
+    startSocket: net.Socket,
+    useCompression: boolean,
+    cancelSent: boolean,
+    label: string,
+  ): Promise<void> {
+    try {
+      if (!cancelSent) await this.writeWithBackpressure(this.writer.encodeCancel());
+      await this.drainPackets(useCompression);
+    } catch (err) {
+      // Drain failed - connection is in unknown state, close it to prevent corruption
+      this.log(
+        `[${label}] drain failed, closing connection: ${err instanceof Error ? err.message : err}`,
+      );
+      if (this.socket === startSocket) this.close();
     }
   }
 
@@ -1287,19 +1297,9 @@ export class TcpClient {
       // to keep the connection in a clean state for subsequent queries.
       // Skip draining if we received an exception - server sends nothing after exception.
       if (!reachedEndOfStream && !receivedException && this.socket === startSocket && this.reader) {
-        try {
-          if (!cancelled) {
-            cancelled = true;
-            await this.writeWithBackpressure(this.writer.encodeCancel());
-          }
-          await this.drainPackets(useCompression);
-        } catch (err) {
-          // Drain failed - connection is in unknown state, close it to prevent corruption
-          this.log(
-            `[query] drain failed, closing connection: ${err instanceof Error ? err.message : err}`,
-          );
-          if (this.socket === startSocket) this.close();
-        }
+        const cancelSent = cancelled;
+        cancelled = true;
+        await this.cancelAndDrain(startSocket, useCompression, cancelSent, "query");
       }
       if (this.socket === startSocket) this.busy = false;
       clearQueryTimeout();
