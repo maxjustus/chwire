@@ -10,7 +10,12 @@
     "enabled": true,
     "rules": {
       "complexity": {
-        "noExcessiveCognitiveComplexity": "warn"
+        "noExcessiveCognitiveComplexity": {
+          "level": "error",
+          "options": {
+            "maxAllowedComplexity": 30
+          }
+        }
       },
       "suspicious": {
         "noExplicitAny": "off"
