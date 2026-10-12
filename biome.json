@@ -43,5 +43,17 @@
       "!dist",
       "!vendor"
     ]
-  }
+  },
+  "overrides": [
+    {
+      "includes": ["test/**", "tcp_client/test/**", "fuzz/**", "bench/**", "scripts/**"],
+      "linter": {
+        "rules": {
+          "complexity": {
+            "noExcessiveCognitiveComplexity": "off"
+          }
+        }
+      }
+    }
+  ]
 }
