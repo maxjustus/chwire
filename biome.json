@@ -9,10 +9,14 @@
   "linter": {
     "enabled": true,
     "rules": {
+      "complexity": {
+        "noExcessiveCognitiveComplexity": "warn"
+      },
       "suspicious": {
         "noExplicitAny": "off"
       },
       "style": {
+        "noNestedTernary": "warn",
         "noNonNullAssertion": "off"
       }
     }
