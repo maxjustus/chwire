@@ -11,6 +11,12 @@ import {
   zstdCompressRaw,
 } from "./compression.ts";
 import { ClickHouseException } from "./errors.ts";
+import {
+  parseFramedStream,
+  type FramingFormat,
+  type HttpLogEntry,
+  type HttpProfileEvent,
+} from "./framing.ts";
 import type { ClickHouseSettings } from "./settings.generated.ts";
 
 export {
@@ -195,7 +201,15 @@ export interface HttpProgress {
 /** Packet types yielded by query() - mirrors TCP client pattern */
 export type QueryPacket =
   | { type: "Progress"; progress: HttpProgress }
-  | { type: "Data"; chunk: Uint8Array }
+  /**
+   * A chunk of formatted output. Under `framing`, `kind` tells apart the main
+   * result from the totals and extremes blocks, which are separate packets on
+   * the wire; without framing the output format inlines them and `kind` is
+   * absent. Concatenating every chunk reproduces the format's output either way.
+   */
+  | { type: "Data"; chunk: Uint8Array; kind?: "data" | "totals" | "extremes" }
+  | { type: "Log"; entries: HttpLogEntry[] }
+  | { type: "ProfileEvents"; events: HttpProfileEvent[] }
   | { type: "Summary"; summary: QuerySummary; queryId: string };
 
 /** Result from insert() with metadata */
@@ -589,6 +603,7 @@ const HTTP_QUERY_OPTION_RESERVED = new Set([
   "auth",
   "compression",
   "compressQuery",
+  "framing",
   "signal",
   "timeout",
   "clientVersion",
@@ -614,8 +629,8 @@ function mergeRawHttpQueryOptions(target: Record<string, string>, options: Query
  * and `params` for typed `{name: Type}` query parameters.
  *
  * Reserved transport keys are not forwarded: `url`, `auth`, `compression`,
- * `compressQuery`, `signal`, `timeout`, `clientVersion`, `settings`, `params`,
- * `externalTables`, `queryId`, and `sessionId`.
+ * `compressQuery`, `framing`, `signal`, `timeout`, `clientVersion`, `settings`,
+ * `params`, `externalTables`, `queryId`, and `sessionId`.
  */
 export interface QueryOptions {
   [key: string]: unknown;
@@ -634,6 +649,16 @@ export interface QueryOptions {
    * Requires server setting: enable_http_compression=1
    */
   compressQuery?: "lz4" | "zstd" | { method: "zstd"; level?: number };
+  /**
+   * Parse the response as framed packets (server setting
+   * `framing_output_format`, ClickHouse 26.8+).
+   *
+   * Data, totals, and extremes arrive as Data chunks that join to the
+   * unframed format output. Progress, Log, and ProfileEvents packets arrive
+   * as the server sends them, also with `compression`. Log packets need
+   * `send_logs_level`. A failed query throws, also after a 200 response.
+   */
+  framing?: FramingFormat;
   /** AbortSignal for manual cancellation */
   signal?: AbortSignal;
   /** Request timeout in milliseconds */
@@ -711,8 +736,11 @@ async function* queryImpl(sql: string, options: QueryOptions = {}): AsyncGenerat
   const baseUrl = options.url || "http://localhost:8123/";
   const compression = options.compression ?? "lz4";
   const compressed = compression !== false;
+  const framing = options.framing;
   const params: Record<string, string> = {
-    default_format: "JSONEachRowWithProgress",
+    // The server rejects the *WithProgress formats under framing: they write
+    // progress in-band, which framing delivers as its own packets instead.
+    default_format: framing ? "JSONEachRow" : "JSONEachRowWithProgress",
   };
 
   if (options.sessionId) {
@@ -725,6 +753,10 @@ async function* queryImpl(sql: string, options: QueryOptions = {}): AsyncGenerat
 
   if (options.compressQuery) {
     params.enable_http_compression = "1";
+  }
+
+  if (framing) {
+    params.framing_output_format = framing;
   }
 
   if (options.clientVersion) {
@@ -818,6 +850,16 @@ async function* queryImpl(sql: string, options: QueryOptions = {}): AsyncGenerat
     } else {
       body = await response.text();
     }
+    // Query errors keep the framing. Auth and setting errors arrive as plain text.
+    const contentType = response.headers.get("Content-Type") ?? "";
+    if (framing && /^(text\/event-stream|application\/x-ndjson)/.test(contentType)) {
+      for await (const packet of parseFramedStream(
+        toAsyncIterable<Uint8Array>(encoder.encode(body)),
+        framing,
+      )) {
+        if (packet.kind === "exception") body = packet.message;
+      }
+    }
     throw parseHttpError(response, body);
   }
 
@@ -825,7 +867,7 @@ async function* queryImpl(sql: string, options: QueryOptions = {}): AsyncGenerat
     throw new Error("Response body is null");
   }
 
-  const summary = parseSummary(response);
+  let summary = parseSummary(response);
   const queryId = response.headers.get("X-ClickHouse-Query-Id") || "";
   const reader = response.body.getReader();
   // ClickHouse appends a framed __exception__ trailer when a query errors after
@@ -838,7 +880,11 @@ async function* queryImpl(sql: string, options: QueryOptions = {}): AsyncGenerat
 
   async function* createStream(): AsyncGenerator<Uint8Array, void, unknown> {
     try {
-      if (!compressed) {
+      if (!compressed && framing) {
+        // Framing reports errors as packets, never as the __exception__ trailer.
+        // A held-back tail delays each small packet until the next one arrives.
+        yield* readChunks(reader);
+      } else if (!compressed) {
         // Keep a small tail so a framed exception preamble split across reads
         // is validated before we emit those bytes to the caller.
         let pending: Uint8Array = new Uint8Array(0);
@@ -953,8 +999,26 @@ async function* queryImpl(sql: string, options: QueryOptions = {}): AsyncGenerat
   }
 
   // Yield Data packets from body stream
-  for await (const chunk of createStream()) {
-    yield { type: "Data", chunk };
+  if (framing) {
+    for await (const packet of parseFramedStream(createStream(), framing)) {
+      if (packet.kind === "exception") throw exceptionFromText(packet.message);
+      if (packet.kind === "progress") {
+        // Headers leave before the first packet, so X-ClickHouse-Summary holds
+        // zeros. Progress is cumulative and the last packet has the totals.
+        summary = { ...summary, ...packet.progress };
+        yield { type: "Progress", progress: packet.progress };
+      } else if (packet.kind === "log") {
+        yield { type: "Log", entries: [packet.entry] };
+      } else if (packet.kind === "profile_events") {
+        yield { type: "ProfileEvents", events: packet.events };
+      } else {
+        yield { type: "Data", chunk: packet.payload, kind: packet.kind };
+      }
+    }
+  } else {
+    for await (const chunk of createStream()) {
+      yield { type: "Data", chunk };
+    }
   }
 
   // Yield Summary packet at end
@@ -1064,6 +1128,7 @@ async function collectJsonEachRow<T = unknown>(input: QueryInput): Promise<T[]> 
 }
 
 export { ClickHouseException } from "./errors.ts";
+export type { HttpLogEntry, HttpProfileEvent } from "./framing.ts";
 export {
   init,
   insert,

@@ -779,6 +779,22 @@ LZ4 and ZSTD use native Node addons (`lz4-napi`, `zstd-napi`) installed automati
 
 `compressQuery` compresses the HTTP request body (your SQL and any external table data) using HTTP `Content-Encoding`. This is independent of `compression`, which controls ClickHouse block compression on responses — they apply to different directions and don't double-compress. Set `compressQuery` to `"zstd"`, `"lz4"`, or `{ method: "zstd", level }`; requires the server setting `enable_http_compression=1`.
 
+### Framed responses
+
+On ClickHouse 26.8+, `framing` delivers progress, logs, and profile events as packets alongside the data. The server flushes each packet immediately, even with `compression`.
+
+```ts
+for await (const packet of query("SELECT number FROM numbers(1000) FORMAT JSONEachRow", {
+  ...config,
+  framing: "EventStream", // or "JSONEachPacketBase64" / "JSONEachPacketString"
+})) {
+  if (packet.type === "Data") process(packet.chunk);
+  if (packet.type === "Progress") console.log(packet.progress.read_rows);
+}
+```
+
+`Data` chunks join to the normal format output. Log packets need `send_logs_level`. The server rejects `*WithProgress` formats under framing.
+
 ## Performance
 
 Benchmarks on Apple M4 Max / Node v25.9.0, 1M rows.
