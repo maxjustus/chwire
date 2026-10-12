@@ -166,47 +166,10 @@ export function parseEnumDefinition(type: string): EnumMapping | null {
     while (i < len && (content[i] === "," || isAsciiWhitespace(content.charCodeAt(i)))) i++;
     if (i >= len) break;
 
-    // Parse quoted name
-    const parsed = parseQuotedString(content, i);
-    if (!parsed) return null;
-    const [name, nextIdx] = parsed;
-    i = nextIdx;
-
-    // Skip whitespace
-    while (i < len && isAsciiWhitespace(content.charCodeAt(i))) i++;
-
-    // Expect =
-    if (content[i] !== "=") return null;
-    i++;
-
-    // Skip whitespace
-    while (i < len && isAsciiWhitespace(content.charCodeAt(i))) i++;
-
-    // Read numeric value (possibly negative)
-    let sign = 1;
-    if (content[i] === "-") {
-      sign = -1;
-      i++;
-    } else if (content[i] === "+") {
-      i++;
-    }
-    // Hand-rolled decimal integer parse — we're already positioned at the first digit,
-    // so this avoids a substring allocation that parseInt would need.
-    let value = 0;
-    let digits = 0;
-    while (i < len) {
-      const code = content.charCodeAt(i);
-      if (code >= 48 && code <= 57) {
-        // '0'–'9'
-        value = value * 10 + (code - 48);
-        digits++;
-        i++;
-      } else {
-        break;
-      }
-    }
-    if (digits === 0) return null; // no digits found after '='
-    value *= sign;
+    const entry = parseEnumEntry(content, i);
+    if (!entry) return null;
+    const [name, value, afterEntry] = entry;
+    i = afterEntry;
     if (value < min || value > max) return null; // out of Int8/Int16 range
 
     // Reject duplicate names or values — ClickHouse requires both to be unique
@@ -217,6 +180,43 @@ export function parseEnumDefinition(type: string): EnumMapping | null {
 
   if (nameToValue.size === 0) return null;
   return { nameToValue, valueToName };
+}
+
+/** Parse `'name' = value` at `start`. Returns [name, value, index_after_value] or null. */
+function parseEnumEntry(s: string, start: number): [string, number, number] | null {
+  const parsedName = parseQuotedString(s, start);
+  if (!parsedName) return null;
+  const [name, afterName] = parsedName;
+  const eq = skipWhitespace(s, afterName);
+  if (s[eq] !== "=") return null;
+  const parsedValue = parseSignedInt(s, skipWhitespace(s, eq + 1));
+  if (!parsedValue) return null;
+  return [name, parsedValue[0], parsedValue[1]];
+}
+
+function skipWhitespace(s: string, i: number): number {
+  while (i < s.length && isAsciiWhitespace(s.charCodeAt(i))) i++;
+  return i;
+}
+
+/**
+ * Parse an optionally signed decimal integer at `start`. Returns
+ * [value, index_after_last_digit] or null when no digit follows the sign.
+ * Hand-rolled to avoid the substring allocation that parseInt would need.
+ */
+function parseSignedInt(s: string, start: number): [number, number] | null {
+  let i = start;
+  const sign = s[i] === "-" ? -1 : 1;
+  if (s[i] === "-" || s[i] === "+") i++;
+  const firstDigit = i;
+  let value = 0;
+  while (i < s.length) {
+    const code = s.charCodeAt(i);
+    if (code < 48 || code > 57) break; // not '0'–'9'
+    value = value * 10 + (code - 48);
+    i++;
+  }
+  return i === firstDigit ? null : [sign * value, i];
 }
 
 export const TEXT_ENCODER = new TextEncoder();

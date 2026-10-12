@@ -1,5 +1,5 @@
 import assert from "node:assert";
-import { describe, it, before, after } from "node:test";
+import { after, before, describe, it } from "node:test";
 import { TcpClient } from "../tcp_client/client.ts";
 import { startClickHouse, stopClickHouse } from "./setup.ts";
 import { queryScalar } from "./test_utils.ts";

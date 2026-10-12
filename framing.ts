@@ -75,12 +75,12 @@ async function* parseRecords(
   let from = 0;
   for await (const chunk of chunks) {
     pending += decoder.decode(chunk, { stream: true });
-    let end: number;
-    while ((end = pending.indexOf(delimiter, from)) >= 0) {
+    let end = pending.indexOf(delimiter, from);
+    while (end >= 0) {
       const packet = end > 0 ? parseRecord(pending.slice(0, end)) : undefined;
       pending = pending.slice(end + delimiter.length);
-      from = 0;
       if (packet) yield packet;
+      end = pending.indexOf(delimiter);
     }
     // A delimiter can span the chunk boundary. Rescan only the overhang.
     from = Math.max(0, pending.length - delimiter.length + 1);

@@ -31,7 +31,10 @@ export type CodecResolver = (type: string) => Codec;
  * columns are serialized positionally with no name on the wire, so our encode
  * order must match the server's sort exactly or the streams desync on decode.
  */
-const byteOrder = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
+function byteOrder(a: string, b: string): number {
+  if (a === b) return 0;
+  return a < b ? -1 : 1;
+}
 
 /**
  * Smallest typed array whose element width can address `numIndexes` distinct
@@ -62,7 +65,8 @@ function compareDynamicCell(resolve: CodecResolver, a: unknown, b: unknown): boo
   const av = unwrapDynamic(a);
   const bv = unwrapDynamic(b);
   if (av == null || bv == null) return av === bv;
-  const type = a instanceof DynamicValue ? a.type : b instanceof DynamicValue ? b.type : null;
+  const tagged = a instanceof DynamicValue ? a : b;
+  const type = tagged instanceof DynamicValue ? tagged.type : null;
   return type ? resolve(type).compare(av, bv) : deepCompare(av, bv);
 }
 
@@ -92,6 +96,29 @@ function decodeGroups(
  *
  * Children (variant groups) may be sparse-encoded individually.
  */
+/** Whether an untagged JS value can be stored in Variant arm type `t`. Any object fits a Map arm. */
+function variantAccepts(t: string, value: unknown): boolean {
+  switch (typeof value) {
+    case "string":
+      return t === "String";
+    case "bigint":
+      return t === "Int64" || t === "UInt64";
+    case "number":
+      return t.startsWith("Int") || t.startsWith("UInt") || t.startsWith("Float");
+    case "boolean":
+      return t === "Bool";
+    case "object":
+      if (value === null) return false;
+      if (t.startsWith("Map")) return true;
+      if (value instanceof Date) {
+        return t === "Date" || t === "DateTime" || t.startsWith("DateTime64");
+      }
+      return Array.isArray(value) && t.startsWith("Array");
+    default:
+      return false;
+  }
+}
+
 export class VariantCodec implements Codec {
   readonly type: string;
   private typeStrings: string[];
@@ -226,23 +253,7 @@ export class VariantCodec implements Codec {
 
   findVariantIndex(value: unknown, types: string[]): number {
     for (let i = 0; i < types.length; i++) {
-      const t = types[i]!;
-      if (t === "String" && typeof value === "string") return i;
-      if ((t === "Int64" || t === "UInt64") && typeof value === "bigint") return i;
-      if (
-        (t.startsWith("Int") || t.startsWith("UInt") || t.startsWith("Float")) &&
-        typeof value === "number"
-      )
-        return i;
-      if (t === "Bool" && typeof value === "boolean") return i;
-      if ((t === "Date" || t === "DateTime" || t.startsWith("DateTime64")) && value instanceof Date)
-        return i;
-      if (t.startsWith("Array") && Array.isArray(value)) return i;
-      if (
-        t.startsWith("Map") &&
-        (value instanceof Map || (typeof value === "object" && value !== null))
-      )
-        return i;
+      if (variantAccepts(types[i]!, value)) return i;
     }
     throw new TypeError(
       `Cannot match value of type ${typeof value} to any variant in ${types.join(" | ")}`,
@@ -290,6 +301,43 @@ export class VariantCodec implements Codec {
 interface DynamicPrefix {
   types: string[];
   codecs: Codec[];
+}
+
+const NULL_SENTINEL = 0xffffffff;
+
+/** Scatter scanned discriminators to their rows. Rows without a value get `nullDisc`. */
+function scatterSparseDiscriminators(
+  wide: Uint32Array,
+  discs: Uint32Array,
+  rowIndices: number[],
+  nullDisc: number,
+): void {
+  if (nullDisc !== 0) wide.fill(nullDisc);
+  let prevRow = -1;
+  for (let j = 0; j < discs.length; j++) {
+    const row = rowIndices[j]!;
+    if (row <= prevRow) {
+      throw new Error(`fromSparse: rowIndices must be strictly ascending (index ${j})`);
+    }
+    prevRow = row;
+    const d = discs[j]!;
+    wide[row] = d === NULL_SENTINEL ? nullDisc : d;
+  }
+}
+
+/** Replace null sentinels in the first `k` rows, and null-fill the rows after them. */
+function fillDenseNullDiscriminators(
+  wide: Uint32Array,
+  k: number,
+  nullDisc: number,
+  hasNulls: boolean,
+): void {
+  if (hasNulls) {
+    for (let i = 0; i < k; i++) {
+      if (wide[i] === NULL_SENTINEL) wide[i] = nullDisc;
+    }
+  }
+  if (nullDisc !== 0) wide.fill(nullDisc, k);
 }
 
 export class DynamicCodec implements Codec {
@@ -382,7 +430,6 @@ export class DynamicCodec implements Codec {
    * materializing a dense rows-length array per path.
    */
   fromSparse(rowIndices: number[] | null, values: unknown[], rows: number): DynamicColumn {
-    const NULL_SENTINEL = 0xffffffff;
     const typeIndex = new Map<string, number>();
     const typeOrder: string[] = [];
     const typeValues: unknown[][] = [];
@@ -417,26 +464,8 @@ export class DynamicCodec implements Codec {
     }
 
     const nullDisc = typeOrder.length;
-    if (rowIndices) {
-      if (nullDisc !== 0) wide.fill(nullDisc);
-      let prevRow = -1;
-      for (let j = 0; j < k; j++) {
-        const row = rowIndices[j]!;
-        if (row <= prevRow) {
-          throw new Error(`fromSparse: rowIndices must be strictly ascending (index ${j})`);
-        }
-        prevRow = row;
-        const d = discs[j]!;
-        wide[row] = d === NULL_SENTINEL ? nullDisc : d;
-      }
-    } else {
-      if (hasNulls) {
-        for (let i = 0; i < k; i++) {
-          if (wide[i] === NULL_SENTINEL) wide[i] = nullDisc;
-        }
-      }
-      if (k < rows && nullDisc !== 0) wide.fill(nullDisc, k);
-    }
+    if (rowIndices) scatterSparseDiscriminators(wide, discs, rowIndices, nullDisc);
+    else fillDenseNullDiscriminators(wide, k, nullDisc, hasNulls);
 
     // Server-side, types beyond max_types overflow into the shared variant on
     // unflatten, so any count the index width can address is legal.
@@ -521,6 +550,23 @@ export class DynamicCodec implements Codec {
   compare(a: unknown, b: unknown): boolean {
     return compareDynamicCell(this.resolveCodec, a, b);
   }
+}
+
+/**
+ * Values of one JSON dynamic path. `rows === null` means the path has appeared
+ * in every row so far (identity indices); it is materialized only when a gap
+ * shows up, so fully-dense paths never allocate an index array.
+ */
+type SparsePath = { rows: number[] | null; values: unknown[] };
+
+function appendSparse(entry: SparsePath, row: number, value: unknown): void {
+  if (entry.rows) {
+    entry.rows.push(row);
+  } else if (entry.values.length !== row) {
+    entry.rows = Array.from({ length: entry.values.length }, (_, j) => j);
+    entry.rows.push(row);
+  }
+  entry.values.push(value);
 }
 
 export class JsonCodec implements Codec {
@@ -642,11 +688,7 @@ export class JsonCodec implements Codec {
   fromValues(values: unknown[]): JsonColumn {
     const n = values.length;
     const typedPathArrays = this.typedPaths.map(() => new Array<unknown>(n).fill(null));
-    // rows === null means the path has appeared in every row so far (identity
-    // indices); it is materialized only when a gap shows up, so fully-dense
-    // paths never allocate an index array.
-    const dynamicPathEntries = new Map<string, { rows: number[] | null; values: unknown[] }>();
-    const dynamicPathOrder: string[] = [];
+    const dynamicPathEntries = new Map<string, SparsePath>();
 
     for (let i = 0; i < n; i++) {
       const v = values[i];
@@ -669,15 +711,8 @@ export class JsonCodec implements Codec {
         if (!entry) {
           entry = { rows: null, values: [] };
           dynamicPathEntries.set(key, entry);
-          dynamicPathOrder.push(key);
         }
-        if (entry.rows) {
-          entry.rows.push(i);
-        } else if (entry.values.length !== i) {
-          entry.rows = Array.from({ length: entry.values.length }, (_, j) => j);
-          entry.rows.push(i);
-        }
-        entry.values.push(obj[key]);
+        appendSparse(entry, i, obj[key]);
       }
     }
 
@@ -690,12 +725,11 @@ export class JsonCodec implements Codec {
     }
 
     const dynCodec = this.resolveCodec("Dynamic") as DynamicCodec;
-    for (const path of dynamicPathOrder) {
-      const entry = dynamicPathEntries.get(path)!;
+    for (const [path, entry] of dynamicPathEntries) {
       pathColumns.set(path, dynCodec.fromSparse(entry.rows, entry.values, n));
     }
 
-    return this.assembleColumn(pathColumns, dynamicPathOrder, n);
+    return this.assembleColumn(pathColumns, [...dynamicPathEntries.keys()], n);
   }
 
   fromCols(input: Record<string, Column | unknown[] | TypedArray>): JsonColumn {
@@ -713,60 +747,57 @@ export class JsonCodec implements Codec {
     }
 
     const pathColumns = new Map<string, Column>();
-
     for (const tp of this.typedPaths) {
-      const value = input[tp.name];
-      if (value === undefined) {
-        throw new Error(
-          `Missing typed path '${tp.name}' (declared in ${this.type}); ` +
-            `pass an array of nulls for an all-null path`,
-        );
-      }
-      if (isArrayLike(value)) {
-        pathColumns.set(tp.name, tp.codec.fromValues(value));
-      } else {
-        // Exact-spelling match: codecs preserve caller spelling, so there is no
-        // canonical form to compare against, and whitespace-insensitive equality
-        // can false-positive on pathological names (`a UInt8` vs `aU Int8`).
-        if (value.type !== tp.type) {
-          throw new Error(
-            `Type mismatch for typed path '${tp.name}': expected '${tp.type}', got '${value.type}'`,
-          );
-        }
-        pathColumns.set(tp.name, value);
-      }
+      pathColumns.set(tp.name, this.typedPathColumn(tp, input[tp.name]));
     }
 
     const dynamicPathOrder: string[] = [];
-    const dynCodec = this.resolveCodec("Dynamic");
     for (const key of keys) {
       if (this.typedPathNames.has(key)) continue;
-      const value = input[key]!;
-      // JS callers can pass anything; a non-arraylike is only usable when it is
-      // a genuine Dynamic column (any other shape loses per-value types).
-      const colType = isArrayLike(value) ? undefined : (value as Column).type;
-      if (colType?.startsWith("Dynamic")) {
-        dynamicPathOrder.push(key);
-        pathColumns.set(key, value as Column);
-        continue;
-      }
-      if (!Array.isArray(value)) {
-        const got = isTypedArray(value)
-          ? "a TypedArray"
-          : colType !== undefined
-            ? `a '${colType}' column`
-            : `a ${typeof value}`;
-        throw new TypeError(
-          `Dynamic path '${key}' must be a plain array or a Dynamic column, got ${got}. ` +
-            `TypedArrays and typed columns lose per-value type information; ` +
-            `use DynamicValue[] to pin types.`,
-        );
-      }
       dynamicPathOrder.push(key);
-      pathColumns.set(key, dynCodec.fromValues(value));
+      pathColumns.set(key, this.dynamicPathColumn(key, input[key]!));
     }
 
     return this.assembleColumn(pathColumns, dynamicPathOrder, rowCount);
+  }
+
+  private typedPathColumn(
+    tp: { name: string; type: string; codec: Codec },
+    value: Column | unknown[] | TypedArray | undefined,
+  ): Column {
+    if (value === undefined) {
+      throw new Error(
+        `Missing typed path '${tp.name}' (declared in ${this.type}); ` +
+          `pass an array of nulls for an all-null path`,
+      );
+    }
+    if (isArrayLike(value)) return tp.codec.fromValues(value);
+    // Exact-spelling match: codecs preserve caller spelling, so there is no
+    // canonical form to compare against, and whitespace-insensitive equality
+    // can false-positive on pathological names (`a UInt8` vs `aU Int8`).
+    if (value.type !== tp.type) {
+      throw new Error(
+        `Type mismatch for typed path '${tp.name}': expected '${tp.type}', got '${value.type}'`,
+      );
+    }
+    return value;
+  }
+
+  private dynamicPathColumn(key: string, value: Column | unknown[] | TypedArray): Column {
+    // JS callers can pass anything; a non-arraylike is only usable when it is
+    // a genuine Dynamic column (any other shape loses per-value types).
+    const colType = isArrayLike(value) ? undefined : (value as Column).type;
+    if (colType?.startsWith("Dynamic")) return value as Column;
+    if (Array.isArray(value)) return this.resolveCodec("Dynamic").fromValues(value);
+
+    let got = `a ${typeof value}`;
+    if (isTypedArray(value)) got = "a TypedArray";
+    else if (colType !== undefined) got = `a '${colType}' column`;
+    throw new TypeError(
+      `Dynamic path '${key}' must be a plain array or a Dynamic column, got ${got}. ` +
+        `TypedArrays and typed columns lose per-value type information; ` +
+        `use DynamicValue[] to pin types.`,
+    );
   }
 
   private assembleColumn(

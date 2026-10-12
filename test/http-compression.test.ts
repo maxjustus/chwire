@@ -4,7 +4,7 @@
 
 import assert from "node:assert/strict";
 import { after, before, describe, it } from "node:test";
-import { collectJsonEachRow, init, query, type QueryOptions } from "../client.ts";
+import { collectJsonEachRow, init, type QueryOptions, query } from "../client.ts";
 import { startClickHouse, stopClickHouse } from "./setup.ts";
 import { generateSessionId } from "./test_utils.ts";
 

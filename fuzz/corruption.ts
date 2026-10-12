@@ -17,8 +17,8 @@
 import assert from "node:assert";
 import { describe, it } from "node:test";
 import { decodeBlocks, encodeBlock, init } from "../compression.ts";
-import { batchFromRows, type ColumnDef, decodeNativeBlock, encodeNative } from "../native/index.ts";
 import type { Rng } from "../native/codecs/base.ts";
+import { batchFromRows, type ColumnDef, decodeNativeBlock, encodeNative } from "../native/index.ts";
 import { config, getIterationIndex, logConfig } from "./config.ts";
 import { makeRng } from "./rng.ts";
 import { randomString } from "./util.ts";

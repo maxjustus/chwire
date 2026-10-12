@@ -170,27 +170,15 @@ function ipv6ToBytes(ip: string): Uint8Array {
 
   let groups: string[];
   if (parts.length === 2) {
-    const [hi, lo] = parts;
-    if (hi === undefined || lo === undefined) throw new TypeError(`Invalid IPv6 address: "${ip}"`);
+    const [hi = "", lo = ""] = parts;
     const left = hi === "" ? [] : hi.split(":");
     const right = lo === "" ? [] : lo.split(":");
-
-    for (const g of left) {
-      if (g.length === 0) throw new TypeError(`Invalid IPv6 address: "${ip}"`);
-    }
-    for (const g of right) {
-      if (g.length === 0) throw new TypeError(`Invalid IPv6 address: "${ip}"`);
-    }
-
     const missing = 8 - (left.length + right.length);
     if (missing < 1) throw new TypeError(`Invalid IPv6 address: "${ip}"`);
     groups = [...left, ...new Array(missing).fill("0"), ...right];
   } else {
     groups = ip.split(":");
     if (groups.length !== 8) throw new TypeError(`Invalid IPv6 address: "${ip}"`);
-    for (const g of groups) {
-      if (g.length === 0) throw new TypeError(`Invalid IPv6 address: "${ip}"`);
-    }
   }
 
   const bytes = new Uint8Array(16);
@@ -261,7 +249,8 @@ const pick = <T>(rng: Rng, arr: readonly T[]): T => arr[rng.int(0, arr.length - 
 function clampPick<T extends number | bigint>(rng: Rng, boundaries: T[], min: T, max: T): T | null {
   if (rng.int(0, 1) !== 0) return null;
   const v = pick(rng, boundaries);
-  return v < min ? min : v > max ? max : v;
+  if (v < min) return min;
+  return v > max ? max : v;
 }
 
 /**
@@ -609,8 +598,7 @@ export class EnumCodec extends BaseCodec {
   }
 
   encode(col: Column): Uint8Array {
-    const underlying =
-      col instanceof EnumColumn ? col.data : col instanceof DataColumn ? col.data : null;
+    const underlying = col instanceof EnumColumn || col instanceof DataColumn ? col.data : null;
     if (underlying instanceof this.Ctor) {
       return asBytes(underlying);
     }
@@ -993,8 +981,10 @@ export class BigIntCodec extends BaseCodec {
 function extractDecimalPrecision(type: string, byteSize: 4 | 8 | 16 | 32): number {
   const m = type.match(/^Decimal\(\s*(\d+)/);
   if (m) return Number(m[1]);
-  return byteSize === 4 ? 9 : byteSize === 8 ? 18 : byteSize === 16 ? 38 : 76;
+  return MAX_DECIMAL_PRECISION[byteSize];
 }
+
+const MAX_DECIMAL_PRECISION = { 4: 9, 8: 18, 16: 38, 32: 76 } as const;
 
 export class DecimalCodec extends BaseCodec {
   readonly type: string;
@@ -1282,26 +1272,10 @@ export class EpochCodec<T extends Uint16Array | Int32Array | Uint32Array> extend
     // ("DateTime", "DateTime('UTC')") share the default Uint32 range — keying on
     // the exact "DateTime" string instead would clamp DateTime('tz') to Date32's
     // INT32_MAX (~2038) ceiling.
-    const [minUnits, maxUnits] =
-      type === "Date"
-        ? [0, UINT16_MAX]
-        : type === "Date32"
-          ? [INT32_MIN, INT32_MAX]
-          : [0, UINT32_MAX];
+    const [minUnits, maxUnits] = STORED_UNIT_RANGE[type] ?? [0, UINT32_MAX];
     for (let i = 0; i < len; i++) {
       const v = col.get(i);
-      const ms =
-        v instanceof Date
-          ? v.getTime()
-          : typeof v === "number"
-            ? v
-            : typeof v === "string"
-              ? toValidDate(v, type).getTime()
-              : v == null
-                ? 0
-                : (() => {
-                    throw new TypeError(`Cannot coerce ${typeof v} to ${type}`);
-                  })();
+      const ms = toEpochMs(v, type);
 
       if (!Number.isFinite(ms)) {
         throw new TypeError(`Cannot coerce "${v}" to ${type}`);
@@ -1376,16 +1350,29 @@ export class EpochCodec<T extends Uint16Array | Int32Array | Uint32Array> extend
     // Pick a unit count inside CH's accepted range for this type so the value
     // round-trips without clamping. Decode produces new Date(units * multiplier),
     // so emit the same.
-    const [minUnits, maxUnits] =
-      this.type === "Date"
-        ? [0, UINT16_MAX] // 1970-01-01 .. 2149-06-06
-        : this.type === "Date32"
-          ? [-25567, 120529] // 1900-01-01 .. 2299-12-31
-          : [0, UINT32_MAX]; // DateTime: 1970-01-01 .. 2106-02-07
+    const [minUnits, maxUnits] = ACCEPTED_UNIT_RANGE[this.type] ?? [0, UINT32_MAX]; // DateTime: 1970-01-01 .. 2106-02-07
     // Oversample epoch and the two range boundaries; otherwise random units.
     const units = genInt(ctx.rng, minUnits, maxUnits);
     return new Date(units * this.multiplier);
   }
+}
+
+const STORED_UNIT_RANGE: Record<string, [number, number]> = {
+  Date: [0, UINT16_MAX],
+  Date32: [INT32_MIN, INT32_MAX],
+};
+
+const ACCEPTED_UNIT_RANGE: Record<string, [number, number]> = {
+  Date: [0, UINT16_MAX], // 1970-01-01 .. 2149-06-06
+  Date32: [-25567, 120529], // 1900-01-01 .. 2299-12-31
+};
+
+function toEpochMs(v: unknown, type: string): number {
+  if (v instanceof Date) return v.getTime();
+  if (typeof v === "number") return v;
+  if (typeof v === "string") return toValidDate(v, type).getTime();
+  if (v == null) return 0;
+  throw new TypeError(`Cannot coerce ${typeof v} to ${type}`);
 }
 
 export class IPv4Codec extends BaseCodec {

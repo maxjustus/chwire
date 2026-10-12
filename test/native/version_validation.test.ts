@@ -7,8 +7,8 @@
 
 import assert from "node:assert";
 import { describe, it } from "node:test";
-import { decodeNativeBlock } from "../../native/index.ts";
 import { Dynamic, JSONFormat } from "../../native/constants.ts";
+import { decodeNativeBlock } from "../../native/index.ts";
 import { buildTestBlock } from "../test_utils.ts";
 
 /** Build a Native block with Dynamic type and specified version. */

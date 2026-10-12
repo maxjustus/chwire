@@ -470,44 +470,10 @@ export class MapCodec extends BaseCodec {
     const keys: unknown[] = [];
     const vals: unknown[] = [];
     const offsets = new BigUint64Array(values.length);
-    let offset = 0n;
     for (let i = 0; i < values.length; i++) {
       const m = values[i];
-      if (m == null) {
-        offsets[i] = offset;
-        continue;
-      }
-      if (m instanceof Map) {
-        for (const [k, v] of m) {
-          keys.push(k);
-          vals.push(v);
-        }
-        offset += BigInt(m.size);
-      } else if (Array.isArray(m)) {
-        for (let j = 0; j < m.length; j++) {
-          const pair = m[j];
-          if (!Array.isArray(pair) || pair.length !== 2) {
-            throw new TypeError(
-              `Invalid Map entry at index ${j}: expected [key, value] pair, got ${typeof pair}`,
-            );
-          }
-          keys.push(pair[0]);
-          vals.push(pair[1]);
-        }
-        offset += BigInt(m.length);
-      } else if (typeof m === "object" && m !== null) {
-        const entries = Object.entries(m);
-        for (const [k, v] of entries) {
-          keys.push(k);
-          vals.push(v);
-        }
-        offset += BigInt(entries.length);
-      } else {
-        throw new TypeError(
-          `Expected Map, Array, or object for ${this.type}, got ${m === null ? "null" : typeof m}`,
-        );
-      }
-      offsets[i] = offset;
+      if (m != null) this.appendEntries(m, keys, vals);
+      offsets[i] = BigInt(keys.length);
     }
     return new MapColumn(
       this.type,
@@ -515,6 +481,33 @@ export class MapCodec extends BaseCodec {
       this.keyCodec.fromValues(keys),
       this.valCodec.fromValues(vals),
     );
+  }
+
+  private appendEntries(m: NonNullable<unknown>, keys: unknown[], vals: unknown[]): void {
+    if (m instanceof Map) {
+      for (const [k, v] of m) {
+        keys.push(k);
+        vals.push(v);
+      }
+    } else if (Array.isArray(m)) {
+      for (let j = 0; j < m.length; j++) {
+        const pair = m[j];
+        if (!Array.isArray(pair) || pair.length !== 2) {
+          throw new TypeError(
+            `Invalid Map entry at index ${j}: expected [key, value] pair, got ${typeof pair}`,
+          );
+        }
+        keys.push(pair[0]);
+        vals.push(pair[1]);
+      }
+    } else if (typeof m === "object") {
+      for (const [k, v] of Object.entries(m)) {
+        keys.push(k);
+        vals.push(v);
+      }
+    } else {
+      throw new TypeError(`Expected Map, Array, or object for ${this.type}, got ${typeof m}`);
+    }
   }
 
   zeroValue() {
@@ -664,10 +657,11 @@ export class TupleCodec extends BaseCodec {
     const columns: Column[] = [];
     for (let ei = 0; ei < this.elements.length; ei++) {
       const elem = this.elements[ei]!;
+      const key = this.isNamed ? elem.name! : ei;
       const elemValues: unknown[] = new Array(values.length);
       for (let i = 0; i < values.length; i++) {
         const tuple = values[i] as any;
-        elemValues[i] = tuple == null ? undefined : this.isNamed ? tuple[elem.name!] : tuple[ei];
+        elemValues[i] = tuple == null ? undefined : tuple[key];
       }
       columns.push(elem.codec.fromValues(elemValues));
     }

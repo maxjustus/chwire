@@ -2,6 +2,9 @@ import { randomUUID } from "node:crypto";
 import { once } from "node:events";
 import * as net from "node:net";
 import * as tls from "node:tls";
+import { type Compression, init as initCompression } from "../compression.ts";
+import type { ClickHouseException } from "../errors.ts";
+import { prepend, toAsyncIterable } from "../iter.ts";
 import {
   BlockBuffer,
   BlockUnderflowError,
@@ -15,12 +18,9 @@ import {
   type PartialBlockState,
   RecordBatch,
 } from "../native/index.ts";
-import { type Compression, init as initCompression } from "../compression.ts";
-import type { ClickHouseException } from "../errors.ts";
 import type { ClickHouseSettings } from "../settings.generated.ts";
 import type { QueryParamValue } from "../types.ts";
 import { type CollectableAsyncGenerator, collectable } from "../util.ts";
-import { prepend, toAsyncIterable } from "../iter.ts";
 import { StreamingReader } from "./reader.ts";
 import { transposeRowObjectsToColumns } from "./row_object_insert.ts";
 import {
@@ -152,6 +152,62 @@ function validateSchema(expected: ColumnDef[], actual: ColumnSchema[]): void {
       );
     }
   }
+}
+
+/** Build a batch from row objects, coercing each value through the server schema. */
+function rowsToBatch(rows: Record<string, unknown>[], serverSchema: ColumnSchema[]): RecordBatch {
+  const values = transposeRowObjectsToColumns(serverSchema, rows);
+  const columnData = serverSchema.map((col, i) => getCodec(col.type).fromValues(values[i]!));
+  return RecordBatch.from({ columns: serverSchema, columnData, rowCount: rows.length });
+}
+
+/** Query read progress as a percentage of the larger of rows read and rows to read. */
+function readPercent(acc: AccumulatedProgress): number {
+  const denom = acc.readRows > acc.totalRowsToRead ? acc.readRows : acc.totalRowsToRead;
+  return denom > 0n ? Number((acc.readRows * 100n) / denom) : 0;
+}
+
+/**
+ * Group insert input into Data-packet chunks. The first item picks the mode:
+ * RecordBatches pass through, row objects are buffered into `batchSize` arrays.
+ */
+async function* insertChunks(
+  data:
+    | RecordBatch
+    | Iterable<RecordBatch | Record<string, unknown>>
+    | AsyncIterable<RecordBatch | Record<string, unknown>>,
+  batchSize: number,
+  throwIfAborted: () => void,
+): AsyncGenerator<RecordBatch | Record<string, unknown>[]> {
+  if (RecordBatch.isRecordBatch(data)) {
+    yield data;
+    return;
+  }
+  const iterator =
+    Symbol.asyncIterator in data ? data[Symbol.asyncIterator]() : data[Symbol.iterator]();
+  throwIfAborted();
+  const first = await iterator.next();
+  throwIfAborted();
+  if (first.done) return;
+
+  const items = prepend(first.value, iterator);
+  if (RecordBatch.isRecordBatch(first.value)) {
+    for await (const batch of items) {
+      throwIfAborted();
+      yield batch as RecordBatch;
+    }
+    return;
+  }
+  let rows: Record<string, unknown>[] = [];
+  for await (const row of items) {
+    throwIfAborted();
+    rows.push(row as Record<string, unknown>);
+    if (rows.length >= batchSize) {
+      yield rows;
+      rows = [];
+    }
+  }
+  if (rows.length > 0) yield rows;
 }
 
 export class TcpClient {
@@ -561,95 +617,15 @@ export class TcpClient {
       }
 
       let totalInserted = 0;
-
-      const sendBatch = async (batch: RecordBatch) => {
+      for await (const chunk of insertChunks(data, batchSize, throwIfAborted)) {
         throwIfAborted();
         if (cancelled) throw createAbortError("Insert aborted");
-        const dataPacket = this.encodeBatchAsDataPacket("", batch, useCompression, compression);
-        await this.writeWithBackpressure(dataPacket);
+        const batch = RecordBatch.isRecordBatch(chunk) ? chunk : rowsToBatch(chunk, serverSchema);
+        await this.writeWithBackpressure(
+          this.encodeBatchAsDataPacket("", batch, useCompression, compression),
+        );
         throwIfAborted();
         totalInserted += batch.rowCount;
-      };
-
-      const sendRowBatch = async (rows: Record<string, unknown>[]) => {
-        throwIfAborted();
-        if (rows.length === 0) return;
-        const numCols = serverSchema.length;
-        const codecs = serverSchema.map((c) => getCodec(c.type));
-
-        const columns = transposeRowObjectsToColumns(serverSchema, rows);
-
-        // Build Column objects via codecs (coercion happens in fromValues)
-        const encodedColumns = [];
-        for (let i = 0; i < numCols; i++) {
-          const codec = codecs[i]!;
-          const col = codec.fromValues(columns[i]!);
-          const writer = new BufferWriter();
-          codec.writePrefix(writer, col);
-          writer.write(codec.encode(col));
-          const schemaCol = serverSchema[i]!;
-          encodedColumns.push({
-            name: schemaCol.name,
-            type: schemaCol.type,
-            data: writer.finish(),
-          });
-        }
-
-        const dataPacket = this.writer.encodeData(
-          "",
-          rows.length,
-          encodedColumns,
-          this.serverHello!.revision,
-          useCompression,
-          compression,
-        );
-        await this.writeWithBackpressure(dataPacket);
-        throwIfAborted();
-        totalInserted += rows.length;
-      };
-
-      // Single RecordBatch - fast path
-      if (RecordBatch.isRecordBatch(data)) {
-        await sendBatch(data);
-      } else {
-        // Get iterator (sync or async)
-        const isAsync = Symbol.asyncIterator in data;
-        const iterator = isAsync
-          ? (data as AsyncIterable<any>)[Symbol.asyncIterator]()
-          : (data as Iterable<any>)[Symbol.iterator]();
-
-        throwIfAborted();
-        const firstResult = await Promise.resolve(iterator.next());
-        throwIfAborted();
-        if (!firstResult.done) {
-          const first = firstResult.value;
-
-          if (RecordBatch.isRecordBatch(first)) {
-            // RecordBatch mode
-            for await (const batch of prepend(first, iterator)) {
-              throwIfAborted();
-              if (cancelled) throw createAbortError("Insert aborted");
-              await sendBatch(batch as RecordBatch);
-              throwIfAborted();
-            }
-          } else {
-            // Row object mode with batching
-            let buffer: Record<string, unknown>[] = [];
-            for await (const row of prepend(first, iterator)) {
-              throwIfAborted();
-              if (cancelled) throw createAbortError("Insert aborted");
-              buffer.push(row as Record<string, unknown>);
-              if (buffer.length >= batchSize) {
-                await sendRowBatch(buffer);
-                buffer = [];
-              }
-              throwIfAborted();
-            }
-            if (buffer.length > 0) {
-              await sendRowBatch(buffer);
-            }
-          }
-        }
       }
 
       const delimiter = this.writer.encodeData(
@@ -686,62 +662,17 @@ export class TcpClient {
         }
         throwIfAborted();
 
-        switch (packet.id) {
-          case ServerPacketId.Progress: {
-            const progress = packet.progress;
-            this.accumulateProgress(progress, progressAccumulated);
-            yield {
-              type: "Progress",
-              progress,
-              accumulated: this.snapshotProgress(progressAccumulated),
-            };
-            break;
-          }
-          case ServerPacketId.ProfileInfo:
-            yield { type: "ProfileInfo", info: packet.info };
-            break;
-          case ServerPacketId.ProfileEvents: {
-            this.processProfileEventsBlock(
-              packet.batch,
-              profileEventsAccumulated,
-              progressAccumulated,
-            );
-            yield {
-              type: "ProfileEvents",
-              batch: packet.batch,
-              accumulated: new Map(profileEventsAccumulated),
-            };
-            break;
-          }
-          case ServerPacketId.Log:
-            if (packet.batch.rowCount > 0) {
-              yield { type: "Log", entries: this.parseLogBlock(packet.batch) };
-            }
-            break;
-          default:
-            // Data echoes and other packet types carry nothing the insert
-            // caller needs; payloads were already consumed off the wire.
-            this.log(`[insert] ignoring ${serverPacketName(packet.id)} packet`);
-            break;
-        }
+        const out = this.toInsertPacket(packet, progressAccumulated, profileEventsAccumulated);
+        if (out) yield out;
       }
     } finally {
       // If generator was abandoned early, drain remaining packets
       // But only if we've sent the delimiter - otherwise server is waiting for data, not sending responses
       if (!reachedEndOfStream && !receivedException && this.socket === startSocket && this.reader) {
         if (sentDataDelimiter || cancelled) {
-          try {
-            if (!cancelled) {
-              cancelled = true;
-              await this.writeWithBackpressure(this.writer.encodeCancel());
-            }
-            await this.drainPackets(useCompression);
-          } catch (err) {
-            this.log(
-              `[insert] drain failed, closing connection: ${err instanceof Error ? err.message : err}`,
-            );
-            if (this.socket === startSocket) this.close();
-          }
+          const cancelSent = cancelled;
+          cancelled = true;
+          await this.cancelAndDrain(startSocket, useCompression, cancelSent, "insert");
         } else {
           // We're in the middle of sending data - can't drain, must close
           this.log(`[insert] error before data sent, closing connection`);
@@ -750,6 +681,70 @@ export class TcpClient {
       }
       if (this.socket === startSocket) this.busy = false;
       signal?.removeEventListener("abort", abortHandler);
+    }
+  }
+
+  /** Map a non-terminal server packet to the packet an insert yields, or null when it yields nothing. */
+  private toInsertPacket(
+    packet: WirePacket,
+    progressAccumulated: AccumulatedProgress,
+    profileEventsAccumulated: Map<string, bigint>,
+  ): Packet | null {
+    switch (packet.id) {
+      case ServerPacketId.Progress:
+        this.accumulateProgress(packet.progress, progressAccumulated);
+        return {
+          type: "Progress",
+          progress: packet.progress,
+          accumulated: this.snapshotProgress(progressAccumulated),
+        };
+      case ServerPacketId.ProfileInfo:
+        return { type: "ProfileInfo", info: packet.info };
+      case ServerPacketId.ProfileEvents:
+        return this.profileEventsPacket(
+          packet.batch,
+          profileEventsAccumulated,
+          progressAccumulated,
+        );
+      case ServerPacketId.Log:
+        return this.logPacket(packet.batch);
+      default:
+        // Data echoes and other packet types carry nothing the insert
+        // caller needs; payloads were already consumed off the wire.
+        this.log(`[insert] ignoring ${serverPacketName(packet.id)} packet`);
+        return null;
+    }
+  }
+
+  private profileEventsPacket(
+    batch: RecordBatch,
+    profileEventsAccumulated: Map<string, bigint>,
+    progressAccumulated: AccumulatedProgress,
+  ): Packet {
+    this.processProfileEventsBlock(batch, profileEventsAccumulated, progressAccumulated);
+    return { type: "ProfileEvents", batch, accumulated: new Map(profileEventsAccumulated) };
+  }
+
+  private logPacket(batch: RecordBatch): Packet | null {
+    return batch.rowCount > 0 ? { type: "Log", entries: this.parseLogBlock(batch) } : null;
+  }
+
+  /** Cancel and drain an abandoned operation. A failed drain closes the connection. */
+  private async cancelAndDrain(
+    startSocket: net.Socket,
+    useCompression: boolean,
+    cancelSent: boolean,
+    label: string,
+  ): Promise<void> {
+    try {
+      if (!cancelSent) await this.writeWithBackpressure(this.writer.encodeCancel());
+      await this.drainPackets(useCompression);
+    } catch (err) {
+      // Drain failed - connection is in unknown state, close it to prevent corruption
+      this.log(
+        `[${label}] drain failed, closing connection: ${err instanceof Error ? err.message : err}`,
+      );
+      if (this.socket === startSocket) this.close();
     }
   }
 
@@ -1242,78 +1237,13 @@ export class TcpClient {
         throwIfAborted();
         throwIfTimedOut();
 
-        switch (packet.id) {
-          case ServerPacketId.Data: {
-            const batch = packet.batch;
-            this.log(`[query] got Data block with ${batch.rowCount} rows`);
-            if (this.currentSchema === null) {
-              this.currentSchema = batch.columns.map((c) => ({ name: c.name, type: c.type }));
-            }
-            if (batch.rowCount > 0) {
-              yield { type: "Data", batch };
-            }
-            break;
-          }
-          case ServerPacketId.Progress: {
-            const progress = packet.progress;
-            this.accumulateProgress(progress, progressAccumulated);
-            // Calculate percent for queries (based on read progress)
-            const progressDenom =
-              progressAccumulated.readRows > progressAccumulated.totalRowsToRead
-                ? progressAccumulated.readRows
-                : progressAccumulated.totalRowsToRead;
-            progressAccumulated.percent =
-              progressDenom > 0n
-                ? Number((progressAccumulated.readRows * 100n) / progressDenom)
-                : 0;
-            yield {
-              type: "Progress",
-              progress,
-              accumulated: this.snapshotProgress(progressAccumulated),
-            };
-            break;
-          }
-          case ServerPacketId.ProfileInfo:
-            yield { type: "ProfileInfo", info: packet.info };
-            break;
-          case ServerPacketId.ProfileEvents: {
-            this.processProfileEventsBlock(
-              packet.batch,
-              profileEventsAccumulated,
-              progressAccumulated,
-            );
-            yield {
-              type: "ProfileEvents",
-              batch: packet.batch,
-              accumulated: new Map(profileEventsAccumulated),
-            };
-            break;
-          }
-          case ServerPacketId.Totals:
-            yield { type: "Totals", batch: packet.batch };
-            break;
-          case ServerPacketId.Extremes:
-            yield { type: "Extremes", batch: packet.batch };
-            break;
-          case ServerPacketId.Log:
-            if (packet.batch.rowCount > 0) {
-              yield { type: "Log", entries: this.parseLogBlock(packet.batch) };
-            }
-            break;
-          case ServerPacketId.TimezoneUpdate:
-            this.log(`[query] timezone updated to: ${packet.timezone}`);
-            break;
-          default:
-            throw new Error(`Unexpected packet during query: ${serverPacketName(packet.id)}`);
-        }
+        const out = this.toQueryPacket(packet, progressAccumulated, profileEventsAccumulated);
+        if (out) yield out;
       }
     } catch (err: any) {
-      if (err?.name === "AbortError") {
-        throw err;
-      }
       if (
         timedOut &&
-        (err.message === "Premature close" || err.code === "ERR_STREAM_PREMATURE_CLOSE")
+        (err?.message === "Premature close" || err?.code === "ERR_STREAM_PREMATURE_CLOSE")
       ) {
         throw new Error(`Query timeout after ${queryTimeout}ms`);
       }
@@ -1323,23 +1253,58 @@ export class TcpClient {
       // to keep the connection in a clean state for subsequent queries.
       // Skip draining if we received an exception - server sends nothing after exception.
       if (!reachedEndOfStream && !receivedException && this.socket === startSocket && this.reader) {
-        try {
-          if (!cancelled) {
-            cancelled = true;
-            await this.writeWithBackpressure(this.writer.encodeCancel());
-          }
-          await this.drainPackets(useCompression);
-        } catch (err) {
-          // Drain failed - connection is in unknown state, close it to prevent corruption
-          this.log(
-            `[query] drain failed, closing connection: ${err instanceof Error ? err.message : err}`,
-          );
-          if (this.socket === startSocket) this.close();
-        }
+        const cancelSent = cancelled;
+        cancelled = true;
+        await this.cancelAndDrain(startSocket, useCompression, cancelSent, "query");
       }
       if (this.socket === startSocket) this.busy = false;
       clearQueryTimeout();
       signal?.removeEventListener("abort", abortHandler);
+    }
+  }
+
+  /** Map a non-terminal server packet to the packet a query yields, or null when it yields nothing. */
+  private toQueryPacket(
+    packet: WirePacket,
+    progressAccumulated: AccumulatedProgress,
+    profileEventsAccumulated: Map<string, bigint>,
+  ): Packet | null {
+    switch (packet.id) {
+      case ServerPacketId.Data: {
+        const batch = packet.batch;
+        this.log(`[query] got Data block with ${batch.rowCount} rows`);
+        this.currentSchema ??= batch.columns.map((c) => ({ name: c.name, type: c.type }));
+        return batch.rowCount > 0 ? { type: "Data", batch } : null;
+      }
+      case ServerPacketId.Progress: {
+        const progress = packet.progress;
+        this.accumulateProgress(progress, progressAccumulated);
+        progressAccumulated.percent = readPercent(progressAccumulated);
+        return {
+          type: "Progress",
+          progress,
+          accumulated: this.snapshotProgress(progressAccumulated),
+        };
+      }
+      case ServerPacketId.ProfileInfo:
+        return { type: "ProfileInfo", info: packet.info };
+      case ServerPacketId.ProfileEvents:
+        return this.profileEventsPacket(
+          packet.batch,
+          profileEventsAccumulated,
+          progressAccumulated,
+        );
+      case ServerPacketId.Totals:
+        return { type: "Totals", batch: packet.batch };
+      case ServerPacketId.Extremes:
+        return { type: "Extremes", batch: packet.batch };
+      case ServerPacketId.Log:
+        return this.logPacket(packet.batch);
+      case ServerPacketId.TimezoneUpdate:
+        this.log(`[query] timezone updated to: ${packet.timezone}`);
+        return null;
+      default:
+        throw new Error(`Unexpected packet during query: ${serverPacketName(packet.id)}`);
     }
   }
 

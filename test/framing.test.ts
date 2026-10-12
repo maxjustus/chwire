@@ -5,7 +5,7 @@
 
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { parseFramedStream, type FramedPacket, type FramingFormat } from "../framing.ts";
+import { type FramedPacket, type FramingFormat, parseFramedStream } from "../framing.ts";
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();

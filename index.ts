@@ -1,19 +1,4 @@
 export {
-  batchFromCols,
-  batchFromRows,
-  ClickHouseDateTime64,
-  type ColumnDef,
-  collectRows,
-  DynamicValue,
-  VariantValue,
-  encodeNative,
-  getCodec,
-  RecordBatch,
-  rows,
-  streamDecodeNative,
-  streamEncodeNative,
-} from "./native/index.ts";
-export {
   buildReqUrl,
   ClickHouseException,
   type Compression,
@@ -37,4 +22,19 @@ export {
   encodeBlock,
   Method,
 } from "./compression.ts";
+export {
+  batchFromCols,
+  batchFromRows,
+  ClickHouseDateTime64,
+  type ColumnDef,
+  collectRows,
+  DynamicValue,
+  encodeNative,
+  getCodec,
+  RecordBatch,
+  rows,
+  streamDecodeNative,
+  streamEncodeNative,
+  VariantValue,
+} from "./native/index.ts";
 export type { ClickHouseSettings } from "./settings.generated.ts";
