@@ -3,14 +3,16 @@
 //        CH_VERSIONS="24.8 25.8 26.4" npm run test:matrix
 import { spawnSync } from "node:child_process";
 
-const versions = (process.env.CH_VERSIONS ?? "25.8 26.4").split(/[\s,]+/).filter(Boolean);
+const versions = (process.env.CH_VERSIONS ?? "25.8 26.4 26.9").split(/[\s,]+/).filter(Boolean);
 const failed = [];
 
 for (const version of versions) {
   console.log(`\n=== ClickHouse ${version} ===`);
+  const [major, minor] = version.split(".").map(Number);
+  const framing = major > 26 || (major === 26 && minor >= 8) ? { CH_FRAMING_VERSION: version } : {};
   const result = spawnSync("npm", ["test"], {
     stdio: "inherit",
-    env: { ...process.env, CH_VERSION: version },
+    env: { ...framing, ...process.env, CH_VERSION: version },
   });
   if (result.status !== 0) failed.push(version);
 }
