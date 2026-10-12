@@ -4,7 +4,7 @@
 
 ### Added
 
-- `framing` query option parses ClickHouse 26.8+ framed HTTP responses (`framing_output_format`: `EventStream`, `JSONEachPacketBase64`, `JSONEachPacketString`). Rows and progress arrive as the server sends them, also with block compression. Data, totals, and extremes arrive as `Data` packets with a `kind` tag. Logs and profile events arrive as `Log` and `ProfileEvents` packets. Errors throw, also after a 200. The default format becomes `JSONEachRow`, because the server rejects the `*WithProgress` formats under framing.
+- `framing` query option parses ClickHouse 26.8+ framed HTTP responses (`framing_output_format`: `EventStream`, `JSONEachPacketBase64`, `JSONEachPacketString`). Rows and progress arrive as the server sends them, also with block compression. Data, totals, and extremes arrive as `Data` packets with a `kind` tag. Logs and profile events arrive as `Log` and `ProfileEvents` packets. As on TCP, `ProfileEvents` packets carry an `accumulated` map: increments summed, gauges at their latest value. Errors throw, also after a 200. The default format becomes `JSONEachRow`, because the server rejects the `*WithProgress` formats under framing.
 
 ### Fixed
 

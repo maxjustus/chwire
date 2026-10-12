@@ -174,6 +174,24 @@ describe("HTTP framing formats", { timeout: 120000 }, () => {
     }
   });
 
+  describe("Profile event accumulation", () => {
+    it("sums increments and keeps the latest gauge across packets", async () => {
+      const packets = await collectPackets(
+        "SELECT number FROM numbers(10) SETTINGS max_block_size = 1, interactive_delay = 0 FORMAT JSONEachRow",
+        { url, auth, sessionId, framing: "EventStream", compression: false },
+      );
+      const profileEvents = packets.filter((p) => p.type === "ProfileEvents");
+      const events = profileEvents.flatMap((p) => p.events);
+      const selected = events.filter((e) => e.name === "SelectedRows");
+      assert.ok(selected.length > 1, "should split SelectedRows across packets");
+
+      const accumulated = profileEvents.at(-1)!.accumulated;
+      assert.strictEqual(accumulated.get("SelectedRows"), 10n);
+      const memory = events.filter((e) => e.name === "MemoryTrackerUsage");
+      assert.strictEqual(accumulated.get("MemoryTrackerUsage"), BigInt(memory.at(-1)!.value));
+    });
+  });
+
   describe("Exception packets", () => {
     for (const framing of FRAMINGS) {
       it(`surfaces an error that precedes the response under ${framing}`, async () => {
