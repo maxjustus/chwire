@@ -16,7 +16,7 @@
         "noExplicitAny": "off"
       },
       "style": {
-        "noNestedTernary": "warn",
+        "noNestedTernary": "error",
         "noNonNullAssertion": "off"
       }
     }
