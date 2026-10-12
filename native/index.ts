@@ -320,20 +320,14 @@ export async function* streamDecodeNative(
     totalBytesReceived += chunk.length;
 
     while (blockBuffer.available >= 2 && backoff.ready(blockBuffer.available)) {
-      let block: BlockResult;
-      try {
-        block = decodeNativeBlockWithReader(
-          new BufferReader(blockBuffer.view, 0, options),
-          options,
-          partial,
-        );
-      } catch (e) {
-        if (!(e instanceof BufferUnderflowError)) throw e;
+      const block = decodeBufferedBlock(blockBuffer, options, partial);
+      if (block instanceof BufferUnderflowError) {
         // Resume from the last completed column. Reset the backoff when we've
         // made column progress, or on the first underflow for this block.
         const progressed =
-          e instanceof BlockUnderflowError && e.partial.nextColIndex !== partial?.nextColIndex;
-        if (e instanceof BlockUnderflowError) partial = e.partial;
+          block instanceof BlockUnderflowError &&
+          block.partial.nextColIndex !== partial?.nextColIndex;
+        if (block instanceof BlockUnderflowError) partial = block.partial;
         backoff.underflow(blockBuffer.available, chunk.length, progressed);
         underruns++;
         break; // need more data
@@ -347,21 +341,14 @@ export async function* streamDecodeNative(
 
   // Final: decode remaining data (no more chunks coming)
   while (blockBuffer.available > 0) {
-    let block: BlockResult;
-    try {
-      block = decodeNativeBlockWithReader(
-        new BufferReader(blockBuffer.view, 0, options),
-        options,
-        partial,
-      );
-    } catch (e) {
-      if (!(e instanceof BufferUnderflowError)) throw e;
+    const block = decodeBufferedBlock(blockBuffer, options, partial);
+    if (block instanceof BufferUnderflowError) {
       // The source is done but a block is incomplete: the stream was
       // truncated (or an earlier block desynced the parser). Name the
       // condition instead of surfacing a bare buffer-underflow.
       throw new Error(
         `Native stream ended mid-block after ${blocksDecoded} blocks ` +
-          `(${blockBuffer.available} unconsumed bytes, ${totalBytesReceived} received): ${e.message}`,
+          `(${blockBuffer.available} unconsumed bytes, ${totalBytesReceived} received): ${block.message}`,
       );
     }
     blockBuffer.startNextBlock(block.bytesConsumed);
@@ -373,6 +360,24 @@ export async function* streamDecodeNative(
     console.log(
       `[streamDecodeNative] ${blocksDecoded} blocks, ${totalBytesReceived} bytes, ${underruns} underruns`,
     );
+  }
+}
+
+/** Decode the block at the buffer start, or return the underflow when it is incomplete. */
+function decodeBufferedBlock(
+  blockBuffer: BlockBuffer,
+  options: DecodeOptions | undefined,
+  partial: PartialBlockState | undefined,
+): BlockResult | BufferUnderflowError {
+  try {
+    return decodeNativeBlockWithReader(
+      new BufferReader(blockBuffer.view, 0, options),
+      options,
+      partial,
+    );
+  } catch (e) {
+    if (e instanceof BufferUnderflowError) return e;
+    throw e;
   }
 }
 
