@@ -154,6 +154,49 @@ function validateSchema(expected: ColumnDef[], actual: ColumnSchema[]): void {
   }
 }
 
+/**
+ * Group insert input into Data-packet chunks. The first item picks the mode:
+ * RecordBatches pass through, row objects are buffered into `batchSize` arrays.
+ */
+async function* insertChunks(
+  data:
+    | RecordBatch
+    | Iterable<RecordBatch | Record<string, unknown>>
+    | AsyncIterable<RecordBatch | Record<string, unknown>>,
+  batchSize: number,
+  throwIfAborted: () => void,
+): AsyncGenerator<RecordBatch | Record<string, unknown>[]> {
+  if (RecordBatch.isRecordBatch(data)) {
+    yield data;
+    return;
+  }
+  const iterator =
+    Symbol.asyncIterator in data ? data[Symbol.asyncIterator]() : data[Symbol.iterator]();
+  throwIfAborted();
+  const first = await iterator.next();
+  throwIfAborted();
+  if (first.done) return;
+
+  const items = prepend(first.value, iterator);
+  if (RecordBatch.isRecordBatch(first.value)) {
+    for await (const batch of items) {
+      throwIfAborted();
+      yield batch as RecordBatch;
+    }
+    return;
+  }
+  let rows: Record<string, unknown>[] = [];
+  for await (const row of items) {
+    throwIfAborted();
+    rows.push(row as Record<string, unknown>);
+    if (rows.length >= batchSize) {
+      yield rows;
+      rows = [];
+    }
+  }
+  if (rows.length > 0) yield rows;
+}
+
 export class TcpClient {
   private socket: net.Socket | null = null;
   private reader: StreamingReader | null = null;
@@ -561,95 +604,16 @@ export class TcpClient {
       }
 
       let totalInserted = 0;
-
-      const sendBatch = async (batch: RecordBatch) => {
+      for await (const chunk of insertChunks(data, batchSize, throwIfAborted)) {
         throwIfAborted();
         if (cancelled) throw createAbortError("Insert aborted");
-        const dataPacket = this.encodeBatchAsDataPacket("", batch, useCompression, compression);
+        const isBatch = RecordBatch.isRecordBatch(chunk);
+        const dataPacket = isBatch
+          ? this.encodeBatchAsDataPacket("", chunk, useCompression, compression)
+          : this.encodeRowsAsDataPacket(chunk, serverSchema, useCompression, compression);
         await this.writeWithBackpressure(dataPacket);
         throwIfAborted();
-        totalInserted += batch.rowCount;
-      };
-
-      const sendRowBatch = async (rows: Record<string, unknown>[]) => {
-        throwIfAborted();
-        if (rows.length === 0) return;
-        const numCols = serverSchema.length;
-        const codecs = serverSchema.map((c) => getCodec(c.type));
-
-        const columns = transposeRowObjectsToColumns(serverSchema, rows);
-
-        // Build Column objects via codecs (coercion happens in fromValues)
-        const encodedColumns = [];
-        for (let i = 0; i < numCols; i++) {
-          const codec = codecs[i]!;
-          const col = codec.fromValues(columns[i]!);
-          const writer = new BufferWriter();
-          codec.writePrefix(writer, col);
-          writer.write(codec.encode(col));
-          const schemaCol = serverSchema[i]!;
-          encodedColumns.push({
-            name: schemaCol.name,
-            type: schemaCol.type,
-            data: writer.finish(),
-          });
-        }
-
-        const dataPacket = this.writer.encodeData(
-          "",
-          rows.length,
-          encodedColumns,
-          this.serverHello!.revision,
-          useCompression,
-          compression,
-        );
-        await this.writeWithBackpressure(dataPacket);
-        throwIfAborted();
-        totalInserted += rows.length;
-      };
-
-      // Single RecordBatch - fast path
-      if (RecordBatch.isRecordBatch(data)) {
-        await sendBatch(data);
-      } else {
-        // Get iterator (sync or async)
-        const isAsync = Symbol.asyncIterator in data;
-        const iterator = isAsync
-          ? (data as AsyncIterable<any>)[Symbol.asyncIterator]()
-          : (data as Iterable<any>)[Symbol.iterator]();
-
-        throwIfAborted();
-        const firstResult = await Promise.resolve(iterator.next());
-        throwIfAborted();
-        if (!firstResult.done) {
-          const first = firstResult.value;
-
-          if (RecordBatch.isRecordBatch(first)) {
-            // RecordBatch mode
-            for await (const batch of prepend(first, iterator)) {
-              throwIfAborted();
-              if (cancelled) throw createAbortError("Insert aborted");
-              await sendBatch(batch as RecordBatch);
-              throwIfAborted();
-            }
-          } else {
-            // Row object mode with batching
-            let buffer: Record<string, unknown>[] = [];
-            for await (const row of prepend(first, iterator)) {
-              throwIfAborted();
-              if (cancelled) throw createAbortError("Insert aborted");
-              buffer.push(row as Record<string, unknown>);
-              if (buffer.length >= batchSize) {
-                await sendRowBatch(buffer);
-                buffer = [];
-              }
-              throwIfAborted();
-            }
-            if (buffer.length > 0) {
-              await sendRowBatch(buffer);
-            }
-          }
-        }
+        totalInserted += isBatch ? chunk.rowCount : chunk.length;
       }
 
       const delimiter = this.writer.encodeData(
@@ -1363,6 +1327,34 @@ export class TcpClient {
     return this.writer.encodeData(
       tableName,
       batch.rowCount,
+      encodedColumns,
+      this.serverHello!.revision,
+      compress,
+      compression,
+    );
+  }
+
+  /** Encode row objects as a Data packet, coercing each value through the server schema. */
+  private encodeRowsAsDataPacket(
+    rows: Record<string, unknown>[],
+    serverSchema: ColumnSchema[],
+    compress: boolean,
+    compression: Compression,
+  ): Uint8Array {
+    const columns = transposeRowObjectsToColumns(serverSchema, rows);
+    const encodedColumns = [];
+    for (let i = 0; i < serverSchema.length; i++) {
+      const schemaCol = serverSchema[i]!;
+      const codec = getCodec(schemaCol.type);
+      const col = codec.fromValues(columns[i]!);
+      const writer = new BufferWriter();
+      codec.writePrefix(writer, col);
+      writer.write(codec.encode(col));
+      encodedColumns.push({ name: schemaCol.name, type: schemaCol.type, data: writer.finish() });
+    }
+    return this.writer.encodeData(
+      "",
+      rows.length,
       encodedColumns,
       this.serverHello!.revision,
       compress,
