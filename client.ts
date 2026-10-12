@@ -12,6 +12,7 @@ import {
 } from "./compression.ts";
 import { ClickHouseException } from "./errors.ts";
 import {
+  type FramedPacket,
   type FramingFormat,
   type HttpLogEntry,
   type HttpProfileEvent,
@@ -734,60 +735,16 @@ function query(sql: string, options: QueryOptions = {}): CollectableAsyncGenerat
 
 async function* queryImpl(sql: string, options: QueryOptions = {}): AsyncGenerator<QueryPacket> {
   await init();
-  const baseUrl = options.url || "http://localhost:8123/";
-  const compression = options.compression ?? "lz4";
-  const compressed = compression !== false;
+  const compressed = (options.compression ?? "lz4") !== false;
   const framing = options.framing;
-  const params: Record<string, string> = {
-    // The server rejects the *WithProgress formats under framing: they write
-    // progress in-band, which framing delivers as its own packets instead.
-    default_format: framing ? "JSONEachRow" : "JSONEachRowWithProgress",
-  };
-
-  if (options.sessionId) {
-    params.session_id = options.sessionId;
-  }
-
-  if (compressed) {
-    params.compress = "1";
-  }
-
-  if (options.compressQuery) {
-    params.enable_http_compression = "1";
-  }
-
-  if (framing) {
-    params.framing_output_format = framing;
-  }
-
-  if (options.clientVersion) {
-    params.client_protocol_version = String(options.clientVersion);
-  }
-
-  if (options.queryId) {
-    params.query_id = options.queryId;
-  }
-
-  mergeParams(params, options.settings);
-  mergeQueryParams(params, sql, options.params);
-  mergeRawHttpQueryOptions(params, options);
-
-  // Handle external tables: normalize inputs, query goes in URL, body is multipart
-  const hasExternalTables =
-    options.externalTables && Object.keys(options.externalTables).length > 0;
-  let normalizedTables: Record<string, HttpExternalTable> | undefined;
-  if (hasExternalTables) {
-    normalizedTables = await normalizeExternalTables(options.externalTables!);
-    params.query = sql;
-    for (const [name, table] of Object.entries(normalizedTables)) {
-      params[`${name}_structure`] = table.structure;
-      if (table.format) {
-        params[`${name}_format`] = table.format;
-      }
-    }
-  }
-
-  const url = buildReqUrl(baseUrl, params);
+  const tables =
+    options.externalTables && Object.keys(options.externalTables).length > 0
+      ? await normalizeExternalTables(options.externalTables)
+      : undefined;
+  const url = buildReqUrl(
+    options.url || "http://localhost:8123/",
+    buildQueryParams(sql, options, compressed, tables),
+  );
 
   const headers: Record<string, string> = {
     ...authHeaders(options.auth),
@@ -798,70 +755,13 @@ async function* queryImpl(sql: string, options: QueryOptions = {}): AsyncGenerat
     // error bodies, and gzip framing perturbs mid-stream exception delivery.
     "Accept-Encoding": "identity",
   };
-
-  let response: Response;
-  if (hasExternalTables) {
-    const { body, boundary } = buildMultipartBody(normalizedTables!);
-    headers["Content-Type"] = `multipart/form-data; boundary=${boundary}`;
-
-    // Need duplex: "half" for streaming body
-    const fetchOptions: RequestInit & { duplex?: string } = {
-      method: "POST",
-      body,
-      headers,
-      signal: createSignal(options.signal, options.timeout) ?? null,
-    };
-    if (body instanceof ReadableStream) {
-      fetchOptions.duplex = "half";
-    }
-    response = await fetch(url.toString(), fetchOptions);
-  } else {
-    let body: string | Uint8Array = sql;
-    if (options.compressQuery) {
-      const queryBytes = encoder.encode(sql);
-      const method =
-        typeof options.compressQuery === "object"
-          ? options.compressQuery.method
-          : options.compressQuery;
-      body =
-        method === "lz4"
-          ? lz4CompressFrame(queryBytes)
-          : zstdCompressRaw(queryBytes, compressionLevel(options.compressQuery));
-      headers["Content-Encoding"] = method;
-    }
-    response = await fetch(url.toString(), {
-      method: "POST",
-      body,
-      headers,
-      signal: createSignal(options.signal, options.timeout) ?? null,
-    });
-  }
+  const signal = createSignal(options.signal, options.timeout) ?? null;
+  const response = tables
+    ? await postExternalTables(url, headers, tables, signal)
+    : await postQuery(url, headers, sql, options.compressQuery, signal);
 
   if (!response.ok) {
-    // Error responses may be compressed if we requested compression
-    let body: string;
-    if (compressed && response.body) {
-      const raw = new Uint8Array(await response.arrayBuffer());
-      try {
-        body = new TextDecoder().decode(decodeBlocks(raw));
-      } catch {
-        // Decompression failed - response is likely plain text
-        body = new TextDecoder().decode(raw);
-      }
-    } else {
-      body = await response.text();
-    }
-    // Query errors keep the framing. Auth and setting errors arrive as plain text.
-    const contentType = response.headers.get("Content-Type") ?? "";
-    if (framing && /^(text\/event-stream|application\/x-ndjson)/.test(contentType)) {
-      for await (const packet of parseFramedStream(
-        toAsyncIterable<Uint8Array>(encoder.encode(body)),
-        framing,
-      )) {
-        if (packet.kind === "exception") body = packet.message;
-      }
-    }
-    throw parseHttpError(response, body);
+    throw parseHttpError(response, await readErrorBody(response, compressed, framing));
   }
 
   if (!response.body) {
@@ -907,27 +807,12 @@ async function* queryImpl(sql: string, options: QueryOptions = {}): AsyncGenerat
   // Yield Data packets from body stream
   if (framing) {
     const profileEvents = new Map<string, bigint>();
-    for await (const packet of parseFramedStream(createStream(), framing)) {
-      if (packet.kind === "exception") throw exceptionFromText(packet.message);
-      if (packet.kind === "progress") {
-        // Headers leave before the first packet, so X-ClickHouse-Summary holds
-        // zeros. Progress is cumulative and the last packet has the totals.
-        summary = { ...summary, ...packet.progress };
-        yield { type: "Progress", progress: packet.progress };
-      } else if (packet.kind === "log") {
-        yield { type: "Log", entries: [packet.entry] };
-      } else if (packet.kind === "profile_events") {
-        for (const event of packet.events) {
-          const value = BigInt(event.value);
-          profileEvents.set(
-            event.name,
-            event.type === "increment" ? (profileEvents.get(event.name) ?? 0n) + value : value,
-          );
-        }
-        yield { type: "ProfileEvents", events: packet.events, accumulated: new Map(profileEvents) };
-      } else {
-        yield { type: "Data", chunk: packet.payload, kind: packet.kind };
-      }
+    for await (const framed of parseFramedStream(createStream(), framing)) {
+      const packet = toQueryPacket(framed, profileEvents);
+      // Headers leave before the first packet, so X-ClickHouse-Summary holds
+      // zeros. Progress is cumulative and the last packet has the totals.
+      if (packet.type === "Progress") summary = { ...summary, ...packet.progress };
+      yield packet;
     }
   } else {
     for await (const chunk of createStream()) {
@@ -937,6 +822,127 @@ async function* queryImpl(sql: string, options: QueryOptions = {}): AsyncGenerat
 
   // Yield Summary packet at end
   yield { type: "Summary", summary, queryId };
+}
+
+function buildQueryParams(
+  sql: string,
+  options: QueryOptions,
+  compressed: boolean,
+  tables: Record<string, HttpExternalTable> | undefined,
+): Record<string, string> {
+  const params: Record<string, string> = {
+    // The server rejects the *WithProgress formats under framing: they write
+    // progress in-band, which framing delivers as its own packets instead.
+    default_format: options.framing ? "JSONEachRow" : "JSONEachRowWithProgress",
+  };
+  if (options.sessionId) params.session_id = options.sessionId;
+  if (compressed) params.compress = "1";
+  if (options.compressQuery) params.enable_http_compression = "1";
+  if (options.framing) params.framing_output_format = options.framing;
+  if (options.clientVersion) params.client_protocol_version = String(options.clientVersion);
+  if (options.queryId) params.query_id = options.queryId;
+
+  mergeParams(params, options.settings);
+  mergeQueryParams(params, sql, options.params);
+  mergeRawHttpQueryOptions(params, options);
+
+  // External tables take the body as multipart, so the query moves to the URL.
+  if (tables) {
+    params.query = sql;
+    for (const [name, table] of Object.entries(tables)) {
+      params[`${name}_structure`] = table.structure;
+      if (table.format) params[`${name}_format`] = table.format;
+    }
+  }
+  return params;
+}
+
+function postExternalTables(
+  url: URL,
+  headers: Record<string, string>,
+  tables: Record<string, HttpExternalTable>,
+  signal: AbortSignal | null,
+): Promise<Response> {
+  const { body, boundary } = buildMultipartBody(tables);
+  headers["Content-Type"] = `multipart/form-data; boundary=${boundary}`;
+  const fetchOptions: RequestInit & { duplex?: string } = { method: "POST", body, headers, signal };
+  // Need duplex: "half" for streaming body
+  if (body instanceof ReadableStream) {
+    fetchOptions.duplex = "half";
+  }
+  return fetch(url.toString(), fetchOptions);
+}
+
+function postQuery(
+  url: URL,
+  headers: Record<string, string>,
+  sql: string,
+  compressQuery: QueryOptions["compressQuery"],
+  signal: AbortSignal | null,
+): Promise<Response> {
+  let body: string | Uint8Array = sql;
+  if (compressQuery) {
+    const queryBytes = encoder.encode(sql);
+    const method = typeof compressQuery === "object" ? compressQuery.method : compressQuery;
+    body =
+      method === "lz4"
+        ? lz4CompressFrame(queryBytes)
+        : zstdCompressRaw(queryBytes, compressionLevel(compressQuery));
+    headers["Content-Encoding"] = method;
+  }
+  return fetch(url.toString(), { method: "POST", body, headers, signal });
+}
+
+async function readErrorBody(
+  response: Response,
+  compressed: boolean,
+  framing: QueryOptions["framing"],
+): Promise<string> {
+  // Error responses may be compressed if we requested compression
+  let body: string;
+  if (compressed && response.body) {
+    const raw = new Uint8Array(await response.arrayBuffer());
+    try {
+      body = new TextDecoder().decode(decodeBlocks(raw));
+    } catch {
+      // Decompression failed - response is likely plain text
+      body = new TextDecoder().decode(raw);
+    }
+  } else {
+    body = await response.text();
+  }
+  // Query errors keep the framing. Auth and setting errors arrive as plain text.
+  const contentType = response.headers.get("Content-Type") ?? "";
+  if (!framing || !/^(text\/event-stream|application\/x-ndjson)/.test(contentType)) return body;
+  for await (const packet of parseFramedStream(
+    toAsyncIterable<Uint8Array>(encoder.encode(body)),
+    framing,
+  )) {
+    if (packet.kind === "exception") body = packet.message;
+  }
+  return body;
+}
+
+function toQueryPacket(packet: FramedPacket, profileEvents: Map<string, bigint>): QueryPacket {
+  switch (packet.kind) {
+    case "exception":
+      throw exceptionFromText(packet.message);
+    case "progress":
+      return { type: "Progress", progress: packet.progress };
+    case "log":
+      return { type: "Log", entries: [packet.entry] };
+    case "profile_events":
+      for (const event of packet.events) {
+        const value = BigInt(event.value);
+        profileEvents.set(
+          event.name,
+          event.type === "increment" ? (profileEvents.get(event.name) ?? 0n) + value : value,
+        );
+      }
+      return { type: "ProfileEvents", events: packet.events, accumulated: new Map(profileEvents) };
+    default:
+      return { type: "Data", chunk: packet.payload, kind: packet.kind };
+  }
 }
 
 // Keep a small tail so a framed exception preamble split across reads
