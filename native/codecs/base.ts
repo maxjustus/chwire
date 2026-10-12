@@ -482,28 +482,31 @@ function scatterSparse(codec: BaseCodec, values: Column, indices: number[], rows
 export function deepCompare(a: unknown, b: unknown): boolean {
   if (Object.is(a, b)) return true;
   if (a === null || b === null || typeof a !== "object" || typeof b !== "object") return false;
-
-  if (a instanceof Uint8Array && b instanceof Uint8Array) {
-    if (a.length !== b.length) return false;
-    for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
-    return true;
-  }
+  if (a instanceof Uint8Array && b instanceof Uint8Array) return bytesEqual(a, b);
   if (a instanceof Date && b instanceof Date) return a.getTime() === b.getTime();
-
   if (Array.isArray(a) || Array.isArray(b)) {
-    if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false;
-    for (let i = 0; i < a.length; i++) if (!deepCompare(a[i], b[i])) return false;
-    return true;
+    return Array.isArray(a) && Array.isArray(b) && arraysEqual(a, b);
   }
+  return ownKeysEqual(a as Record<string, unknown>, b as Record<string, unknown>);
+}
 
-  const ao = a as Record<string, unknown>;
-  const bo = b as Record<string, unknown>;
-  const aKeys = Object.keys(ao);
-  const bKeys = Object.keys(bo);
-  if (aKeys.length !== bKeys.length) return false;
+function bytesEqual(a: Uint8Array, b: Uint8Array): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+  return true;
+}
+
+function arraysEqual(a: unknown[], b: unknown[]): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) if (!deepCompare(a[i], b[i])) return false;
+  return true;
+}
+
+function ownKeysEqual(a: Record<string, unknown>, b: Record<string, unknown>): boolean {
+  const aKeys = Object.keys(a);
+  if (aKeys.length !== Object.keys(b).length) return false;
   for (const key of aKeys) {
-    if (!Object.hasOwn(bo, key)) return false;
-    if (!deepCompare(ao[key], bo[key])) return false;
+    if (!Object.hasOwn(b, key) || !deepCompare(a[key], b[key])) return false;
   }
   return true;
 }
