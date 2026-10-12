@@ -286,13 +286,11 @@ const SCHEMAS: Record<(typeof DATA_TYPES)[number], Schema> = {
     ],
     generate: (i) => [
       i,
-      i % 3 === 0
-        ? [0, `str_${i}`]
-        : // String
-          i % 3 === 1
-          ? [1, BigInt(i * 100)]
-          : // Int64
-            [2, Math.random()], // Float64
+      [
+        [0, `str_${i}`], // String
+        [1, BigInt(i * 100)], // Int64
+        [2, Math.random()], // Float64
+      ][i % 3],
     ],
   },
 
@@ -301,16 +299,7 @@ const SCHEMAS: Record<(typeof DATA_TYPES)[number], Schema> = {
       { name: "id", type: "UInt32" },
       { name: "d", type: "Dynamic" },
     ],
-    generate: (i) => [
-      i,
-      i % 4 === 0
-        ? `str_${i}`
-        : i % 4 === 1
-          ? BigInt(i)
-          : i % 4 === 2
-            ? Math.random() * 100
-            : i % 2 === 0,
-    ],
+    generate: (i) => [i, [`str_${i}`, BigInt(i), Math.random() * 100, false][i % 4]],
   },
 
   json: {
