@@ -656,44 +656,8 @@ export class TcpClient {
         }
         throwIfAborted();
 
-        switch (packet.id) {
-          case ServerPacketId.Progress: {
-            const progress = packet.progress;
-            this.accumulateProgress(progress, progressAccumulated);
-            yield {
-              type: "Progress",
-              progress,
-              accumulated: this.snapshotProgress(progressAccumulated),
-            };
-            break;
-          }
-          case ServerPacketId.ProfileInfo:
-            yield { type: "ProfileInfo", info: packet.info };
-            break;
-          case ServerPacketId.ProfileEvents: {
-            this.processProfileEventsBlock(
-              packet.batch,
-              profileEventsAccumulated,
-              progressAccumulated,
-            );
-            yield {
-              type: "ProfileEvents",
-              batch: packet.batch,
-              accumulated: new Map(profileEventsAccumulated),
-            };
-            break;
-          }
-          case ServerPacketId.Log:
-            if (packet.batch.rowCount > 0) {
-              yield { type: "Log", entries: this.parseLogBlock(packet.batch) };
-            }
-            break;
-          default:
-            // Data echoes and other packet types carry nothing the insert
-            // caller needs; payloads were already consumed off the wire.
-            this.log(`[insert] ignoring ${serverPacketName(packet.id)} packet`);
-            break;
-        }
+        const out = this.toInsertPacket(packet, progressAccumulated, profileEventsAccumulated);
+        if (out) yield out;
       }
     } finally {
       // If generator was abandoned early, drain remaining packets
@@ -712,6 +676,51 @@ export class TcpClient {
       if (this.socket === startSocket) this.busy = false;
       signal?.removeEventListener("abort", abortHandler);
     }
+  }
+
+  /** Map a non-terminal server packet to the packet an insert yields, or null when it yields nothing. */
+  private toInsertPacket(
+    packet: WirePacket,
+    progressAccumulated: AccumulatedProgress,
+    profileEventsAccumulated: Map<string, bigint>,
+  ): Packet | null {
+    switch (packet.id) {
+      case ServerPacketId.Progress:
+        this.accumulateProgress(packet.progress, progressAccumulated);
+        return {
+          type: "Progress",
+          progress: packet.progress,
+          accumulated: this.snapshotProgress(progressAccumulated),
+        };
+      case ServerPacketId.ProfileInfo:
+        return { type: "ProfileInfo", info: packet.info };
+      case ServerPacketId.ProfileEvents:
+        return this.profileEventsPacket(
+          packet.batch,
+          profileEventsAccumulated,
+          progressAccumulated,
+        );
+      case ServerPacketId.Log:
+        return this.logPacket(packet.batch);
+      default:
+        // Data echoes and other packet types carry nothing the insert
+        // caller needs; payloads were already consumed off the wire.
+        this.log(`[insert] ignoring ${serverPacketName(packet.id)} packet`);
+        return null;
+    }
+  }
+
+  private profileEventsPacket(
+    batch: RecordBatch,
+    profileEventsAccumulated: Map<string, bigint>,
+    progressAccumulated: AccumulatedProgress,
+  ): Packet {
+    this.processProfileEventsBlock(batch, profileEventsAccumulated, progressAccumulated);
+    return { type: "ProfileEvents", batch, accumulated: new Map(profileEventsAccumulated) };
+  }
+
+  private logPacket(batch: RecordBatch): Packet | null {
+    return batch.rowCount > 0 ? { type: "Log", entries: this.parseLogBlock(batch) } : null;
   }
 
   /** Cancel and drain an abandoned operation. A failed drain closes the connection. */
@@ -1274,20 +1283,17 @@ export class TcpClient {
       case ServerPacketId.ProfileInfo:
         return { type: "ProfileInfo", info: packet.info };
       case ServerPacketId.ProfileEvents:
-        this.processProfileEventsBlock(packet.batch, profileEventsAccumulated, progressAccumulated);
-        return {
-          type: "ProfileEvents",
-          batch: packet.batch,
-          accumulated: new Map(profileEventsAccumulated),
-        };
+        return this.profileEventsPacket(
+          packet.batch,
+          profileEventsAccumulated,
+          progressAccumulated,
+        );
       case ServerPacketId.Totals:
         return { type: "Totals", batch: packet.batch };
       case ServerPacketId.Extremes:
         return { type: "Extremes", batch: packet.batch };
       case ServerPacketId.Log:
-        return packet.batch.rowCount > 0
-          ? { type: "Log", entries: this.parseLogBlock(packet.batch) }
-          : null;
+        return this.logPacket(packet.batch);
       case ServerPacketId.TimezoneUpdate:
         this.log(`[query] timezone updated to: ${packet.timezone}`);
         return null;
