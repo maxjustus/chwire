@@ -170,27 +170,15 @@ function ipv6ToBytes(ip: string): Uint8Array {
 
   let groups: string[];
   if (parts.length === 2) {
-    const [hi, lo] = parts;
-    if (hi === undefined || lo === undefined) throw new TypeError(`Invalid IPv6 address: "${ip}"`);
+    const [hi = "", lo = ""] = parts;
     const left = hi === "" ? [] : hi.split(":");
     const right = lo === "" ? [] : lo.split(":");
-
-    for (const g of left) {
-      if (g.length === 0) throw new TypeError(`Invalid IPv6 address: "${ip}"`);
-    }
-    for (const g of right) {
-      if (g.length === 0) throw new TypeError(`Invalid IPv6 address: "${ip}"`);
-    }
-
     const missing = 8 - (left.length + right.length);
     if (missing < 1) throw new TypeError(`Invalid IPv6 address: "${ip}"`);
     groups = [...left, ...new Array(missing).fill("0"), ...right];
   } else {
     groups = ip.split(":");
     if (groups.length !== 8) throw new TypeError(`Invalid IPv6 address: "${ip}"`);
-    for (const g of groups) {
-      if (g.length === 0) throw new TypeError(`Invalid IPv6 address: "${ip}"`);
-    }
   }
 
   const bytes = new Uint8Array(16);
