@@ -45,6 +45,7 @@ const SIMPLE_SCALARS = [
   "UInt256",
   "Float32",
   "Float64",
+  "BFloat16",
   "Bool",
   "String",
   "UUID",
@@ -53,6 +54,22 @@ const SIMPLE_SCALARS = [
   "Date",
   "Date32",
   "DateTime",
+  "Time",
+] as const;
+
+/** Every Interval unit; all share the Int64 wire format. */
+const INTERVAL_TYPES = [
+  "IntervalNanosecond",
+  "IntervalMicrosecond",
+  "IntervalMillisecond",
+  "IntervalSecond",
+  "IntervalMinute",
+  "IntervalHour",
+  "IntervalDay",
+  "IntervalWeek",
+  "IntervalMonth",
+  "IntervalQuarter",
+  "IntervalYear",
 ] as const;
 
 /**
@@ -136,9 +153,14 @@ function genDateTime64Type(rng: Rng): string {
   return rng.int(0, 2) === 0 ? `DateTime64(${p}, '${pick(rng, TIMEZONES)}')` : `DateTime64(${p})`;
 }
 
-/** A scalar leaf: a parametric scalar 3/7 of the time, else a simple one. */
+/** Time64(p): precision p in [0, 9], oversampling the 0/3/6/9 steps. */
+function genTime64Type(rng: Rng): string {
+  return `Time64(${rng.int(0, 1) === 0 ? pick(rng, [0, 3, 6, 9]) : rng.int(0, 9)})`;
+}
+
+/** A scalar leaf: a parametric scalar 7/10 of the time, else a simple one. */
 export function genScalarType(rng: Rng): string {
-  switch (rng.int(0, 6)) {
+  switch (rng.int(0, 9)) {
     case 0:
       return genDecimalType(rng);
     case 1:
@@ -149,6 +171,10 @@ export function genScalarType(rng: Rng): string {
       return genDateTime64Type(rng);
     case 4:
       return genDateTimeType(rng);
+    case 5:
+      return genTime64Type(rng);
+    case 6:
+      return pick(rng, INTERVAL_TYPES);
     default:
       return pick(rng, SIMPLE_SCALARS);
   }

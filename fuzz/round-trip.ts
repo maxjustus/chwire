@@ -33,6 +33,7 @@ export const COMPLEX_TYPE_SETTINGS = {
   // columns, which a single Nested column cannot round-trip; flatten_nested=0
   // stores it as the Array(Tuple) the codec produces.
   flatten_nested: false,
+  enable_time_time64_type: true,
 };
 
 export interface Conn {

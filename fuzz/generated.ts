@@ -144,7 +144,7 @@ function subStream(seed: number, purpose: keyof typeof SUBSTREAM_SALT): Rng {
  * Types that contain a leaf we cannot yet generate standalone, or that need
  * their own kind. Reject when any appears anywhere in the type tree.
  */
-const UNSUPPORTED_SUBSTRINGS = ["JSON", "Variant", "Nothing", "AggregateFunction", "Interval"];
+const UNSUPPORTED_SUBSTRINGS = ["JSON", "Variant", "Nothing", "AggregateFunction"];
 
 /**
  * Whether a CH type can be rolled into a scalar/composite column: its codec
@@ -590,7 +590,8 @@ function hasNonStringMapKey(type: string): boolean {
  * Nullable so an absent path round-trips as omitted; composites are declared bare
  * (Nullable(Array/Map/Tuple) is illegal and they are always materialized, so
  * there is no absent-default ambiguity). A bare `JSON` (no typed paths) is also
- * rolled to exercise the all-dynamic-path path.
+ * rolled to exercise the all-dynamic-path path. CH rejects an Interval anywhere
+ * in a typed path at CREATE TABLE, so those types are skipped.
  */
 async function rollJsonType(rng: Rng, source: TypeSource): Promise<string> {
   const numTypedPaths = rollPathCount(rng);
@@ -598,7 +599,13 @@ async function rollJsonType(rng: Rng, source: TypeSource): Promise<string> {
   const usedNames: string[] = [];
   for (let p = 0; defs.length < numTypedPaths && p < numTypedPaths * 4 + 4; p++) {
     const type = await source(rng);
-    if (type === null || !isGeneratable(type, rng) || hasNonStringMapKey(type)) continue;
+    if (
+      type === null ||
+      type.includes("Interval") ||
+      !isGeneratable(type, rng) ||
+      hasNonStringMapKey(type)
+    )
+      continue;
     const declared = isComposite(type) ? type : `Nullable(${type})`;
     defs.push(`${renderJsonPath(jsonPathName("tp", defs.length, rng, usedNames))} ${declared}`);
   }

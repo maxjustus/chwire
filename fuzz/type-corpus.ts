@@ -42,6 +42,7 @@ export const TYPE_CORPUS: readonly string[] = [
   // floats + bool
   "Float32",
   "Float64",
+  "BFloat16",
   "Bool",
 
   // decimals: one entry per byte-width bucket (4/8/16/32), the 18->19 seam, the
@@ -77,6 +78,12 @@ export const TYPE_CORPUS: readonly string[] = [
   "DateTime('UTC')",
   "DateTime64(3, 'America/New_York')",
   "DateTime64(9, 'UTC')",
+
+  // time of day / duration: Time is Int32 seconds, Time64(9) is Int64 ticks at
+  // the widest scale, and Interval is a bare Int64.
+  "Time",
+  "Time64(9)",
+  "IntervalSecond",
 
   // nullable over a fixed-width numeric, a variable-length String, a 16-byte
   // Decimal, and a FixedString.

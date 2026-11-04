@@ -65,7 +65,15 @@ describe("genType type-only oracle", { timeout: 120000 }, () => {
     }
   };
   const run = (sql: string) =>
-    consume(query(sql, { url, auth, sessionId: sid, compression: false }));
+    consume(
+      query(sql, {
+        url,
+        auth,
+        sessionId: sid,
+        compression: false,
+        settings: { enable_time_time64_type: true },
+      }),
+    );
   const drop = (name: string) => run(`DROP TABLE IF EXISTS ${name} SYNC`);
 
   /** name -> CH-normalized type for every column of `name`. JSONEachRow so the
