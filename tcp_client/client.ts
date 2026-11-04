@@ -796,6 +796,7 @@ export class TcpClient {
           this.currentSchema = packet.batch.columns.map((c) => ({ name: c.name, type: c.type }));
           return this.currentSchema;
         case ServerPacketId.Progress:
+        case ServerPacketId.ProfileEvents:
         case ServerPacketId.Log:
         case ServerPacketId.TableColumns:
           break;

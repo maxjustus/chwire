@@ -278,6 +278,22 @@ describe("TCP Client Integration", () => {
       await client.query(`DROP TABLE ${tableName}`);
     }));
 
+  test("INSERT from input() with a scalar subquery waits past ProfileEvents for the header", () =>
+    withClient(async (client) => {
+      const tableName = `test_input_subquery_${Date.now()}`;
+      await client.query(`CREATE TABLE ${tableName} (x UInt64) ENGINE = Memory`);
+
+      await client.insert(
+        `INSERT INTO ${tableName} SELECT x + (SELECT count() FROM numbers(100000)) FROM input('x UInt64') FORMAT Native`,
+        [{ x: 1n }],
+      );
+
+      const rows = await collectRows(client, `SELECT x FROM ${tableName}`);
+      assert.deepStrictEqual(rows, [{ x: 100001n }]);
+
+      await client.query(`DROP TABLE ${tableName}`);
+    }));
+
   test("explicit column list allows inserting subset of columns", () =>
     withClient(async (client) => {
       const tableName = `test_subset_cols_${Date.now()}`;

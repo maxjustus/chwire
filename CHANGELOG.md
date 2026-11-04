@@ -9,6 +9,7 @@
 
 ### Fixed
 
+- TCP `insert()` accepts a `ProfileEvents` packet before the insert header. ClickHouse 26.10 sends one for an `INSERT ... SELECT ... FROM input(...)` with a subquery, and the insert failed with `Unexpected packet while waiting for insert header`.
 - `compressQuery: "lz4"` works in browsers and Deno. The client writes the LZ4 frame itself, so it no longer needs `lz4-napi`.
 
 ## 1.1.2
