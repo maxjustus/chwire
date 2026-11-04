@@ -571,11 +571,12 @@ export class BFloat16Codec extends BaseCodec {
   readonly type = "BFloat16";
 
   encode(col: Column): Uint8Array {
-    const floats =
-      col instanceof DataColumn && col.data instanceof Float32Array
-        ? col.data
-        : (this.fromValues(Array.from({ length: col.length }, (_, i) => col.get(i)))
-            .data as Float32Array);
+    let floats: Float32Array;
+    if (col instanceof DataColumn && col.data instanceof Float32Array) floats = col.data;
+    else {
+      floats = new Float32Array(col.length);
+      for (let i = 0; i < floats.length; i++) floats[i] = toNumber(col.get(i));
+    }
     const bits = new Uint32Array(floats.buffer, floats.byteOffset, floats.length);
     const halves = new Uint16Array(floats.length);
     for (let i = 0; i < halves.length; i++) halves[i] = bits[i]! >>> 16;
