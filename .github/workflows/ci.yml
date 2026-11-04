@@ -34,7 +34,7 @@ jobs:
         run: npx playwright install --with-deps chromium
 
       - name: Typecheck
-        run: tsc --noEmit
+        run: npx tsc --noEmit
 
       - name: Build
         run: npm run build
