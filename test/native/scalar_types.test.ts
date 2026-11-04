@@ -394,6 +394,52 @@ describe("additional scalar types", () => {
     assert.strictEqual(dt.toDate().getTime(), date.getTime());
   });
 
+  it("round-trips ClickHouse Native bytes for Interval, Time, Time64, and BFloat16", () => {
+    // Each hex block is `SELECT <expr> AS c FORMAT Native` from ClickHouse 26.10.
+    const cases: Array<{ type: string; hex: string; value: unknown }> = [
+      { type: "IntervalSecond", hex: "0e496e74657276616c5365636f6e64fbffffffffffffff", value: -5n },
+      { type: "Time", hex: "0454696d65104fffff", value: "-12:34:56" },
+      { type: "Time64(3)", hex: "0954696d653634283329952cb30200000000", value: "12:34:56.789" },
+      { type: "Time64(0)", hex: "0954696d6536342830290700000000000000", value: "00:00:07" },
+      { type: "BFloat16", hex: "0842466c6f61743136c03f", value: 1.5 },
+      { type: "BFloat16", hex: "0842466c6f617431360080", value: -0 },
+    ];
+    for (const { type, hex, value } of cases) {
+      const bytes = Buffer.from(`01010163${hex}`, "hex");
+      assert.deepStrictEqual(toArrayRows(decodeBatch(bytes)), [[value]], type);
+      assert.deepStrictEqual(
+        Buffer.from(encodeNativeRows([{ name: "c", type }], [[value]])),
+        bytes,
+        type,
+      );
+    }
+  });
+
+  it("formats Time64 ticks between -1 and 0 seconds with a sign", () => {
+    const decoded = decodeBatch(
+      encodeNativeRows([{ name: "t", type: "Time64(3)" }], [["-00:00:00.500"]]),
+    );
+    assert.deepStrictEqual(toArrayRows(decoded), [["-00:00:00.500"]]);
+  });
+
+  it("rejects malformed Time strings", () => {
+    for (const value of ["12:34", "12:60:00", "1:2:3", "12:34:56.7"]) {
+      assert.throws(
+        () => encodeNativeRows([{ name: "t", type: "Time" }], [[value]]),
+        /Time/,
+        value,
+      );
+    }
+  });
+
+  it("truncates BFloat16 like ClickHouse toBFloat16", () => {
+    // toBFloat16(toFloat32(1.005859375)) is 1 on ClickHouse 26.10.
+    const decoded = decodeBatch(
+      encodeNativeRows([{ name: "b", type: "BFloat16" }], [[1.005859375]]),
+    );
+    assert.deepStrictEqual(toArrayRows(decoded), [[1]]);
+  });
+
   it("encodes Date/DateTime from ISO strings", async () => {
     const columns: ColumnDef[] = [
       { name: "d", type: "Date" },

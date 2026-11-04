@@ -11,6 +11,7 @@ import {
   IPV4_REGEX,
   toBigIntInRange,
   toBool,
+  toNumber,
   toValidDate,
   toValidDecimal,
   toValidIPv4,
@@ -450,7 +451,7 @@ export class NumericCodec<T extends TypedArray> extends BaseCodec {
   readonly Ctor: TypedArrayConstructor<T>;
   readonly converter?: (v: unknown) => number | bigint;
   // Width range for the plain-integer generate() fallback. Float/Bool ignore
-  // these; Int64/UInt64 are bigint-special-cased before the fallback, so the
+  // these; 64-bit arrays are bigint-special-cased before the fallback, so the
   // Number-precision overflow at 64-bit widths never reaches a read site.
   private readonly min: number;
   private readonly max: number;
@@ -548,13 +549,69 @@ export class NumericCodec<T extends TypedArray> extends BaseCodec {
       case "Float64":
         if (rng.int(0, 1) === 0) return pick(rng, FLOAT64_SPECIALS);
         return (rng.next() - 0.5) * 2 ** rng.int(0, 200);
-      case "Int64":
-        return genBigInt(rng, INT64_MIN, INT64_MAX);
-      case "UInt64":
-        return genBigInt(rng, 0n, (1n << 64n) - 1n);
+    }
+    if (this.Ctor.BYTES_PER_ELEMENT === 8) {
+      return this.min < 0
+        ? genBigInt(rng, INT64_MIN, INT64_MAX)
+        : genBigInt(rng, 0n, (1n << 64n) - 1n);
     }
     // Remaining integer typed arrays use the width range from the constructor.
     return genInt(rng, this.min, this.max);
+  }
+}
+
+/** Bit patterns of the BFloat16 specials: ±0, ±Inf, NaN, smallest subnormal, ±max. */
+const BFLOAT16_SPECIAL_BITS = [0x0000, 0x8000, 0x7f80, 0xff80, 0x7fc0, 0x0001, 0x7f7f, 0xff7f];
+
+/**
+ * BFloat16 is the upper 16 bits of a Float32. ClickHouse converts by truncation,
+ * not rounding, so encode drops the low half the same way.
+ */
+export class BFloat16Codec extends BaseCodec {
+  readonly type = "BFloat16";
+
+  encode(col: Column): Uint8Array {
+    const floats =
+      col instanceof DataColumn && col.data instanceof Float32Array
+        ? col.data
+        : (this.fromValues(Array.from({ length: col.length }, (_, i) => col.get(i)))
+            .data as Float32Array);
+    const bits = new Uint32Array(floats.buffer, floats.byteOffset, floats.length);
+    const halves = new Uint16Array(floats.length);
+    for (let i = 0; i < halves.length; i++) halves[i] = bits[i]! >>> 16;
+    return asBytes(halves);
+  }
+
+  decodeDense(reader: BufferReader, rows: number): Column {
+    const halves = reader.readTypedArray(Uint16Array, rows);
+    const bits = new Uint32Array(rows);
+    for (let i = 0; i < rows; i++) bits[i] = halves[i]! << 16;
+    return new DataColumn(this.type, new Float32Array(bits.buffer));
+  }
+
+  fromValues(values: unknown[] | TypedArray): DataColumn<Float32Array> {
+    if (values instanceof Float32Array) return new DataColumn(this.type, values);
+    const floats = new Float32Array(values.length);
+    for (let i = 0; i < values.length; i++) floats[i] = toNumber((values as unknown[])[i]);
+    return new DataColumn(this.type, floats);
+  }
+
+  zeroValue() {
+    return 0;
+  }
+
+  estimateSize(rows: number) {
+    return rows * 2;
+  }
+
+  serializeLiteral(value: unknown): string {
+    return String(toNumber(value));
+  }
+
+  generate(ctx: GenContext): number {
+    const rng = ctx.rng;
+    const half = rng.int(0, 1) === 0 ? pick(rng, BFLOAT16_SPECIAL_BITS) : rng.int(0, 0xffff);
+    return new Float32Array(new Uint32Array([half << 16]).buffer)[0]!;
   }
 }
 
@@ -1258,6 +1315,105 @@ export class DateTime64Codec extends BaseCodec {
   override compare(a: unknown, b: unknown): boolean {
     if (!(a instanceof ClickHouseDateTime64) || !(b instanceof ClickHouseDateTime64)) return false;
     return a.ticks === b.ticks && a.precision === b.precision;
+  }
+}
+
+/** ClickHouse's Time text form: `[-]HH:MM:SS`, hours unbounded, fraction only for Time64. */
+const TIME_REGEX = /^(-)?(\d{2,}):([0-5]\d):([0-5]\d)(?:\.(\d+))?$/;
+
+/** ClickHouse clamps Time text to ±999:59:59; generate stays inside it. */
+const TIME_MAX_SECONDS = 999n * 3600n + 59n * 60n + 59n;
+
+/**
+ * Time (Int32 seconds) and Time64(P) (Int64 ticks of 10^-P seconds). Values are
+ * ClickHouse's `[-]HH:MM:SS[.fff]` text, which keeps every tick exact, like
+ * DecimalCodec's strings.
+ */
+export class TimeCodec extends BaseCodec {
+  readonly type: string;
+  private precision: number;
+  private scale: bigint;
+  private wide: boolean;
+  private min: bigint;
+  private max: bigint;
+
+  constructor(type: string, precision: number) {
+    super();
+    this.type = type;
+    this.precision = precision;
+    this.scale = 10n ** BigInt(precision);
+    this.wide = type !== "Time";
+    this.min = this.wide ? INT64_MIN : BigInt(INT32_MIN);
+    this.max = this.wide ? INT64_MAX : BigInt(INT32_MAX);
+  }
+
+  private toTicks(v: unknown): bigint {
+    if (v == null) return 0n;
+    if (typeof v !== "string") throw new TypeError(`Cannot coerce ${typeof v} to ${this.type}`);
+    const m = TIME_REGEX.exec(v);
+    const frac = m?.[5] ?? "";
+    if (!m || frac.length > this.precision) {
+      throw new TypeError(`Cannot coerce "${v}" to ${this.type}`);
+    }
+    const seconds = BigInt(m[2]!) * 3600n + BigInt(m[3]!) * 60n + BigInt(m[4]!);
+    const abs = seconds * this.scale + BigInt(frac.padEnd(this.precision, "0") || "0");
+    return toBigIntInRange(m[1] ? -abs : abs, this.type, this.min, this.max);
+  }
+
+  private format(ticks: bigint): string {
+    const abs = ticks < 0n ? -ticks : ticks;
+    const seconds = abs / this.scale;
+    const hh = String(seconds / 3600n).padStart(2, "0");
+    const mm = String((seconds / 60n) % 60n).padStart(2, "0");
+    const ss = String(seconds % 60n).padStart(2, "0");
+    const frac =
+      this.precision === 0 ? "" : `.${String(abs % this.scale).padStart(this.precision, "0")}`;
+    return `${ticks < 0n ? "-" : ""}${hh}:${mm}:${ss}${frac}`;
+  }
+
+  encode(col: Column): Uint8Array {
+    const len = col.length;
+    if (!this.wide) {
+      const arr = new Int32Array(len);
+      for (let i = 0; i < len; i++) arr[i] = Number(this.toTicks(col.get(i)));
+      return asBytes(arr);
+    }
+    const arr = new BigInt64Array(len);
+    for (let i = 0; i < len; i++) arr[i] = this.toTicks(col.get(i));
+    return asBytes(arr);
+  }
+
+  decodeDense(reader: BufferReader, rows: number): Column {
+    const arr = this.wide
+      ? reader.readTypedArray(BigInt64Array, rows)
+      : reader.readTypedArray(Int32Array, rows);
+    const values: string[] = new Array(rows);
+    for (let i = 0; i < rows; i++) values[i] = this.format(BigInt(arr[i]!));
+    return new DataColumn(this.type, values);
+  }
+
+  fromValues(values: unknown[]): Column {
+    return new DataColumn(
+      this.type,
+      values.map((v) => this.format(this.toTicks(v))),
+    );
+  }
+
+  zeroValue() {
+    return this.format(0n);
+  }
+
+  estimateSize(rows: number) {
+    return rows * (this.wide ? 8 : 4);
+  }
+
+  serializeLiteral(value: unknown, quoted?: boolean): string {
+    return wrapQuoted(this.format(this.toTicks(value)), quoted);
+  }
+
+  generate(ctx: GenContext): string {
+    const max = TIME_MAX_SECONDS * this.scale + this.scale - 1n;
+    return this.format(genBigInt(ctx.rng, -max, max));
   }
 }
 

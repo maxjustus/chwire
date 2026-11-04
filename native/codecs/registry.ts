@@ -9,6 +9,7 @@ import {
 } from "./composite.ts";
 import { DynamicCodec, JsonCodec, VariantCodec } from "./dynamic.ts";
 import {
+  BFloat16Codec,
   BigIntCodec,
   DateTime64Codec,
   DecimalCodec,
@@ -19,6 +20,7 @@ import {
   IPv6Codec,
   NumericCodec,
   StringCodec,
+  TimeCodec,
   UUIDCodec,
 } from "./scalar.ts";
 import {
@@ -125,6 +127,13 @@ export function createCodec(type: string): Codec {
 
   if (type.startsWith("DateTime(")) return new EpochCodec(type, Uint32Array, MS_PER_SECOND);
 
+  if (type.startsWith("Time64")) {
+    const precisionMatch = type.match(/Time64\((\d+)/);
+    return new TimeCodec(type, precisionMatch ? parseInt(precisionMatch[1]!, 10) : 3);
+  }
+
+  if (type.startsWith("Interval")) return new NumericCodec(type, BigInt64Array, toInt64);
+
   if (type === "Point")
     return new TupleCodec(
       type,
@@ -159,6 +168,8 @@ export function createCodec(type: string): Codec {
       return new NumericCodec(type, Float32Array, toNumber);
     case "Float64":
       return new NumericCodec(type, Float64Array, toNumber);
+    case "BFloat16":
+      return new BFloat16Codec();
     case "Bool":
       return new NumericCodec(type, Uint8Array, toBool);
     case "Date":
@@ -167,6 +178,8 @@ export function createCodec(type: string): Codec {
       return new EpochCodec(type, Int32Array, MS_PER_DAY);
     case "DateTime":
       return new EpochCodec(type, Uint32Array, MS_PER_SECOND);
+    case "Time":
+      return new TimeCodec(type, 0);
     case "String":
       return new StringCodec();
     case "UUID":
