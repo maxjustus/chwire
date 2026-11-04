@@ -12,6 +12,15 @@ let tlsFixtureDir: string | undefined;
 const CH_USERNAME = "default";
 const CH_PASSWORD = "password";
 
+// Fuzz iterations on CI run synchronous work for longer than the ClickHouse
+// server default keep_alive_timeout of 10 s. The server then closes the idle
+// keep-alive connection that the global fetch in client.ts keeps open, and the
+// next request on it fails with UND_ERR_SOCKET "other side closed".
+const KEEP_ALIVE_CONFIG = `<clickhouse>
+  <keep_alive_timeout>300</keep_alive_timeout>
+</clickhouse>
+`;
+
 const TCP_SECURE_PORT = 9440;
 const TLS_CONFIG = `<clickhouse>
   <tcp_port_secure>9440</tcp_port_secure>
@@ -96,7 +105,14 @@ export async function startClickHouse(
   const clickhouse = new ClickHouseContainer(`clickhouse/clickhouse-server:${version}`)
     .withDatabase("default")
     .withUsername(CH_USERNAME)
-    .withPassword(CH_PASSWORD);
+    .withPassword(CH_PASSWORD)
+    .withCopyContentToContainer([
+      {
+        content: KEEP_ALIVE_CONFIG,
+        target: "/etc/clickhouse-server/config.d/keep_alive.xml",
+        mode: 0o644,
+      },
+    ]);
 
   if (options.tls) {
     tlsFixtureDir = createTlsFixtureDir();
