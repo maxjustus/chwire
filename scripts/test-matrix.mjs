@@ -3,7 +3,7 @@
 //        CH_VERSIONS="24.8 25.8 26.4" npm run test:matrix
 import { spawnSync } from "node:child_process";
 
-const versions = (process.env.CH_VERSIONS ?? "25.8 26.4 26.9").split(/[\s,]+/).filter(Boolean);
+const versions = (process.env.CH_VERSIONS ?? "25.8 26.4 26.10").split(/[\s,]+/).filter(Boolean);
 const failed = [];
 
 for (const version of versions) {
