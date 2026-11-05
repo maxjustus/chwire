@@ -6,6 +6,7 @@
 
 - `framing` query option parses ClickHouse 26.8+ framed HTTP responses (`framing_output_format`: `EventStream`, `JSONEachPacketBase64`, `JSONEachPacketString`). Rows and progress arrive as the server sends them, also with block compression. Data, totals, and extremes arrive as `Data` packets with a `kind` tag. Logs and profile events arrive as `Log` and `ProfileEvents` packets. As on TCP, `ProfileEvents` packets carry an `accumulated` map: increments summed, gauges at their latest value. Errors throw, also after a 200. The default format becomes `JSONEachRow`, because the server rejects the `*WithProgress` formats under framing.
 - Native codecs for `BFloat16`, `Time`, `Time64(P)`, and every `Interval*` type. `BFloat16` decodes to a number and encodes by truncation, as ClickHouse does. `Time` and `Time64` decode to the ClickHouse text form `[-]HH:MM:SS[.fff]` and encode from it. `Interval*` decodes to a bigint. ClickHouse 26.10 returns `Interval*` from `sum` and `avg` over intervals.
+- `dispatcher` option for HTTP `query()` and `insert()` (Node.js only). It takes an undici dispatcher, such as `new Agent()` from the `undici` package, to control connection reuse. The README section "Connection Reuse" describes the `UND_ERR_SOCKET` error that a stale keep-alive connection causes.
 
 ### Fixed
 

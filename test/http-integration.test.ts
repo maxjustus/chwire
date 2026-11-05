@@ -8,6 +8,7 @@ import {
   streamEncodeJsonEachRow,
   streamText,
 } from "../client.ts";
+import { Agent, type Dispatcher } from "undici";
 import { startClickHouse, stopClickHouse } from "./setup.ts";
 import { consume, generateSessionId } from "./test_utils.ts";
 
@@ -78,6 +79,36 @@ describe("ClickHouse Integration Tests", { timeout: 60000 }, () => {
           compression: false,
         }),
       );
+    });
+
+    it("sends queries and inserts through the dispatcher option", async () => {
+      const dispatched: string[] = [];
+      class RecordingAgent extends Agent {
+        override dispatch(opts: Dispatcher.DispatchOptions, handler: Dispatcher.DispatchHandler) {
+          dispatched.push(String(opts.path));
+          return super.dispatch(opts, handler);
+        }
+      }
+      const dispatcher = new RecordingAgent();
+      try {
+        await consume(query("SELECT 1", { url, auth, dispatcher }));
+        await consume(
+          query("SELECT * FROM t", {
+            url,
+            auth,
+            dispatcher,
+            externalTables: { t: { structure: "x UInt8", data: "1\n" } },
+          }),
+        );
+        await insert("INSERT INTO FUNCTION null('x UInt8') FORMAT TSV", encoder.encode("1\n"), {
+          url,
+          auth,
+          dispatcher,
+        });
+      } finally {
+        await dispatcher.close();
+      }
+      assert.equal(dispatched.length, 3);
     });
   });
 

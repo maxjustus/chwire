@@ -412,6 +412,15 @@ function splitStreamException(
   };
 }
 
+/**
+ * An undici dispatcher, for example `new Agent()` from the `undici` package.
+ * Structural, because the npm `undici` types and the `undici-types` that
+ * `@types/node` ships do not assign to each other.
+ */
+export interface HttpDispatcher {
+  dispatch(...args: never[]): unknown;
+}
+
 export interface InsertOptions {
   url?: string;
   /**
@@ -437,6 +446,8 @@ export interface InsertOptions {
   queryId?: string;
   /** Session ID for server-side state (temp tables, SET variables). Omit for stateless requests. */
   sessionId?: string;
+  /** Node.js only: the undici dispatcher (connection pool) for this request. See README "Connection Reuse". */
+  dispatcher?: HttpDispatcher;
 }
 
 type InsertData = Uint8Array | Uint8Array[] | AsyncIterable<Uint8Array> | Iterable<Uint8Array>;
@@ -533,6 +544,7 @@ async function insert(
     body: stream,
     duplex: "half",
     signal: createSignal(options.signal, options.timeout),
+    ...withDispatcher(options.dispatcher),
   } as RequestInit);
 
   if (!response.ok) {
@@ -555,6 +567,10 @@ async function insert(
     summary: parseSummary(response),
     queryId: response.headers.get("X-ClickHouse-Query-Id") || "",
   };
+}
+
+function withDispatcher(dispatcher: HttpDispatcher | undefined): Pick<RequestInit, "dispatcher"> {
+  return dispatcher ? { dispatcher: dispatcher as NonNullable<RequestInit["dispatcher"]> } : {};
 }
 
 /**
@@ -613,6 +629,7 @@ const HTTP_QUERY_OPTION_RESERVED = new Set([
   "externalTables",
   "queryId",
   "sessionId",
+  "dispatcher",
 ]);
 
 function mergeRawHttpQueryOptions(target: Record<string, string>, options: QueryOptions): void {
@@ -631,7 +648,7 @@ function mergeRawHttpQueryOptions(target: Record<string, string>, options: Query
  *
  * Reserved transport keys are not forwarded: `url`, `auth`, `compression`,
  * `compressQuery`, `framing`, `signal`, `timeout`, `clientVersion`, `settings`,
- * `params`, `externalTables`, `queryId`, and `sessionId`.
+ * `params`, `externalTables`, `queryId`, `sessionId`, and `dispatcher`.
  */
 export interface QueryOptions {
   [key: string]: unknown;
@@ -676,6 +693,8 @@ export interface QueryOptions {
   queryId?: string;
   /** Session ID for server-side state (temp tables, SET variables). Omit for stateless requests. */
   sessionId?: string;
+  /** Node.js only: the undici dispatcher (connection pool) for this request. See README "Connection Reuse". */
+  dispatcher?: HttpDispatcher;
 }
 
 /**
@@ -810,6 +829,7 @@ async function* queryImpl(sql: string, options: QueryOptions = {}): AsyncGenerat
       body,
       headers,
       signal: createSignal(options.signal, options.timeout) ?? null,
+      ...withDispatcher(options.dispatcher),
     };
     if (body instanceof ReadableStream) {
       fetchOptions.duplex = "half";
@@ -834,6 +854,7 @@ async function* queryImpl(sql: string, options: QueryOptions = {}): AsyncGenerat
       body,
       headers,
       signal: createSignal(options.signal, options.timeout) ?? null,
+      ...withDispatcher(options.dispatcher),
     });
   }
 

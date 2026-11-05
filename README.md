@@ -269,6 +269,35 @@ try {
 }
 ```
 
+### Connection Reuse
+
+In Node.js, `query()` and `insert()` call the global `fetch`. The global `fetch` keeps idle HTTP connections in one pool for the whole process and reuses them for later requests. ClickHouse closes an idle connection after the server setting `keep_alive_timeout`: 10 s on a self-hosted server, 3 s on ClickHouse Cloud.
+
+If a request gets a connection that the server already closed, `query()` or `insert()` throws a `TypeError` with the message `fetch failed`. The `cause.code` of that error is `UND_ERR_SOCKET`. These conditions cause the error:
+
+- The process blocks the event loop or does not get enough CPU, so the client does not close the idle connection in time.
+- The process is frozen and continues later, for example on a serverless platform between calls.
+- A proxy or load balancer closes idle connections before the server `keep_alive_timeout`.
+- The server restarts.
+
+To prevent or handle the error:
+
+- Increase `keep_alive_timeout` in the server configuration.
+- Pass an undici dispatcher (a connection pool) in the `dispatcher` option of `query()` or `insert()`. Install the `undici` package first. The option works in Node.js only.
+- Retry a query that only reads data when the thrown error has `cause.code` equal to `UND_ERR_SOCKET`. Do not retry an insert. The same error can occur after the server received the request, so a retry can insert the rows two times.
+
+```ts
+import { Agent } from "undici";
+
+// Close idle connections after 2 s, before the server closes them.
+const shortIdle = new Agent({ keepAliveTimeout: 2_000, keepAliveMaxTimeout: 2_000 });
+await collectText(query("SELECT 1", { ...connectionConfig, dispatcher: shortIdle }));
+
+// Open a new connection for each request.
+const noReuse = new Agent({ pipelining: 0 });
+await collectText(query("SELECT 1", { ...connectionConfig, dispatcher: noReuse }));
+```
+
 ## TCP Client
 
 Uses ClickHouse's native TCP protocol. TCP Single connection per client; use separate clients for concurrent operations.
@@ -322,6 +351,8 @@ const client = new TcpClient({
   tls: true, // or Node.js tls.ConnectionOptions for custom CA/certs. IE: tls: { ca: fs.readFileSync("/path/to/ca.pem"), rejectUnauthorized: true },
 });
 ```
+
+The server closes a connection that is idle for longer than the setting `idle_connection_timeout` (3600 s by default). After that, `query()` and `insert()` on the client throw `Not connected`. Call `client.connect()` again to open a new connection. `keepAliveIntervalMs` enables TCP keepalive probes in the operating system. The probes do not reset `idle_connection_timeout`.
 
 ### Streaming Results
 
