@@ -85,6 +85,9 @@ export const TYPE_CORPUS: readonly string[] = [
   "Time64(9)",
   "IntervalSecond",
 
+  // SimpleAggregateFunction(f, T) has the wire format of type T.
+  "SimpleAggregateFunction(anyLast, Nullable(String))",
+
   // nullable over a fixed-width numeric, a variable-length String, a 16-byte
   // Decimal, and a FixedString.
   "Nullable(Int32)",

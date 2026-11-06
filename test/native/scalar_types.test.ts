@@ -415,6 +415,38 @@ describe("additional scalar types", () => {
     }
   });
 
+  it("round-trips SimpleAggregateFunction(f, T) as type T", () => {
+    // Each hex block is `SELECT CAST(<value> AS <type>) AS c FORMAT Native` from ClickHouse 25.8.
+    const cases: Array<{ type: string; hex: string; value: unknown }> = [
+      {
+        type: "SimpleAggregateFunction(sum, UInt64)",
+        hex: "2453696d706c6541676772656761746546756e6374696f6e2873756d2c2055496e743634290700000000000000",
+        value: 7n,
+      },
+      {
+        type: "SimpleAggregateFunction(anyLast, Nullable(String))",
+        hex: "3253696d706c6541676772656761746546756e6374696f6e28616e794c6173742c204e756c6c61626c6528537472696e672929000178",
+        value: "x",
+      },
+      {
+        type: "SimpleAggregateFunction(sumMap, Map(String, UInt64))",
+        hex: "3453696d706c6541676772656761746546756e6374696f6e2873756d4d61702c204d617028537472696e672c2055496e7436342929010000000000000001610100000000000000",
+        value: new Map([["a", 1n]]),
+      },
+    ];
+    for (const { type, hex, value } of cases) {
+      const bytes = Buffer.from(`01010163${hex}`, "hex");
+      const decoded = decodeBatch(bytes);
+      assert.deepStrictEqual(decoded.columns, [{ name: "c", type }], type);
+      assert.deepStrictEqual(toArrayRows(decoded), [[value]], type);
+      assert.deepStrictEqual(
+        Buffer.from(encodeNativeRows([{ name: "c", type }], [[value]])),
+        bytes,
+        type,
+      );
+    }
+  });
+
   it("formats Time64 ticks between -1 and 0 seconds with a sign", () => {
     const decoded = decodeBatch(
       encodeNativeRows([{ name: "t", type: "Time64(3)" }], [["-00:00:00.500"]]),

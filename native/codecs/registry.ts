@@ -68,6 +68,8 @@ export function createCodec(type: string): Codec {
   if (type.startsWith("Array")) return new ArrayCodec(type, getCodec(extractTypeArgs(type)));
   if (type.startsWith("LowCardinality"))
     return new LowCardinalityCodec(type, getCodec(extractTypeArgs(type)));
+  if (type.startsWith("SimpleAggregateFunction"))
+    return getCodec(parseTypeList(extractTypeArgs(type)).at(-1)!);
   if (type.startsWith("Map")) {
     const [k, v] = parseTypeList(extractTypeArgs(type));
     return new MapCodec(type, getCodec(k!), getCodec(v!));
