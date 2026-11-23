@@ -10,6 +10,10 @@
 
 - `compressQuery: "lz4"` works in browsers and Deno. The client writes the LZ4 frame itself, so it no longer needs `lz4-napi`.
 
+### Package
+
+- Include the runtime files required to import `@maxjustus/chwire/source` from the npm package.
+
 ## 1.1.2
 
 ### Fixed
