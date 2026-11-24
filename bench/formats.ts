@@ -20,6 +20,7 @@ import {
   streamDecodeNative,
   streamEncodeNative,
 } from "../native/index.ts";
+import { encodeNativeRows } from "../test/test_utils.ts";
 import {
   type BenchOptions,
   benchAsync,
@@ -27,7 +28,6 @@ import {
   readBenchOptions,
   reportEnvironment,
 } from "./harness.ts";
-import { encodeNativeRows } from "../test/test_utils.ts";
 
 async function collectByteChunks(chunks: AsyncIterable<Uint8Array>): Promise<Uint8Array> {
   const parts: Uint8Array[] = [];
@@ -388,8 +388,8 @@ function generateVariantData(count: number): {
     // [disc, value] tuples would need canonical (sorted-arm) indices since
     // ClickHouse canonicalizes Variant arms alphabetically.
     const f = Math.random() * 100;
-    const variant = i % 3 === 0 ? `str_${i}` : i % 3 === 1 ? BigInt(i * 100) : f;
-    const jsonVal = i % 3 === 0 ? `str_${i}` : i % 3 === 1 ? i * 100 : f;
+    const variant = [`str_${i}`, BigInt(i * 100), f][i % 3];
+    const jsonVal = [`str_${i}`, i * 100, f][i % 3];
     json.push({ id: i, v: jsonVal });
     rows.push([i, variant]);
   }
@@ -409,7 +409,7 @@ function generateDynamicData(count: number): {
   const rows: unknown[][] = [];
   for (let i = 0; i < count; i++) {
     const f = Math.random() * 100;
-    const val = i % 4 === 0 ? `str_${i}` : i % 4 === 1 ? BigInt(i) : i % 4 === 2 ? f : i % 2 === 0;
+    const val = [`str_${i}`, BigInt(i), f, false][i % 4];
     const jsonVal = typeof val === "bigint" ? Number(val) : val;
     json.push({ id: i, d: jsonVal });
     rows.push([i, val]);

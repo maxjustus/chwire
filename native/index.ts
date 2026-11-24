@@ -35,8 +35,8 @@ export {
   type ColumnDef,
   type DecodeOptions,
   DynamicValue,
-  VariantValue,
   TEXT_DECODER,
+  VariantValue,
 } from "./types.ts";
 
 // Re-export table helpers / types
@@ -124,15 +124,7 @@ export function decodeNativeBlockWithReader(
     reader.offset = partial.resumeOffset;
   } else {
     // Fresh decode - parse header
-    if (clientVersion > 0) {
-      while (true) {
-        const fieldId = reader.readVarint();
-        if (fieldId === BlockInfoField.End) break;
-        if (fieldId === BlockInfoField.IsOverflows)
-          reader.offset += 1; // is_overflows
-        else if (fieldId === BlockInfoField.BucketNum) reader.offset += 4; // bucket_num
-      }
-    }
+    if (clientVersion > 0) skipBlockInfo(reader);
 
     numCols = reader.readVarint();
     numRows = reader.readVarint();
@@ -159,48 +151,22 @@ export function decodeNativeBlockWithReader(
     const colStartOffset = reader.offset;
 
     try {
-      const name = reader.readString();
-      const type = reader.readString();
-      columns.push({ name, type });
-
-      const codec = getCodec(type);
-
-      let serializationNode: SerializationNode = DEFAULT_DENSE_NODE;
-      if (clientVersion >= 54454) {
-        const hasCustomSerialization = reader.readU8() !== 0;
-        if (hasCustomSerialization) {
-          serializationNode = codec.readKinds(reader);
-        }
-      }
-
-      const state: DeserializerState = {
-        serializationNode,
-        sparseRuntime: new Map(),
-        prefix: { children: [] },
-      };
-      // Only read prefix and decode when there are rows - empty blocks are schema-only
-      if (numRows > 0) {
-        codec.readPrefix(reader, state);
-        columnData.push(codec.decode(reader, numRows, state));
-      } else {
-        // Schema-only block: no prefix or data, create empty column
-        columnData.push(new DataColumn(type, []));
-      }
+      const [column, data] = decodeColumn(reader, numRows, clientVersion);
+      columns.push(column);
+      columnData.push(data);
     } catch (err) {
-      if (err instanceof BufferUnderflowError) {
-        // Reset reader to column boundary and throw with partial state
-        reader.offset = colStartOffset;
-        throw new BlockUnderflowError(err.message, {
-          columns: columns.slice(0, i),
-          columnData: columnData.slice(0, i),
-          numCols,
-          numRows,
-          nextColIndex: i,
-          resumeOffset: colStartOffset,
-          startOffset,
-        });
-      }
-      throw err;
+      if (!(err instanceof BufferUnderflowError)) throw err;
+      // Reset reader to column boundary and throw with partial state
+      reader.offset = colStartOffset;
+      throw new BlockUnderflowError(err.message, {
+        columns: columns.slice(0, i),
+        columnData: columnData.slice(0, i),
+        numCols,
+        numRows,
+        nextColIndex: i,
+        resumeOffset: colStartOffset,
+        startOffset,
+      });
     }
   }
 
@@ -211,6 +177,41 @@ export function decodeNativeBlockWithReader(
     bytesConsumed: reader.offset - startOffset,
     isEndMarker: false,
   };
+}
+
+function skipBlockInfo(reader: BufferReader): void {
+  while (true) {
+    const fieldId = reader.readVarint();
+    if (fieldId === BlockInfoField.End) return;
+    if (fieldId === BlockInfoField.IsOverflows)
+      reader.offset += 1; // is_overflows
+    else if (fieldId === BlockInfoField.BucketNum) reader.offset += 4; // bucket_num
+  }
+}
+
+function decodeColumn(
+  reader: BufferReader,
+  numRows: number,
+  clientVersion: number,
+): [ColumnDef, Column] {
+  const name = reader.readString();
+  const type = reader.readString();
+  const codec = getCodec(type);
+
+  let serializationNode: SerializationNode = DEFAULT_DENSE_NODE;
+  if (clientVersion >= 54454 && reader.readU8() !== 0) {
+    serializationNode = codec.readKinds(reader);
+  }
+  // Only read prefix and decode when there are rows - empty blocks are schema-only
+  if (numRows === 0) return [{ name, type }, new DataColumn(type, [])];
+
+  const state: DeserializerState = {
+    serializationNode,
+    sparseRuntime: new Map(),
+    prefix: { children: [] },
+  };
+  codec.readPrefix(reader, state);
+  return [{ name, type }, codec.decode(reader, numRows, state)];
 }
 
 /**
@@ -292,18 +293,10 @@ export async function* streamDecodeNative(
   },
 ): AsyncGenerator<RecordBatch> {
   const minBuffer = options?.minBufferSize ?? 64 * 1024;
-  // After an underflow, wait for `retryWaitBytes` more buffered bytes before retrying,
-  // doubling each retry up to `retryMaxBytes` (0 disables). Initial wait is the
-  // observed chunk size (or `underflowRetryMinBytes` when set), so small blocks
-  // still flush promptly while huge variable-width columns back off quickly.
-  const retryMaxBytes = Math.max(0, options?.underflowRetryMaxBytes ?? 1024 * 1024);
-  const retryMinBytes = options?.underflowRetryMinBytes;
-  const initialRetryWait = (chunkLength: number): number =>
-    retryMinBytes !== undefined
-      ? Math.min(retryMinBytes, retryMaxBytes)
-      : retryMaxBytes > 0
-        ? Math.min(chunkLength, retryMaxBytes)
-        : 0;
+  const backoff = new UnderflowBackoff(
+    options?.underflowRetryMinBytes,
+    Math.max(0, options?.underflowRetryMaxBytes ?? 1024 * 1024),
+  );
   const blockBuffer = new BlockBuffer(minBuffer);
   let columns: ColumnDef[] = [];
   let totalBytesReceived = 0;
@@ -315,91 +308,111 @@ export async function* streamDecodeNative(
   // completed columns so the retry resumes from the last column boundary
   // instead of re-parsing everything from scratch.
   let partial: PartialBlockState | undefined;
-  let retryAfterAvailable = 0;
-  let retryWaitBytes = 0;
+
+  const toBatch = (block: BlockResult): RecordBatch => {
+    if (columns.length === 0) columns = block.columns;
+    blocksDecoded++;
+    return RecordBatch.from({ columns, columnData: block.columnData, rowCount: block.rowCount });
+  };
 
   for await (const chunk of chunks) {
     blockBuffer.append(chunk);
     totalBytesReceived += chunk.length;
 
-    while (blockBuffer.available >= 2) {
-      if (retryAfterAvailable > 0 && blockBuffer.available < retryAfterAvailable) break;
-      retryAfterAvailable = 0;
-
-      const reader = new BufferReader(blockBuffer.view, 0, options);
-
-      try {
-        const block = decodeNativeBlockWithReader(reader, options, partial);
-        blockBuffer.startNextBlock(block.bytesConsumed);
-        partial = undefined;
-        retryWaitBytes = 0;
-
-        if (block.isEndMarker) continue;
-        if (columns.length === 0) columns = block.columns;
-        blocksDecoded++;
-        yield RecordBatch.from({
-          columns,
-          columnData: block.columnData,
-          rowCount: block.rowCount,
-        });
-      } catch (e) {
-        if (!(e instanceof BufferUnderflowError)) throw e;
-        if (e instanceof BlockUnderflowError) {
-          // Resume from the last completed column. Reset the backoff when we've
-          // made column progress (or on the first underflow for this block).
-          const prevCol = partial?.nextColIndex;
-          partial = e.partial;
-          if (prevCol !== partial.nextColIndex || retryWaitBytes === 0)
-            retryWaitBytes = initialRetryWait(chunk.length);
-        } else if (retryWaitBytes === 0) {
-          // Header underflow (no partial yet).
-          retryWaitBytes = initialRetryWait(chunk.length);
-        }
+    while (blockBuffer.available >= 2 && backoff.ready(blockBuffer.available)) {
+      const block = decodeBufferedBlock(blockBuffer, options, partial);
+      if (block instanceof BufferUnderflowError) {
+        // Resume from the last completed column. Reset the backoff when we've
+        // made column progress, or on the first underflow for this block.
+        const progressed =
+          block instanceof BlockUnderflowError &&
+          block.partial.nextColIndex !== partial?.nextColIndex;
+        if (block instanceof BlockUnderflowError) partial = block.partial;
+        backoff.underflow(blockBuffer.available, chunk.length, progressed);
         underruns++;
-        if (retryWaitBytes > 0) {
-          retryAfterAvailable = blockBuffer.available + retryWaitBytes;
-          retryWaitBytes = Math.min(retryWaitBytes * 2, retryMaxBytes);
-        }
         break; // need more data
       }
+      blockBuffer.startNextBlock(block.bytesConsumed);
+      partial = undefined;
+      backoff.reset();
+      if (!block.isEndMarker) yield toBatch(block);
     }
   }
 
   // Final: decode remaining data (no more chunks coming)
   while (blockBuffer.available > 0) {
-    const reader = new BufferReader(blockBuffer.view, 0, options);
-    let block: ReturnType<typeof decodeNativeBlockWithReader>;
-    try {
-      block = decodeNativeBlockWithReader(reader, options, partial);
-    } catch (e) {
-      if (e instanceof BlockUnderflowError || e instanceof BufferUnderflowError) {
-        // The source is done but a block is incomplete: the stream was
-        // truncated (or an earlier block desynced the parser). Name the
-        // condition instead of surfacing a bare buffer-underflow.
-        throw new Error(
-          `Native stream ended mid-block after ${blocksDecoded} blocks ` +
-            `(${blockBuffer.available} unconsumed bytes, ${totalBytesReceived} received): ${e.message}`,
-        );
-      }
-      throw e;
+    const block = decodeBufferedBlock(blockBuffer, options, partial);
+    if (block instanceof BufferUnderflowError) {
+      // The source is done but a block is incomplete: the stream was
+      // truncated (or an earlier block desynced the parser). Name the
+      // condition instead of surfacing a bare buffer-underflow.
+      throw new Error(
+        `Native stream ended mid-block after ${blocksDecoded} blocks ` +
+          `(${blockBuffer.available} unconsumed bytes, ${totalBytesReceived} received): ${block.message}`,
+      );
     }
     blockBuffer.startNextBlock(block.bytesConsumed);
     partial = undefined;
-
-    if (block.isEndMarker) continue;
-    if (columns.length === 0) columns = block.columns;
-    blocksDecoded++;
-    yield RecordBatch.from({
-      columns,
-      columnData: block.columnData,
-      rowCount: block.rowCount,
-    });
+    if (!block.isEndMarker) yield toBatch(block);
   }
 
   if (options?.debug) {
     console.log(
       `[streamDecodeNative] ${blocksDecoded} blocks, ${totalBytesReceived} bytes, ${underruns} underruns`,
     );
+  }
+}
+
+/** Decode the block at the buffer start, or return the underflow when it is incomplete. */
+function decodeBufferedBlock(
+  blockBuffer: BlockBuffer,
+  options: DecodeOptions | undefined,
+  partial: PartialBlockState | undefined,
+): BlockResult | BufferUnderflowError {
+  try {
+    return decodeNativeBlockWithReader(
+      new BufferReader(blockBuffer.view, 0, options),
+      options,
+      partial,
+    );
+  } catch (e) {
+    if (e instanceof BufferUnderflowError) return e;
+    throw e;
+  }
+}
+
+/**
+ * After an underflow, wait for `wait` more buffered bytes before retrying,
+ * doubling each retry up to `max` (0 disables). Initial wait is the observed
+ * chunk size (or `min` when set), so small blocks still flush promptly while
+ * huge variable-width columns back off quickly.
+ */
+class UnderflowBackoff {
+  private readonly min: number | undefined;
+  private readonly max: number;
+  private retryAfter = 0;
+  private wait = 0;
+
+  constructor(min: number | undefined, max: number) {
+    this.min = min;
+    this.max = max;
+  }
+
+  ready(available: number): boolean {
+    if (available < this.retryAfter) return false;
+    this.retryAfter = 0;
+    return true;
+  }
+
+  reset(): void {
+    this.wait = 0;
+  }
+
+  underflow(available: number, chunkLength: number, progressed: boolean): void {
+    if (progressed || this.wait === 0) this.wait = Math.min(this.min ?? chunkLength, this.max);
+    if (this.wait === 0) return;
+    this.retryAfter = available + this.wait;
+    this.wait = Math.min(this.wait * 2, this.max);
   }
 }
 

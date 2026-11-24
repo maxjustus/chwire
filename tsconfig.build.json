@@ -3,11 +3,11 @@
     "strict": true,
     "target": "ES2022",
     "lib": ["ESNext"],
+    "types": ["node"],
     "module": "nodenext",
     "moduleResolution": "nodenext",
     "esModuleInterop": true,
     "skipLibCheck": true,
-    "baseUrl": ".",
     "paths": {
       "@maxjustus/chwire/native": ["./native/index.ts"],
       "@maxjustus/chwire/tcp": ["./tcp_client/index.ts"]

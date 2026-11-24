@@ -1,11 +1,10 @@
 import assert from "node:assert";
 import { describe, it } from "node:test";
-import type { ColumnDef } from "../../native/index.ts";
-import type { DynamicColumn } from "../../native/columns.ts";
 import { getCodec } from "../../native/codecs.ts";
-import { DynamicValue } from "../../native/types.ts";
+import type { DynamicColumn } from "../../native/columns.ts";
+import type { ColumnDef } from "../../native/index.ts";
+import { DynamicValue, VariantValue } from "../../native/types.ts";
 import { decodeBatch, encodeNativeRows, toArrayRows } from "../test_utils.ts";
-import { VariantValue } from "../../native/types.ts";
 
 describe("LowCardinality", () => {
   it("encodes LowCardinality(String)", async () => {

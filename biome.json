@@ -9,10 +9,19 @@
   "linter": {
     "enabled": true,
     "rules": {
+      "complexity": {
+        "noExcessiveCognitiveComplexity": {
+          "level": "error",
+          "options": {
+            "maxAllowedComplexity": 25
+          }
+        }
+      },
       "suspicious": {
         "noExplicitAny": "off"
       },
       "style": {
+        "noNestedTernary": "error",
         "noNonNullAssertion": "off"
       }
     }
@@ -39,5 +48,17 @@
       "!dist",
       "!vendor"
     ]
-  }
+  },
+  "overrides": [
+    {
+      "includes": ["test/**", "tcp_client/test/**", "fuzz/**", "bench/**", "scripts/**"],
+      "linter": {
+        "rules": {
+          "complexity": {
+            "noExcessiveCognitiveComplexity": "off"
+          }
+        }
+      }
+    }
+  ]
 }

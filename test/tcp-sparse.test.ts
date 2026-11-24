@@ -4,8 +4,8 @@
 
 import assert from "node:assert";
 import { after, before, describe, it } from "node:test";
-import { TcpClient } from "../tcp_client/client.ts";
 import { VariantValue } from "../native/types.ts";
+import { TcpClient } from "../tcp_client/client.ts";
 import { startClickHouse, stopClickHouse } from "./setup.ts";
 import { toArrayRows } from "./test_utils.ts";
 

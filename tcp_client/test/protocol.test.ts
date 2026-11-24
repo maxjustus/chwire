@@ -1,13 +1,13 @@
 import assert from "node:assert";
 import { after, before, describe, test } from "node:test";
 import { batchFromCols, getCodec } from "../../native/index.ts";
-import { TcpClient } from "../index.ts";
 import { startClickHouse, stopClickHouse } from "../../test/setup.ts";
 import {
   type TcpConfig,
   toClientOptions,
   withClient as withClientBase,
 } from "../../test/test_utils.ts";
+import { TcpClient } from "../index.ts";
 
 describe("TCP Client Protocol Features", () => {
   let options: TcpConfig;

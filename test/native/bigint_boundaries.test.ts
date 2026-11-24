@@ -12,15 +12,15 @@ import assert from "node:assert";
 import { describe, it } from "node:test";
 import { getCodec } from "../../native/codecs.ts";
 import {
-  INT64_MIN,
   INT64_MAX,
-  INT128_MIN,
+  INT64_MIN,
   INT128_MAX,
-  UINT128_MAX,
-  INT256_MIN,
+  INT128_MIN,
   INT256_MAX,
-  UINT256_MAX,
+  INT256_MIN,
   toBigIntInRange,
+  UINT128_MAX,
+  UINT256_MAX,
 } from "../../native/coercion.ts";
 
 describe("BigInt boundary tests", () => {

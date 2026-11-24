@@ -13,15 +13,15 @@
 
 import assert from "node:assert";
 import { describe, it } from "node:test";
+import type { Rng } from "../native/codecs/base.ts";
 import {
   batchFromRows,
   type ColumnDef,
   encodeNative,
   streamDecodeNative,
 } from "../native/index.ts";
-import type { Rng } from "../native/codecs/base.ts";
 import { decodeBatch, toArrayRows, toAsync } from "../test/test_utils.ts";
-import { config, logConfig, getIterationIndex } from "./config.ts";
+import { config, getIterationIndex, logConfig } from "./config.ts";
 import { makeRng } from "./rng.ts";
 import { randomString } from "./util.ts";
 

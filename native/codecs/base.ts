@@ -123,44 +123,47 @@ function scanNamePath(part: string): { name: string; end: number; quoted: boolea
   let quoted = false;
   while (true) {
     if (part[i] === "`") {
+      const segment = scanQuotedSegment(part, i + 1);
+      if (!segment) return null;
       quoted = true;
-      i++;
-      let closed = false;
-      while (i < part.length) {
-        const c = part[i]!;
-        if (c === "\\" && i + 1 < part.length) {
-          const next = part[i + 1]!;
-          name += IDENT_ESCAPES[next] ?? next;
-          i += 2;
-          continue;
-        }
-        if (c === "`") {
-          if (part[i + 1] === "`") {
-            name += "`";
-            i += 2;
-            continue;
-          }
-          i++; // consume the closing backtick
-          closed = true;
-          break;
-        }
-        name += c;
-        i++;
-      }
-      if (!closed) return null;
+      name += segment[0];
+      i = segment[1];
     } else {
       const m = /^[a-z_][a-z0-9_]*/i.exec(part.slice(i));
       if (!m) return null;
       name += m[0];
       i += m[0].length;
     }
-    if (part[i] === ".") {
-      name += ".";
-      i++;
-      continue;
-    }
-    return { name, end: i, quoted };
+    if (part[i] !== ".") return { name, end: i, quoted };
+    name += ".";
+    i++;
   }
+}
+
+/**
+ * Decode a backtick-quoted segment whose content starts at `start`. Returns
+ * [segment, index_after_closing_backtick], or null when the quote is unclosed.
+ */
+function scanQuotedSegment(part: string, start: number): [string, number] | null {
+  let segment = "";
+  let i = start;
+  while (i < part.length) {
+    const c = part[i]!;
+    if (c === "\\" && i + 1 < part.length) {
+      const next = part[i + 1]!;
+      segment += IDENT_ESCAPES[next] ?? next;
+      i += 2;
+    } else if (c !== "`") {
+      segment += c;
+      i++;
+    } else if (part[i + 1] === "`") {
+      segment += "`";
+      i += 2;
+    } else {
+      return [segment, i + 1];
+    }
+  }
+  return null;
 }
 
 // Extracts the content between the outermost parentheses: "Array(Int32)" -> "Int32"
@@ -342,12 +345,13 @@ export function defaultDeserializerState(): DeserializerState {
  * (older ClickHouse versions or incomplete tree).
  */
 export function childState(state: DeserializerState, index: number): DeserializerState {
+  // Grown lazily so readPrefix (populates prefix.data) and decode (consumes
+  // it) land on the same node when both derive it from the same parent.
+  state.prefix.children[index] ??= { children: [] };
   return {
     ...state,
     serializationNode: state.serializationNode.children[index] ?? DEFAULT_DENSE_NODE,
-    // Grown lazily so readPrefix (populates prefix.data) and decode (consumes
-    // it) land on the same node when both derive it from the same parent.
-    prefix: (state.prefix.children[index] ??= { children: [] }),
+    prefix: state.prefix.children[index],
   };
 }
 
@@ -393,27 +397,12 @@ function readSparse(
   state: DeserializerState,
 ): Column {
   const node = state.serializationNode;
-  const [initialTrailing, hasValueAfter] = state.sparseRuntime.get(node) || [0, false];
-
-  let trailingDefaultCount = initialTrailing;
-  let hasValueAfterTrailing = hasValueAfter;
+  let [trailingDefaultCount, hasValueAfterTrailing] = state.sparseRuntime.get(node) || [0, false];
 
   const indices: number[] = [];
   let totalRows = trailingDefaultCount;
-  let readOffset = 0; // We don't support partial read requests yet, so readOffset is always 0
-  let skippedValuesRows = 0;
-  let isFirstValue = true;
-
   if (hasValueAfterTrailing) {
-    if (trailingDefaultCount >= readOffset) {
-      indices.push(trailingDefaultCount - readOffset);
-      readOffset = 0;
-      isFirstValue = false;
-    } else {
-      skippedValuesRows += 1;
-      readOffset -= trailingDefaultCount + 1;
-    }
-    trailingDefaultCount = 0;
+    indices.push(trailingDefaultCount);
     totalRows += 1;
   }
 
@@ -441,35 +430,21 @@ function readSparse(
       break;
     }
 
-    const startOfGroup = !isFirstValue && indices.length > 0 ? indices[indices.length - 1]! + 1 : 0;
-    if (defaultsBeforeValue >= readOffset) {
-      indices.push(startOfGroup + defaultsBeforeValue - readOffset);
-      readOffset = 0;
-      isFirstValue = false;
-    } else {
-      skippedValuesRows += 1;
-      readOffset -= defaultsBeforeValue + 1;
-    }
-
-    trailingDefaultCount = 0;
+    const startOfGroup = indices.length > 0 ? indices[indices.length - 1]! + 1 : 0;
+    indices.push(startOfGroup + defaultsBeforeValue);
     totalRows = nextTotalRows + 1;
   }
 
   state.sparseRuntime.set(node, [trailingDefaultCount, hasValueAfterTrailing]);
 
-  const zero = codec.zeroValue();
-  const decodeFn = (r: BufferReader, n: number) => codec.decodeDense(r, n, state);
-
-  if (skippedValuesRows > 0) {
-    decodeFn(reader, skippedValuesRows);
-  }
-
   if (indices.length === 0) {
-    return codec.fromValues(new Array(rows).fill(zero));
+    return codec.fromValues(new Array(rows).fill(codec.zeroValue()));
   }
+  return scatterSparse(codec, codec.decodeDense(reader, indices.length, state), indices, rows);
+}
 
-  const values = decodeFn(reader, indices.length);
-
+/** Place `values[i]` at row `indices[i]`; every other row gets the codec's zero value. */
+function scatterSparse(codec: BaseCodec, values: Column, indices: number[], rows: number): Column {
   // Fast path: TypedArray-backed columns (NumericCodec, EpochCodec, BigIntCodec)
   // Avoids boxing/unboxing through get()/fromValues() by copying directly.
   if (values instanceof DataColumn && ArrayBuffer.isView(values.data)) {
@@ -485,7 +460,7 @@ function readSparse(
     return new DataColumn(codec.type, dest);
   }
 
-  const resultValues = new Array(rows).fill(zero);
+  const resultValues = new Array(rows).fill(codec.zeroValue());
 
   for (let i = 0; i < indices.length; i++) {
     const idx = indices[i]!;
@@ -510,28 +485,31 @@ function readSparse(
 export function deepCompare(a: unknown, b: unknown): boolean {
   if (Object.is(a, b)) return true;
   if (a === null || b === null || typeof a !== "object" || typeof b !== "object") return false;
-
-  if (a instanceof Uint8Array && b instanceof Uint8Array) {
-    if (a.length !== b.length) return false;
-    for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
-    return true;
-  }
+  if (a instanceof Uint8Array && b instanceof Uint8Array) return bytesEqual(a, b);
   if (a instanceof Date && b instanceof Date) return a.getTime() === b.getTime();
-
   if (Array.isArray(a) || Array.isArray(b)) {
-    if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false;
-    for (let i = 0; i < a.length; i++) if (!deepCompare(a[i], b[i])) return false;
-    return true;
+    return Array.isArray(a) && Array.isArray(b) && arraysEqual(a, b);
   }
+  return ownKeysEqual(a as Record<string, unknown>, b as Record<string, unknown>);
+}
 
-  const ao = a as Record<string, unknown>;
-  const bo = b as Record<string, unknown>;
-  const aKeys = Object.keys(ao);
-  const bKeys = Object.keys(bo);
-  if (aKeys.length !== bKeys.length) return false;
+function bytesEqual(a: Uint8Array, b: Uint8Array): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+  return true;
+}
+
+function arraysEqual(a: unknown[], b: unknown[]): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) if (!deepCompare(a[i], b[i])) return false;
+  return true;
+}
+
+function ownKeysEqual(a: Record<string, unknown>, b: Record<string, unknown>): boolean {
+  const aKeys = Object.keys(a);
+  if (aKeys.length !== Object.keys(b).length) return false;
   for (const key of aKeys) {
-    if (!Object.hasOwn(bo, key)) return false;
-    if (!deepCompare(ao[key], bo[key])) return false;
+    if (!Object.hasOwn(b, key) || !deepCompare(a[key], b[key])) return false;
   }
   return true;
 }

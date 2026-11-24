@@ -1,6 +1,6 @@
-import { describe, it } from "node:test";
 import assert from "node:assert";
-import { extractParamTypes, serializeParams, SQL_NULL } from "../params.ts";
+import { describe, it } from "node:test";
+import { extractParamTypes, SQL_NULL, serializeParams } from "../params.ts";
 
 describe("extractParamTypes", () => {
   it("extracts simple types", () => {

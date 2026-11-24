@@ -28,10 +28,10 @@
 import assert from "node:assert/strict";
 import { after, before, describe, it } from "node:test";
 import { collectText, init, type QueryPacket, query } from "../client.ts";
-import { startClickHouse, stopClickHouse } from "./setup.ts";
-import { getCodec } from "../native/index.ts";
 import { genType } from "../fuzz/gen-type.ts";
 import { makeRng } from "../fuzz/rng.ts";
+import { getCodec } from "../native/index.ts";
+import { startClickHouse, stopClickHouse } from "./setup.ts";
 
 const TYPE_COUNT = Number(process.env.FUZZ_TYPE_ORACLE_TYPES ?? 500);
 const BATCH = 50;
